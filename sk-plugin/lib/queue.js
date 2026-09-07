@@ -6,6 +6,10 @@
  * an urgent announcement goes to the front and cuts short a normal one that is playing. Items
  * are whatever `play` understands; `play(item, cancelled)` must resolve when the item is done
  * and check `cancelled()` (or be interrupted through `onCancel`).
+ *
+ * Both kinds are bounded: `max` normal items may wait, `maxUrgent` urgent ones (a smaller
+ * number, since each urgent item cuts whatever plays). hasRoom() lets the caller ask before it
+ * spends the work of making the item, since speech is synthesised before it is queued.
  */
 
 const { EventEmitter } = require("node:events");
@@ -15,7 +19,8 @@ class AnnouncementQueue extends EventEmitter {
    * @param {object} opts
    * @param {(item: any, cancelled: () => boolean) => Promise<void>} opts.play
    * @param {() => void} [opts.onCancel]   asked to interrupt the item playing now
-   * @param {number} [opts.max=20]         items waiting beyond this are refused
+   * @param {number} [opts.max=20]         normal items waiting beyond this are refused
+   * @param {number} [opts.maxUrgent=5]    urgent items waiting beyond this are refused
    * @param {(msg: string) => void} [opts.log]
    */
   constructor(opts) {
@@ -23,6 +28,7 @@ class AnnouncementQueue extends EventEmitter {
     this.play = opts.play;
     this.onCancel = opts.onCancel ?? (() => {});
     this.max = opts.max ?? 20;
+    this.maxUrgent = opts.maxUrgent ?? 5;
     this.log = opts.log ?? (() => {});
     this.items = [];
     this.current = null;
@@ -32,14 +38,27 @@ class AnnouncementQueue extends EventEmitter {
 
   get size() { return this.items.length; }
 
+  /** How many items of `priority` are waiting. */
+  waiting(priority = "normal") {
+    const p = priority === "urgent" ? "urgent" : "normal";
+    return this.items.reduce((n, e) => n + (e.priority === p ? 1 : 0), 0);
+  }
+
+  /** True when an item of `priority` would be accepted right now. */
+  hasRoom(priority = "normal") {
+    if (this.stopped) return false;
+    return priority === "urgent" ? this.waiting("urgent") < this.maxUrgent : this.waiting("normal") < this.max;
+  }
+
   /**
    * Adds an item. Returns its position: 0 = playing now (or next, when nothing plays), else the
-   * number of items ahead of it. Throws when the queue is full.
+   * number of items ahead of it. Throws when the queue is full for that priority.
    */
   enqueue(item, priority = "normal") {
     if (this.stopped) throw new Error("queue stopped");
     const entry = { item, priority: priority === "urgent" ? "urgent" : "normal", cancelled: false };
     if (entry.priority === "urgent") {
+      if (this.waiting("urgent") >= this.maxUrgent) throw new Error(`queue full (${this.maxUrgent} urgent waiting)`);
       const firstNormal = this.items.findIndex((e) => e.priority === "normal");
       const at = firstNormal < 0 ? this.items.length : firstNormal;
       this.items.splice(at, 0, entry);
@@ -51,7 +70,7 @@ class AnnouncementQueue extends EventEmitter {
       this.pump();
       return at;
     }
-    if (this.items.length >= this.max) throw new Error(`queue full (${this.max} waiting)`);
+    if (this.waiting("normal") >= this.max) throw new Error(`queue full (${this.max} waiting)`);
     this.items.push(entry);
     this.pump();
     return this.items.length - 1 + (this.current ? 1 : 0);

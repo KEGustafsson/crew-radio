@@ -29,41 +29,69 @@ test("an unknown voice is refused up front", () => {
   assert.deepEqual(VOICES, ["slt", "kal16", "rms", "awb"]);
 });
 
-test("Flite in WebAssembly speaks a sentence as 16 kHz PCM, and the cache answers the repeat", async () => {
+test("Flite in WebAssembly, on its worker, speaks a sentence as 16 kHz PCM, and the cache answers the repeat", async () => {
   const tts = new FliteTts({ voice: "slt", tempDir });
-  const t0 = Date.now();
-  const pcm = await tts.synthesize("Anchor alarm. The anchor is dragging.");
-  const ms = Date.now() - t0;
-  assert.ok(pcm.length > 16000 * 2 * 1.5, `at least 1.5 s of speech, got ${pcm.length} bytes`);
-  assert.ok(pcm.length < 16000 * 2 * 6, "and under 6 s");
-  assert.equal(pcm.length % 2, 0);
-  let peak = 0;
-  for (let i = 0; i < pcm.length; i += 2) peak = Math.max(peak, Math.abs(pcm.readInt16LE(i)));
-  assert.ok(peak > 3000, `not silence (peak ${peak})`);
-  assert.equal(tts.stats.synthesized, 1);
-  const again = await tts.synthesize("Anchor alarm.  The anchor is dragging. ");
-  assert.equal(again, pcm, "same normalised text: the very same buffer, from the cache");
-  assert.equal(tts.stats.cached, 1);
-  assert.equal(fs.readdirSync(tempDir).length, 0, "no WAV left behind");
-  assert.ok(ms < 20000, `synthesis took ${ms} ms`);
+  try {
+    const t0 = Date.now();
+    const pcm = await tts.synthesize("Anchor alarm. The anchor is dragging.");
+    const ms = Date.now() - t0;
+    assert.ok(pcm.length > 16000 * 2 * 1.5, `at least 1.5 s of speech, got ${pcm.length} bytes`);
+    assert.ok(pcm.length < 16000 * 2 * 6, "and under 6 s");
+    assert.equal(pcm.length % 2, 0);
+    let peak = 0;
+    for (let i = 0; i < pcm.length; i += 2) peak = Math.max(peak, Math.abs(pcm.readInt16LE(i)));
+    assert.ok(peak > 3000, `not silence (peak ${peak})`);
+    assert.equal(tts.stats.synthesized, 1);
+    assert.ok(tts.worker, "the worker stays for the next sentence");
+    const again = await tts.synthesize("Anchor alarm.  The anchor is dragging. ");
+    assert.equal(again, pcm, "same normalised text: the very same buffer, from the cache");
+    assert.equal(tts.stats.cached, 1);
+    assert.equal(fs.readdirSync(tempDir).length, 0, "no WAV left behind");
+    assert.ok(ms < 20000, `synthesis took ${ms} ms`);
+  } finally {
+    tts.stop();
+  }
+  assert.equal(tts.worker, null, "stop() ends the worker");
 });
 
 test("an empty text is no speech, and the rate stretches the speech", async () => {
   const tts = new FliteTts({ voice: "kal16", tempDir });
-  assert.equal((await tts.synthesize("   ")).length, 0);
   const slow = new FliteTts({ voice: "kal16", rate: 0.7, tempDir });
-  const a = await tts.synthesize("Man overboard, port side.");
-  const b = await slow.synthesize("Man overboard, port side.");
-  assert.ok(b.length > a.length * 1.2, `slower speech is longer: ${b.length} vs ${a.length}`);
+  try {
+    assert.equal((await tts.synthesize("   ")).length, 0);
+    const a = await tts.synthesize("Man overboard, port side.");
+    const b = await slow.synthesize("Man overboard, port side.");
+    assert.ok(b.length > a.length * 1.2, `slower speech is longer: ${b.length} vs ${a.length}`);
+  } finally {
+    tts.stop(); slow.stop();
+  }
 });
 
 test("the cache is bounded by bytes", async () => {
   const tts = new FliteTts({ voice: "slt", tempDir, cacheBytes: 100_000 });
-  await tts.synthesize("One.");
-  await tts.synthesize("Two.");
-  await tts.synthesize("Three.");
-  assert.ok(tts.cacheSize <= 100_000);
-  assert.ok(tts.cache.size >= 1);
+  try {
+    await tts.synthesize("One.");
+    await tts.synthesize("Two.");
+    await tts.synthesize("Three.");
+    assert.ok(tts.cacheSize <= 100_000);
+    assert.ok(tts.cache.size >= 1);
+  } finally {
+    tts.stop();
+  }
+});
+
+test("stop() fails what is in flight and a later sentence gets a new worker; a stuck sentence times out", async () => {
+  const tts = new FliteTts({ voice: "slt", tempDir });
+  const inFlight = tts.synthesize("Cut off half way.");
+  tts.stop();
+  await assert.rejects(inFlight, /stopped/);
+  const pcm = await tts.synthesize("Back again.");
+  assert.ok(pcm.length > 1000);
+  tts.stop();
+  const slow = new FliteTts({ voice: "slt", tempDir, timeoutMs: 1 });
+  await assert.rejects(slow.synthesize("This will not make it in a millisecond."), /took more than 1 ms/);
+  assert.equal(slow.worker, null, "a stuck worker is not reused");
+  slow.stop();
 });
 
 test("parseWav reads a PCM16 mono file and refuses others", () => {
@@ -82,8 +110,12 @@ test("parseWav reads a PCM16 mono file and refuses others", () => {
 
 test("two concurrent misses for the same text count once in the cache size", async () => {
   const tts = new FliteTts({ voice: "slt", tempDir, cacheBytes: 100_000 });
-  const [a, b] = await Promise.all([tts.synthesize("Same text twice."), tts.synthesize("Same text twice.")]);
-  assert.equal(a.length, b.length);
-  assert.equal(tts.cache.size, 1);
-  assert.equal(tts.cacheSize, a.length, "the replaced entry's bytes are taken back");
+  try {
+    const [a, b] = await Promise.all([tts.synthesize("Same text twice."), tts.synthesize("Same text twice.")]);
+    assert.equal(a.length, b.length);
+    assert.equal(tts.cache.size, 1);
+    assert.equal(tts.cacheSize, a.length, "the replaced entry's bytes are taken back");
+  } finally {
+    tts.stop();
+  }
 });

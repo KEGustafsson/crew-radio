@@ -1,18 +1,18 @@
 {
   "name": "signalk-crewradio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Crew Radio: lets Signal K tell the sailing crew what matters, by voice, on their push-to-talk phones.",
   "main": "index.js",
   "license": "EUPL-1.2",
   "author": "Karl-Erik Gustafsson",
   "repository": {
     "type": "git",
-    "url": "https://github.com/KEGustafsson/android-push-to-talk.git",
+    "url": "https://github.com/KEGustafsson/crew-radio.git",
     "directory": "sk-plugin"
   },
-  "homepage": "https://github.com/KEGustafsson/android-push-to-talk/tree/main/sk-plugin",
+  "homepage": "https://github.com/KEGustafsson/crew-radio/tree/main/sk-plugin",
   "bugs": {
-    "url": "https://github.com/KEGustafsson/android-push-to-talk/issues"
+    "url": "https://github.com/KEGustafsson/crew-radio/issues"
   },
   "keywords": [
     "signalk-node-server-plugin",
@@ -24,7 +24,7 @@
     "intercom"
   ],
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "signalk": {
     "displayName": "Crew Radio",
@@ -42,7 +42,6 @@
     "lib/",
     "public/",
     "tools/",
-    "docs/",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

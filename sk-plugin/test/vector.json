@@ -1,14 +1,41 @@
 {
+  "comment": "Wire v4 / hello v2 / KDF v4 cross-language vector, shared with the app's CrossLanguageVectorTest.kt; the Aware values are the app's, checked here against the same key.",
   "channelKey": "north-star-2026",
-  "derivedKeyHex": "c387a6bb78fb90ffdb2842ebbfa5057048545562ba2c97274ff6d0f1e442e1cc",
+  "derivedKeyHex": "c74b235783ad92075401d7b04e84f2d138f4bf1e18468b317cc4d7027b19caf7",
   "nonceHex": "000102030405060708090a0b",
   "header": {
     "codec": 2,
     "ttl": 4,
     "hops": 4,
     "senderId": 305419896,
-    "seq": 7
+    "seq": 7,
+    "time": 1788739200
   },
-  "plainHex": "01010406536972697573",
-  "packetHex": "5054030204041234567800000007000102030405060708090a0bbcee1ffa479b4ddfaad2b5657b70fea6573d4b1f63144b2728b4"
+  "hello": {
+    "name": "Sirius",
+    "transports": 1,
+    "ttl": 4,
+    "versionCode": 134
+  },
+  "plainHex": "020104008606536972697573",
+  "packetHex": "50540402040412345678000000076a9dfe80000102030405060708090a0b00622f484f4a8de723109250e778f788e7f50beb461834130f404b53",
+  "awarePassphrase": "nM6G++UJzXiOghDLRtm8cTjb+OGhA0RZyFWgLSqVip8",
+  "awareIdTagHex": "c5bac4b54dc0db33",
+  "nonAscii": {
+    "comment": "The same packet under a channel key with a non-ASCII character: the passphrase into PBKDF2 is the key's UTF-8 bytes.",
+    "channelKey": "Pohjantähti-2026",
+    "channelKeyUtf8Hex": "506f686a616e74c3a46874692d32303236",
+    "derivedKeyHex": "306af81b75bdb297ba26931dc75b0dbae8f1d7137c563792f81a7614758ab1af",
+    "nonceHex": "000102030405060708090a0b",
+    "header": {
+      "codec": 2,
+      "ttl": 4,
+      "hops": 4,
+      "senderId": 305419896,
+      "seq": 7,
+      "time": 1788739200
+    },
+    "plainHex": "020104008606536972697573",
+    "packetHex": "50540402040412345678000000076a9dfe80000102030405060708090a0bc145ac43b630a49efbefda586ed1d1a51ee727db88a0dfab0ee4a247"
+  }
 }

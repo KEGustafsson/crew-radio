@@ -3,20 +3,25 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { NotificationBridge, humanise, spoken, globToRegExp } = require("../lib/bridge");
+const { NotificationBridge, RETRY_MS, humanise, spoken, globToRegExp } = require("../lib/bridge");
 
-function harness(rules, sayImpl) {
+function harness(rules, sayImpl, opts = {}) {
   let clock = 0;
   const said = [];
+  const logs = [];
   const bridge = new NotificationBridge({
     say: sayImpl ?? (async (o) => { said.push(o); return { ok: true, queued: 0 }; }),
     rules: { ...rules },
     now: () => clock,
+    log: (m) => logs.push(m),
+    ...opts,
   });
   const delta = (path, value) => bridge.onDelta({ updates: [{ values: [{ path, value }] }] });
   const flush = () => new Promise((r) => setImmediate(r));
-  return { bridge, said, delta, flush, advance: (ms) => (clock += ms) };
+  return { bridge, said, logs, delta, flush, advance: (ms) => (clock += ms) };
 }
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test("an alarm with sound is announced once on raise, urgent for emergency, and stops when cleared", async () => {
   const h = harness({ repeatSec: 0 });
@@ -46,6 +51,18 @@ test("below the state, without sound, or excluded: nothing is said", async () =>
   assert.equal(h.said.length, 1);
 });
 
+test("a state named like an Object.prototype member is unknown, not an alarm", async () => {
+  const h = harness({ minState: "alert" });
+  h.delta("notifications.x", { state: "toString", method: ["sound"], message: "nope" });
+  h.delta("notifications.y", { state: "constructor", method: ["sound"], message: "nope" });
+  await h.flush();
+  assert.equal(h.said.length, 0);
+  assert.equal(h.bridge.active.size, 0);
+  assert.equal(spoken("notifications.z", "hasOwnProperty", "m"), "hasOwnProperty, z: m");
+  const h2 = harness({ minState: "valueOf" });
+  assert.equal(h2.bridge.minRank, 3, "an unknown minimum state is the default, alarm");
+});
+
 test("a raised alarm repeats every repeatSec until it clears; a changed message is said at once", async () => {
   const h = harness({ repeatSec: 30 });
   h.delta("notifications.navigation.anchor", { state: "alarm", method: ["sound"], message: "Dragging 10 m" });
@@ -69,18 +86,44 @@ test("a raised alarm repeats every repeatSec until it clears; a changed message 
   assert.equal(h.said.length, 3);
 });
 
-test("a failed say is retried in 5 s rather than a full repeat later; no message falls back to the path", async () => {
+test("a failed say is retried once on its own timer, even with repeat off; no message falls back to the path", async () => {
   let fail = true;
   const calls = [];
-  const h = harness({ repeatSec: 60 }, async (o) => { calls.push(o); if (fail) throw new Error("engine down"); return { ok: true }; });
+  const h = harness({ repeatSec: 0 }, async (o) => { calls.push(o); if (fail) throw new Error("engine down"); return { ok: true }; }, { retryMs: 20 });
+  assert.equal(RETRY_MS, 5000);
   h.delta("notifications.propulsion.port.temperature", { state: "alarm", method: ["sound"] });
   await h.flush();
   assert.equal(calls[0].text, "Alarm, propulsion port temperature");
+  assert.match(h.logs.at(-1), /failed: engine down/);
   fail = false;
-  h.advance(5_000);
-  h.bridge.repeatDue();
+  await sleep(40);
+  assert.equal(calls.length, 2, "said on the retry");
+  await sleep(40);
+  assert.equal(calls.length, 2, "and not again: repeat is off");
+});
+
+test("a retry is dropped when the alarm clears, changes or the bridge stops before it fires", async () => {
+  const calls = [];
+  const h = harness({ repeatSec: 0 }, async (o) => { calls.push(o); throw new Error("full"); }, { retryMs: 20 });
+  h.delta("notifications.a", { state: "alarm", method: ["sound"], message: "one" });
+  h.delta("notifications.b", { state: "alarm", method: ["sound"], message: "two" });
+  h.delta("notifications.c", { state: "alarm", method: ["sound"], message: "three" });
   await h.flush();
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
+  h.delta("notifications.a", null);                                                    // cleared
+  h.delta("notifications.b", { state: "alarm", method: ["sound"], message: "two, changed" }); // replaced: said now, its own retry later
+  await h.flush();
+  assert.equal(calls.length, 4);
+  h.bridge.stop();                                                                     // c's and b's retries die with it
+  await sleep(50);
+  assert.equal(calls.length, 4);
+});
+
+test("a truncated say is noted in the log", async () => {
+  const h = harness({ repeatSec: 0 }, async () => ({ ok: true, truncated: true }));
+  h.delta("notifications.long", { state: "alarm", method: ["sound"], message: "x".repeat(600) });
+  await h.flush();
+  assert.ok(h.logs.some((m) => /cut to fit/.test(m)));
 });
 
 test("helpers: humanise and globs", () => {
@@ -89,6 +132,9 @@ test("helpers: humanise and globs", () => {
   assert.ok(!globToRegExp("navigation.*").test("navigation.anchor.radius"));
   assert.ok(globToRegExp("navigation.**").test("navigation.anchor.radius"));
   assert.ok(globToRegExp("mob").test("mob"));
+  assert.ok(globToRegExp("what?").test("what?"), "? is literal");
+  assert.ok(!globToRegExp("what?").test("what"));
+  assert.ok(!globToRegExp("a.b").test("axb"), ". is literal");
 });
 
 test("the spoken form names the state and the path, unless sayPath is off", async () => {

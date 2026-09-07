@@ -31,42 +31,49 @@ class LanLink extends EventEmitter {
     this.iface = null;
   }
 
-  /** Resolves with `{iface, address, broadcast}` once bound and joined. */
+  /** Resolves with `{iface, address, broadcast}` once bound and joined; a socket that fails to bind is closed, not leaked. */
   open() {
+    if (!Number.isInteger(this.port) || this.port < 1024 || this.port > 65535) {
+      return Promise.reject(new Error(`UDP port ${this.port} is not 1024-65535`));
+    }
     const pick = chooseInterface(this.ifaceName);
     if (!pick) return Promise.reject(new Error(this.ifaceName ? `interface ${this.ifaceName} has no IPv4 address` : "no usable IPv4 interface"));
     return new Promise((resolve, reject) => {
       const sock = dgram.createSocket({ type: "udp4", reuseAddr: true });
       let bound = false;
+      const fail = (e) => { try { sock.close(); } catch { /* already closed */ } reject(e); };
       sock.on("error", (e) => {
-        if (!bound) reject(e);
-        else this.emit("error", e);
+        if (!bound) return fail(e);
         this.close();
+        this.emit("error", e);
       });
       sock.on("message", (buf, rinfo) => {
         if (buf.length > MAX_SIZE) return; // dropped unread, as the app does
         this.emit("packet", buf, rinfo);
       });
-      sock.bind(this.port, "0.0.0.0", () => {
-        try {
-          sock.setBroadcast(true);
-          sock.setMulticastTTL(1);
-          sock.setMulticastLoopback(false);
-          sock.setMulticastInterface(pick.address);
-          sock.addMembership(this.group, pick.address);
-        } catch (e) {
-          sock.close();
-          reject(e);
-          return;
-        }
-        bound = true;
-        this.sock = sock;
-        this.iface = pick.name;
-        this.address = pick.address;
-        this.broadcast = pick.broadcast;
-        this.emit("listening", { iface: pick.name, address: pick.address, broadcast: pick.broadcast });
-        resolve({ iface: pick.name, address: pick.address, broadcast: pick.broadcast });
-      });
+      try {
+        sock.bind(this.port, "0.0.0.0", () => {
+          try {
+            sock.setBroadcast(true);
+            sock.setMulticastTTL(1);
+            sock.setMulticastLoopback(false);
+            sock.setMulticastInterface(pick.address);
+            sock.addMembership(this.group, pick.address);
+          } catch (e) {
+            fail(e);
+            return;
+          }
+          bound = true;
+          this.sock = sock;
+          this.iface = pick.name;
+          this.address = pick.address;
+          this.broadcast = pick.broadcast;
+          this.emit("listening", { iface: pick.name, address: pick.address, broadcast: pick.broadcast });
+          resolve({ iface: pick.name, address: pick.address, broadcast: pick.broadcast });
+        });
+      } catch (e) {
+        fail(e);                                   // a port out of range throws before any callback
+      }
     });
   }
 

@@ -5,11 +5,13 @@
 /**
  * Development tool: the plugin's pieces from a shell, no Signal K needed.
  *
- *   node tools/cli.js roster --key KEY [--name NAME] [--seconds 10]            join, print the roster, leave
- *   node tools/cli.js say    --key KEY --text "..." [--voice slt] [--rate 1]    speak a text on the channel
- *   node tools/cli.js say    --key KEY --wav FILE                                speak a WAV (PCM16, any rate) on the channel
+ *   node tools/cli.js roster [--name NAME] [--seconds 10]                       join, print the roster, leave
+ *   node tools/cli.js say    --text "..." [--voice slt] [--rate 1]              speak a text on the channel
+ *   node tools/cli.js say    --wav FILE                                          speak a WAV (PCM16, any rate) on the channel
  *   node tools/cli.js tts    --text "..." --out FILE.wav [--voice slt] [--rate 1] speech to a WAV file, no network
  *
+ * The channel key: CREWRADIO_KEY in the environment (preferred, it stays out of the shell history
+ * and the process list) or --key KEY.
  * Common: --group 239.255.42.1 --udp 47474 --iface auto --hops 4 [--unicast HOST,HOST] [--lead 100] [--no-chime].
  */
 
@@ -33,6 +35,7 @@ async function main() {
       const { node, link } = await join();
       node.on("roster", (r) => log(`roster: ${r.map(fmt).join(", ") || "(nobody)"}`));
       node.on("talking", (on, id) => log(`talking ${on ? "start" : "stop"} #${(id >>> 0).toString(16)}`));
+      node.on("stale", (n) => log(`${n} packets from a clock more than a minute off`));
       await sleep((Number(args.seconds) || 10) * 1000);
       log(`stats ${JSON.stringify(node.stats)}`);
       node.stop(); link.close();
@@ -60,7 +63,7 @@ async function main() {
       break;
     }
     default:
-      console.log(fs.readFileSync(__filename, "utf8").split("\n").slice(4, 14).join("\n"));
+      console.log(fs.readFileSync(__filename, "utf8").split("\n").slice(4, 16).join("\n"));
   }
 }
 
@@ -70,13 +73,23 @@ async function speak(text) {
   if (!VOICES.includes(voice)) throw new Error(`--voice must be one of ${VOICES.join(", ")}`);
   const tts = new FliteTts({ voice, rate: args.rate !== undefined ? Number(args.rate) : 1 });
   const t0 = Date.now();
-  const pcm = await tts.synthesize(text);
-  log(`${voice}: "${FliteTts.normalise(text)}" in ${Date.now() - t0} ms, ${(pcm.length / 32000).toFixed(1)} s of speech`);
-  return pcm;
+  try {
+    const pcm = await tts.synthesize(text);
+    log(`${voice}: "${FliteTts.normalise(text)}" in ${Date.now() - t0} ms, ${(pcm.length / 32000).toFixed(1)} s of speech`);
+    return pcm;
+  } finally {
+    tts.stop();
+  }
+}
+
+function channelKey() {
+  const key = typeof args.key === "string" && args.key ? args.key : process.env.CREWRADIO_KEY;
+  if (!key) throw new Error("the channel key is required: CREWRADIO_KEY in the environment, or --key KEY");
+  return key;
 }
 
 async function join() {
-  if (!args.key) throw new Error("--key is required");
+  const crypto = await ChannelCrypto.forChannelKey(channelKey());
   const link = new LanLink({ group: args.group || "239.255.42.1", port: Number(args.udp) || 47474, iface: args.iface || "auto" });
   const where = await link.open();
   log(`network ${where.iface} ${where.address} broadcast ${where.broadcast}`);
@@ -86,7 +99,7 @@ async function join() {
     link.send = (buf, unicast = []) => send(buf, [...new Set([...unicast, ...hosts])]);
     log(`also unicasting to ${hosts.join(", ")}`);
   }
-  const node = new ChannelNode({ name: args.name || "Laptop", crypto: ChannelCrypto.forChannelKey(args.key), link, ttl: Number(args.hops) || 4,
+  const node = new ChannelNode({ name: args.name || "Laptop", crypto, link, ttl: Number(args.hops) || 4,
     leadMs: args.lead !== undefined ? Number(args.lead) : undefined, repeatMs: args.repeat !== undefined ? Number(args.repeat) : undefined });
   node.start();
   return { node, link };

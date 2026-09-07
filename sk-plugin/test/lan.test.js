@@ -3,6 +3,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const dgram = require("node:dgram");
 const { LanLink, chooseInterface, broadcastOf } = require("../lib/lan");
 
 test("broadcast address from address and netmask", () => {
@@ -56,11 +57,34 @@ test("send() goes to the group, the broadcast address and each unicast target", 
   assert.deepEqual(sent, ["239.255.42.1:47474", "192.168.0.255:47474"]);
 });
 
-test("a bad group address rejects open() instead of throwing later", async (t) => {
+/** Watches the sockets lan.js creates, so a test can see whether a failed one was closed. */
+function watchSockets(t) {
+  const made = [];
+  const orig = dgram.createSocket;
+  dgram.createSocket = (...a) => { const s = orig(...a); made.push(s); return s; };
+  t.after(() => { dgram.createSocket = orig; });
+  return made;
+}
+const isClosed = (s) => { try { s.address(); return false; } catch { return true; } };
+
+test("a bad group address rejects open() instead of throwing later, and the socket is closed, not leaked", async (t) => {
   const pick = chooseInterface(null);
   if (!pick) { t.skip("no IPv4 interface on this machine"); return; }
+  const made = watchSockets(t);
   const link = new LanLink({ group: "not-an-address", port: 40000 + Math.floor(Math.random() * 20000), iface: pick.name });
   await assert.rejects(link.open());
+  assert.equal(made.length, 1);
+  assert.ok(isClosed(made[0]));
+  assert.equal(link.sock, null);
+});
+
+test("a port outside 1024-65535 rejects open() before a socket is made", async (t) => {
+  const pick = chooseInterface(null);
+  if (!pick) { t.skip("no IPv4 interface on this machine"); return; }
+  const made = watchSockets(t);
+  const link = new LanLink({ group: "239.255.42.1", port: 70000, iface: pick.name });
+  await assert.rejects(link.open(), /port 70000 is not 1024-65535/);
+  assert.equal(made.length, 0, "refused before a socket was made");
 });
 
 test("an unknown named interface rejects open()", async () => {

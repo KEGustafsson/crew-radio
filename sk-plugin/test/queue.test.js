@@ -7,7 +7,7 @@ const { AnnouncementQueue } = require("../lib/queue");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function harness(playMs = 30) {
+function harness(playMs = 30, opts = {}) {
   const played = [];
   let cancels = 0;
   const q = new AnnouncementQueue({
@@ -18,6 +18,8 @@ function harness(playMs = 30) {
     },
     onCancel: () => cancels++,
     max: 3,
+    maxUrgent: 2,
+    ...opts,
   });
   return { q, played, cancels: () => cancels };
 }
@@ -58,12 +60,30 @@ test("an urgent item does not interrupt another urgent one", async () => {
 test("the queue is bounded for normal items, clear() drops the rest, stop() refuses more", async () => {
   const { q, played } = harness(40);
   q.enqueue("a"); q.enqueue("b"); q.enqueue("c"); q.enqueue("d");
-  assert.throws(() => q.enqueue("e"), /queue full/);
+  assert.throws(() => q.enqueue("e"), /queue full \(3 waiting\)/);
+  assert.equal(q.hasRoom("normal"), false);
+  assert.equal(q.hasRoom("urgent"), true, "a full normal queue does not block an urgent item");
   q.clear();
   await sleep(100);
   assert.deepEqual(played, ["a!"]);
   q.stop();
   assert.throws(() => q.enqueue("f"), /stopped/);
+  assert.equal(q.hasRoom("urgent"), false);
+});
+
+test("urgent items are bounded by their own, smaller, cap; hasRoom() says so before anything is made", async () => {
+  const { q, played } = harness(40);
+  q.enqueue("n1"); q.enqueue("n2");
+  assert.equal(q.enqueue("U1", "urgent"), 0);
+  assert.equal(q.enqueue("U2", "urgent"), 1);
+  assert.equal(q.waiting("urgent"), 2);
+  assert.equal(q.waiting("normal"), 1);
+  assert.equal(q.hasRoom("urgent"), false);
+  assert.equal(q.hasRoom("normal"), true);
+  assert.throws(() => q.enqueue("U3", "urgent"), /queue full \(2 urgent waiting\)/);
+  await sleep(250);
+  assert.deepEqual(played, ["n1!", "U1", "U2", "n2"]);
+  assert.equal(q.hasRoom("urgent"), true);
 });
 
 test("a failing play does not stop the queue", async () => {
@@ -72,4 +92,6 @@ test("a failing play does not stop the queue", async () => {
   q.enqueue("bad"); q.enqueue("good");
   await sleep(30);
   assert.deepEqual(played, ["good"]);
+  assert.equal(q.max, 20);
+  assert.equal(q.maxUrgent, 5);
 });

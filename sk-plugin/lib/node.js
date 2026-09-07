@@ -3,22 +3,28 @@
 
 /**
  * One node on the crew channel, as a phone is: a random sender id, a hello every second, a
- * roster kept from everyone else's hellos and audio, duplicates dropped by (sender, seq), and
- * the ability to key the channel with 20 ms PCM frames, paced in real time so the phones'
- * jitter queues see a talker, not a burst.
+ * roster kept from everyone else's hellos and audio, replays and duplicates dropped by
+ * (sender, seq) the way the app does it (lib/replay.js), and the ability to key the channel
+ * with 20 ms PCM frames, paced in real time so the phones' jitter queues see a talker, not a
+ * burst.
  *
  * The link is anything with `send(buf)` and a 'packet' event (see lan.js). Events out:
- * 'roster' (when the rendered list changes), 'talking' (someone else started or stopped).
+ * 'roster' (when the rendered list changes), 'talking' (someone else started or stopped),
+ * 'speaking' (our own announcement starts or ends), 'stale' (packets from a clock more than
+ * a minute off ours, at most once per 30 s).
  */
 
 const crypto = require("node:crypto");
 const { EventEmitter } = require("node:events");
 const P = require("./packet");
+const { ReplayGuard } = require("./replay");
 
 const FRAME_BYTES = 640; // 16 kHz * 20 ms * 2 bytes
 const FRAME_MS = 20;
 const LEAD_MS = 100;       // how far ahead of real time frames may go out (the phones buffer up to 200 ms)
-const SEEN_CAPACITY = 4096;
+const MAX_NODES = 64;      // far more than a crew; a ceiling, not a target (the app's MAX_NODES)
+const TALK_HOLD_MS = 400;  // how long after the last frame a node still shows as talking (the app's TALK_HOLD_MS)
+const STALE_REPORT_MS = 30_000;
 
 class ChannelNode extends EventEmitter {
   /**
@@ -29,8 +35,9 @@ class ChannelNode extends EventEmitter {
    * @param {number} [opts.ttl=4]     hop budget stamped on our packets
    * @param {number} [opts.heartbeatMs=1000]
    * @param {number} [opts.silenceMs=4000]  a node silent this long is dropped from the roster
-   * @param {number} [opts.talkingMs=500]   audio within this long ago means "talking"
-   * @param {() => number} [opts.now]
+   * @param {number} [opts.talkingMs=400]   audio within this long ago means "talking"
+   * @param {ReplayGuard} [opts.guard]      the replay state; pass one guard across link reopens
+   * @param {() => number} [opts.now]       milliseconds; also the clock the packets' `time` is checked against
    */
   constructor(opts) {
     super();
@@ -40,20 +47,22 @@ class ChannelNode extends EventEmitter {
     this.ttl = opts.ttl ?? 4;
     this.heartbeatMs = opts.heartbeatMs ?? 1000;
     this.silenceMs = opts.silenceMs ?? 4000;
-    this.talkingMs = opts.talkingMs ?? 500;
+    this.talkingMs = opts.talkingMs ?? TALK_HOLD_MS;
     this.leadMs = Number.isFinite(opts.leadMs) && opts.leadMs >= 0 ? opts.leadMs : LEAD_MS;   // how far ahead of real time frames go out
     this.repeatMs = opts.repeatMs ?? 0;         // > 0: send every audio packet a second time this much later (heals a lost copy)
     this.now = opts.now ?? Date.now;
+    this.guard = opts.guard ?? new ReplayGuard();
     this.senderId = randomSenderId();
     this.audioSeq = 0;
     this.helloSeq = 0;
-    this.seen = new Map(); // key -> true, insertion ordered, bounded
-    this.nodes = new Map(); // senderId -> {name, transports, hops, lastSeen, lastAudio, address}
+    this.nodes = new Map(); // senderId -> {name, transports, hops, versionCode, lastSeen, lastAudio, address}
     this.timer = null;
     this.speaking = null; // {cancel, done} of the announcement going out right now
     this.chain = Promise.resolve(); // announcements go out one after another, in call order
     this.lastRosterKey = "";
-    this.stats = { rx: 0, rejected: 0, tx: 0 };
+    this.stats = { rx: 0, rejected: 0, stale: 0, late: 0, tx: 0 };
+    this.staleReportedAt = 0;
+    this.staleSinceReport = 0;
     this.onPacket = (buf, rinfo) => this.receive(buf, rinfo);
   }
 
@@ -64,18 +73,18 @@ class ChannelNode extends EventEmitter {
     if (this.timer.unref) this.timer.unref();
   }
 
+  /** Leaves the channel. The replay guard is the owner's and keeps its memory. */
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.cancel();
     if (typeof this.link.off === "function") this.link.off("packet", this.onPacket);
     this.nodes.clear();
-    this.seen.clear();
   }
 
   /** Hello out, stale nodes swept, roster republished if it changed. */
   tick() {
-    this.broadcast(P.Codec.HELLO, P.encodeHello({ name: this.name, transports: P.Transports.LAN, ttl: this.ttl }));
+    this.broadcast(P.Codec.HELLO, P.encodeHello({ name: this.name, transports: P.Transports.LAN, ttl: this.ttl, versionCode: 0 }));
     const now = this.now();
     let changed = false;
     for (const [id, n] of this.nodes) {
@@ -96,6 +105,7 @@ class ChannelNode extends EventEmitter {
         name: n.name ?? `#${(id >>> 0).toString(16)}`,
         transports: n.transports,
         hops: n.hops,
+        versionCode: n.versionCode,
         talking: now - n.lastAudio < this.talkingMs,
         ageMs: now - n.lastSeen,
       }))
@@ -182,11 +192,10 @@ class ChannelNode extends EventEmitter {
     this.speaking?.cancel();
   }
 
-  /** Stamps, seals and sends one of our own packets. */
+  /** Stamps (with the clock, in seconds), seals and sends one of our own packets. */
   broadcast(codec, payload) {
     const seq = codec === P.Codec.HELLO ? this.helloSeq++ : this.audioSeq++;
-    const header = P.encodeHeader({ senderId: this.senderId, seq, codec, ttl: this.ttl });
-    this.markSeen(this.senderId, seq, codec);
+    const header = P.encodeHeader({ senderId: this.senderId, seq, codec, ttl: this.ttl, time: Math.floor(this.now() / 1000) });
     const packet = Buffer.concat([header, this.crypto.seal(P.aadOf(header), payload)]);
     this.stats.tx++;
     this.link.send(packet, this.unicastTargets());
@@ -200,36 +209,47 @@ class ChannelNode extends EventEmitter {
     return [...out];
   }
 
-  /** The receive path: parse, drop our own and duplicates, authenticate, then roster or talking. */
+  /**
+   * The receive path, in the app's order: parse, drop our own, authenticate, drop a stale
+   * clock, then the replay guard (seen or late), and only then the roster or talking.
+   */
   receive(buf, rinfo) {
     const h = P.parseHeader(buf);
     if (!h) { this.stats.rejected++; return; }
     if (h.senderId === this.senderId) return;
     // Authenticate first, then dedupe, as the app does: a forged header must not be able to
-    // occupy a (sender, seq) slot and get the authentic packet dropped as its duplicate.
+    // occupy a (sender, seq) slot and get the authentic packet dropped as its duplicate, nor
+    // touch the stale counter.
     const plain = this.crypto.open(P.aadOf(buf), buf.subarray(P.HEADER));
     if (!plain) { this.stats.rejected++; return; }
-    if (!this.markSeen(h.senderId, h.seq, h.codec)) return; // the broadcast twin, or a relay echo
-    this.stats.rx++;
     const now = this.now();
+    if (!P.isFresh(h.time, Math.floor(now / 1000))) { this.stale(now); return; }
+    const verdict = this.guard.admit(h.senderId, h.seq, h.codec === P.Codec.HELLO ? "hello" : "audio");
+    if (verdict === "seen") return;                  // the broadcast twin, or a relay echo
+    if (verdict === "late") { this.stats.late++; return; }
     let n = this.nodes.get(h.senderId);
     const fresh = !n;
     if (fresh) {
-      n = { name: null, transports: 0, hops: 0, lastSeen: now, lastAudio: 0 };
+      if (this.nodes.size >= MAX_NODES) return;
+      n = { name: null, transports: 0, hops: 0, versionCode: 0, lastSeen: now, lastAudio: 0, address: null };
       this.nodes.set(h.senderId, n);
     }
+    this.stats.rx++;
     n.lastSeen = now;
-    // Where a unicast copy reaches this node: only from packets that came straight from it. A
-    // relayed packet arrives from the relaying node's address, which would get the copies instead.
+    // Where a unicast copy reaches this node: only from packets that came straight from it (a
+    // relayed packet arrives from the relaying node's address, which would get the copies
+    // instead) and, by the guard above, only from a packet that advanced its sequence, so a
+    // replayed one cannot re-point the copies.
     if (rinfo && rinfo.address && h.hops - h.ttl === 0) n.address = rinfo.address;
     if (h.codec === P.Codec.HELLO) {
       const hello = P.decodeHello(plain);
       if (hello) {
         const hops = Math.max(0, hello.ttl - h.ttl);
-        if (hello.name !== n.name || hello.transports !== n.transports || hops !== n.hops) {
+        if (hello.name !== n.name || hello.transports !== n.transports || hops !== n.hops || hello.versionCode !== n.versionCode) {
           n.name = hello.name;
           n.transports = hello.transports;
           n.hops = hops;
+          n.versionCode = hello.versionCode;
           this.publishRoster(true);
           return;
         }
@@ -246,17 +266,21 @@ class ChannelNode extends EventEmitter {
     this.publishRoster(fresh);
   }
 
-  markSeen(senderId, seq, codec) {
-    const key = `${codec === P.Codec.HELLO ? "h" : "a"}${senderId}:${seq}`;
-    if (this.seen.has(key)) return false;
-    this.seen.set(key, true);
-    if (this.seen.size > SEEN_CAPACITY) this.seen.delete(this.seen.keys().next().value);
-    return true;
+  /** Counts a stale packet and reports the count at most once per 30 s. */
+  stale(now) {
+    this.stats.stale++;
+    this.staleSinceReport++;
+    if (now - this.staleReportedAt >= STALE_REPORT_MS) {
+      this.staleReportedAt = now;
+      const count = this.staleSinceReport;
+      this.staleSinceReport = 0;
+      this.emit("stale", count);
+    }
   }
 
   publishRoster(force) {
     const r = this.roster();
-    const key = r.map((n) => `${n.id}|${n.name}|${n.transports}|${n.hops}|${n.talking ? 1 : 0}`).join("\n");
+    const key = r.map((n) => `${n.id}|${n.name}|${n.transports}|${n.hops}|${n.versionCode}|${n.talking ? 1 : 0}`).join("\n");
     if (force || key !== this.lastRosterKey) {
       this.lastRosterKey = key;
       this.emit("roster", r);
@@ -274,4 +298,4 @@ function randomSenderId() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nextTurn = () => new Promise((r) => setImmediate(r));
 
-module.exports = { ChannelNode, FRAME_BYTES, FRAME_MS, LEAD_MS };
+module.exports = { ChannelNode, FRAME_BYTES, FRAME_MS, LEAD_MS, MAX_NODES, TALK_HOLD_MS, STALE_REPORT_MS };

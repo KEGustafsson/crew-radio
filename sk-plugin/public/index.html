@@ -104,13 +104,15 @@
     $("roster").innerHTML = rows.length ? rows.join("") : '<tr><td class="empty" colspan="4">Nobody on the channel. A phone shows up here when the app is connected with its WLAN link on, on the same network, group, port and channel key.</td></tr>';
     var st = s.stats || {};
     $("stats").innerHTML = "voice <b>" + esc(s.voice || "-") + "</b> &middot; rate <b>" + esc(s.rate) + "</b> &middot; group <b>" + esc(s.group + ":" + s.port) + "</b> &middot; hop budget <b>" + esc(s.hops) + "</b><br>" +
-      "packets received <b>" + (st.rx || 0) + "</b> &middot; sent <b>" + (st.tx || 0) + "</b> &middot; rejected <b>" + (st.rejected || 0) + "</b> &middot; sentences made <b>" + (st.synthesized || 0) + "</b> &middot; from the cache <b>" + (st.cached || 0) + "</b> &middot; plugin up <b>" + Math.round(s.uptimeSec / 60) + " min</b>";
+      "packets received <b>" + (st.rx || 0) + "</b> &middot; sent <b>" + (st.tx || 0) + "</b> &middot; rejected <b>" + (st.rejected || 0) + "</b> &middot; stale <b>" + (st.stale || 0) + "</b>" + (st.stale ? " (a clock is more than a minute off)" : "") + " &middot; sentences made <b>" + (st.synthesized || 0) + "</b> &middot; from the cache <b>" + (st.cached || 0) + "</b> &middot; plugin up <b>" + Math.round(s.uptimeSec / 60) + " min</b>" +
+      (s.limits ? "<br>limits: <b>" + s.limits.maxText + "</b> characters a text, <b>" + s.limits.perMinute + "</b> calls a minute for each door, <b>" + s.limits.queue + "</b> normal and <b>" + s.limits.urgent + "</b> urgent announcements waiting" : "") +
+      (s.warnings && s.warnings.length ? "<br><span style=\"color: var(--warn)\">check the settings: " + esc(s.warnings.join("; ")) + "</span>" : "");
     $("send").disabled = !s.running;
   }
 
   function poll() {
     fetch(BASE + "/status", { credentials: "same-origin" }).then(function (r) {
-      if (r.status === 401 || r.status === 403) throw new Error("Log in to the Signal K admin UI first, then reload this page.");
+      if (r.status === 401 || r.status === 403) throw new Error("Log in to the Signal K server first, then reload this page. Any user can watch; saying something needs a read-write user.");
       if (!r.ok) throw new Error("The plugin answered " + r.status + ". Is it enabled?");
       return r.json();
     }).then(function (s) { failures = 0; render(s); }).catch(function (e) {
@@ -125,10 +127,10 @@
     fetch(BASE + "/say", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: $("text").value, priority: $("priority").value }) })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (x) {
-        if (x.ok && x.j.ok) { res.className = "ok"; res.textContent = (x.j.queued === 0 ? "Going out now" : "Queued at position " + x.j.queued) + ", " + x.j.seconds + " s of speech" + (x.j.priority === "urgent" ? ", urgent" : ""); }
+        if (x.ok && x.j.ok) { res.className = "ok"; res.textContent = (x.j.queued === 0 ? "Going out now" : "Queued at position " + x.j.queued) + ", " + x.j.seconds + " s of speech" + (x.j.priority === "urgent" ? ", urgent" : "") + (x.j.truncated ? " (the text was cut to 500 characters)" : ""); }
         else { res.className = "bad"; res.textContent = x.j.error || x.j.message || ("The server answered " + x.j.statusCode); }
       })
-      .catch(function (e) { res.className = "bad"; res.textContent = e.message; })
+      .catch(function (e) { res.className = "bad"; res.textContent = e.message + " (a read-write login is needed to say something)"; })
       .then(function () { $("send").disabled = false; poll(); });
   });
   poll(); setInterval(poll, 1000);
