@@ -29,14 +29,20 @@ platform is used: `AudioRecord` with the voice-communication source (which enabl
 echo cancellation and noise suppression), the AOSP Opus codec through `MediaCodec`
 (`audio/opus`, available since API 29), `AudioTrack` for playback.
 
-- `AudioCapture` pulls frames from the mic on its own thread and hands them to the engine.
+- `AudioCapture` pulls frames from the mic on its own thread and hands them to the engine. A read
+  that fails (the audio server restarted, a call took the input) stops the worker and reports;
+  the engine un-keys, and for the always-on voice capture tries again a couple of seconds later.
 - `OpusEncoder` / `OpusDecoder` wrap `MediaCodec`. The AOSP decoder always outputs 48 kHz, hence
   `Decimator` back to 16 kHz. One decoder per talker, created on demand, at most eight (the
   quietest is evicted), released after 30 s of silence. If the encoder fails the engine falls
   back to raw PCM and says so.
 - `Mixer` keeps a small jitter queue per talker (two frames of pre-fill, ten at most), sums the
   queues into one stream on its own thread, and paces itself on the blocking `AudioTrack`
-  write. It also plays cue tones (`Tones`) on top of whatever is sounding. The main screen's
+  write. The track holds only two frames and asks for the low-latency path, so the jitter buffer
+  is the mixer's queue rather than a fixed delay in the track; how often the track ran dry is on
+  the Status screen. Two talkers at once are scaled by 1/√n so the sum does not clip, and a track
+  the platform has killed is rebuilt with backoff and reported. A stream that pauses has to
+  re-fill before it plays again, so the first word after a break is not concealed. It also plays cue tones (`Tones`) on top of whatever is sounding. The main screen's
   mute is a gain of 0 on the summed speech, with the cue tones added after it, so a muted phone
   still hears its own key beeps; it is engine state, cleared on disconnect. The level itself is
   the phone's call volume (`CallVolume`): the track has `USAGE_VOICE_COMMUNICATION`, so the
@@ -61,30 +67,44 @@ echo cancellation and noise suppression), the AOSP Opus codec through `MediaCode
 ## Packets and the mesh
 
 ```text
-'P' 'T' | version = 3 | codec | ttl | hops | senderId int32 | seq int32     (14-byte header)
-nonce (12) | ciphertext | tag (16)                                          (sealed payload)
+'P' 'T' | version = 4 | codec | ttl | hops | senderId int32 | seq int32 | time uint32   (18-byte header)
+nonce (12) | ciphertext | tag (16)                                                      (sealed payload)
 ```
 
 Codec 0 is a PCM16 frame, 1 an Opus packet, 2 a `Hello` (roster heartbeat: name, transport
-flags, hop budget). Audio frames and hellos number themselves independently per sender. The
-payload is sealed by `ChannelCrypto` (AES‑256‑GCM, random nonce per packet, key derived from
-the channel key by PBKDF2) with the header minus the ttl byte as associated data; `hops` is the
-sender's original budget and is authenticated, so a relay clamps the ttl to it. The engine
-charges a global rate budget, opens every packet, drops duplicates by the seen-cache, then charges
-the sender's budget, before the relay or the roster see it, so nothing without the crew's key gets
-anywhere and the copies a frame arrives in (multicast and broadcast, several links) cost the sender
-nothing. See [SECURITY.md](SECURITY.md) for the threat model.
+flags, hop budget, build number). Audio frames and hellos number themselves independently per
+sender. The payload is sealed by `ChannelCrypto` (AES‑256‑GCM, random nonce per packet, key
+derived from the channel key by PBKDF2 over its UTF‑8 bytes, 600 000 rounds) with the header
+minus the ttl byte as associated data; `hops` is the sender's original budget and `time` its
+clock, both authenticated, so neither a relay nor a recorder can change them.
+
+`Ingress` makes every admission decision in one testable place, in this order: the global rate
+budget, the AEAD, the timestamp, the seen-cache, then the sender's own budget. A packet whose
+clock is more than a minute from ours is dropped as stale before any cache is touched, which is
+what stops a recording being replayed later; the caches are sized for that window and, together
+with each sender's highest number seen, they live as long as the process rather than the session,
+so leaving the channel and coming back does not forget a replay. Only authenticated, first-copy
+packets cost a sender anything, so the copies a frame arrives in (multicast and broadcast, several
+links) are free. See [SECURITY.md](SECURITY.md) for the threat model.
 
 <img src="images/packet-flow.png" alt="What happens to a received packet" width="640">
 
 Relay is application-level flooding with two brakes: a seen-cache keyed by (sender, number),
 one cache per packet kind because audio and hellos number themselves independently, drops
-copies that arrive by two paths, and the ttl (clamped to this phone's own hop limit,
-then decremented in place) stops circulation. A packet is forwarded to every *other*
-transport, and, on transports with several links (Bluetooth, Aware), to the other links of the
-same transport. `LanTransport` sends every frame twice, to the multicast group and to the
-interface's broadcast address, because plenty of access points filter multicast; the
-seen-cache drops the duplicate on the receiving side.
+copies that arrive by two paths, and the ttl stops circulation. A relay decrements the ttl it
+was given and refuses a packet already that many hops from its origin, so the hop count the
+roster shows is exact even when phones disagree about the limit. A packet is forwarded to every
+*other* transport, and, on transports with several links (Bluetooth, Aware), to the other links
+of the same transport. `LanTransport` sends every frame twice, to the multicast group and to the
+interface's broadcast address, because plenty of access points filter multicast, and also
+unicast to the peers it has heard from directly, because an access point sends multicast and
+broadcast at its lowest rate without acknowledgement; the seen-cache drops the duplicates on the
+receiving side.
+
+Sending never blocks the sender. Each stream link (Bluetooth, Aware) owns a bounded queue drained
+by its own thread, so a peer that walks out of range with its socket still open cannot hold up the
+mic, the heartbeat or the relay; a queue that stays full is treated as a dead link and closed, which
+is what starts the reconnect.
 
 <img src="images/mesh.png" alt="Three phones, two kinds of link" width="640">
 
@@ -94,9 +114,10 @@ seconds means gone. The main screen shows only the head count and who is talking
 screen polls the full list once a second.
 
 Reconnect lives inside each transport, never in the engine: Bluetooth re-dials its chosen peer
-from the reader's `finally`; Aware wraps each peer link in a `Dial` that schedules its
-successor while discovery still sees the peer, and re-attaches the whole session when Aware goes
-away; LAN's receive thread owns the socket and re-opens it when it breaks or Wi‑Fi changes.
+from the reader's `finally`, and waits for the adapter to come back on when it is switched off;
+Aware wraps each peer link in a `Dial` that schedules its successor while discovery still sees the
+peer, and re-attaches the whole session when Aware goes away; LAN's receive thread owns the socket,
+follows the Wi‑Fi network it was opened on, and re-opens it when it breaks or the network changes.
 All of them wait with `transport/Backoff` (1 s doubling to 15 s). Every transport thread runs
 through `transport/transportThread`, which catches everything (the Bluetooth and Aware stacks
 throw `SecurityException` for a missing runtime permission) and reports instead of killing the
@@ -114,7 +135,8 @@ app.
   autorepeats, so a quiet gap of the platform key-repeat timeout makes a hold count once.
 - `MicGate` is voice-operated keying: two frames above the open threshold key the mic (a
   100 ms pre-roll is sent first so the first syllable survives), 75 frames below the close
-  threshold un-key it. Thresholds are 80/40 RMS for a noise-suppressed headset boom and
+  threshold un-key it, as does a minute of it being held open, so steady wind or engine noise
+  cannot leave the mic live. Thresholds are 80/40 RMS for a noise-suppressed headset boom and
   300/120 for the phone's own mic (`MicGate.tune`). On the phone the gate is armed only while
   the proximity sensor reads near: through the voice-call path close talk and a talker a
   metre away land in the same level range, so the ear is the discriminator, as in a phone call.
@@ -153,7 +175,8 @@ of the transports, so they need a rejoin. The channel key is generated at random
 | `PttEngine` | Transports, roster, relay, sequence tracking, concealment, talk state, voice gate |
 | `CallService`, `CallBridge` | Opt-in self-managed Telecom call for hang-up-style headset buttons |
 | `Packet`, `Hello`, `SeqTracker` | Wire header, roster heartbeat payload, per-sender sequence admission |
-| `ChannelCrypto`, `RateLimiter` | AES-GCM sealing of every packet under the channel key; per-sender packet budget |
+| `Ingress` | Every admission decision for a received packet, in one testable place |
+| `ChannelCrypto`, `RateLimiter` | AES-GCM sealing under the channel key, the Aware secrets derived from it; ingress budgets |
 | `audio/AudioConfig` | 16 kHz, 20 ms, frame sizes |
 | `audio/AudioCapture`, `audio/AudioPlayback` | Mic in, speaker out, each on its own thread |
 | `audio/OpusEncoder`, `audio/OpusDecoder`, `audio/Decimator` | Platform Opus and the 48 → 16 kHz step |
@@ -163,20 +186,33 @@ of the transports, so they need a rejoin. The channel key is generated at random
 | `audio/AudioRoute` | Headset, earpiece or loudspeaker, following the hardware and the ear |
 | `transport/Transport` | The interface: `start`, `send` (returns whether anything went out), `stop`, `relayWithin` |
 | `transport/LanTransport`, `BluetoothTransport`, `WifiAwareTransport` | The three carriers |
-| `transport/StreamLink`, `Backoff`, `Threads` | Length-prefixed framing, retry schedule, guarded threads |
+| `transport/StreamLink`, `SendQueue`, `Backoff`, `Threads` | Length-prefixed framing, per-link outbound queue, retry schedule, guarded threads |
+| `transport/AwareSsi`, `BluetoothTieBreak`, `LanAddressing`, `PeerTable` | Discovery tag, one link per pair, broadcast address, peers heard from directly |
 
 ## Building and releasing
 
-`./gradlew assembleDebug testDebugUnitTest` with an Android SDK (platform 37; JDK 17, Gradle 9.7 via the wrapper, AGP 9.4 with its built-in Kotlin, Kotlin 2.4 from the build classpath). Unit tests are
-pure Kotlin (JUnit 4) and cover the packet format, hello payload, settings rules, backoff,
-decimator, concealment, tones, the sequence tracker and the voice gate. Anything with a
-transport or a codec needs real phones.
+`./gradlew assembleDebug testDebugUnitTest` with an Android SDK (platform 37; Gradle 9.7 via the
+wrapper, AGP 9.4 with its built-in Kotlin, Kotlin 2.4 from the build classpath). The build needs a
+JDK 17 on the machine and will not download one; the Gradle distribution and every dependency are
+checked against the checksums in `gradle/wrapper/gradle-wrapper.properties` and
+`gradle/verification-metadata.xml`, so a dependency change means regenerating that file (the recipe
+is in `.github/dependabot.yml`). Release builds are shrunk by R8 with class and method names kept,
+so a crash trace from a phone reads without a mapping file.
+
+Unit tests are pure Kotlin (JUnit 4) and cover the packet format and its replay window, the hello
+payload, the ingress pipeline, settings rules, the rate limiter, backoff, the send queue, the LAN
+addressing and peer table, the Aware discovery tag, the Bluetooth tie-break, the mixer, decimator,
+concealment, tones, the sequence tracker and the voice gate. Anything with a transport or a codec
+needs real phones.
 
 Versions come from git in `app/build.gradle.kts`: `versionCode` is the commit count,
 `versionName` is `1.<count>`, and the short commit hash is shown on the Status screen.
 `.github/workflows/build.yml` runs the tests and a debug-signed release build on every push and
-pull request (read-only token, no secrets) and, on a push to `main`, a second job signs with the
-crew's key from the repository secrets and publishes a GitHub Release with the APK.
+pull request (read-only token, no secrets) plus Android Lint as a gate and, on a push to `main`, a
+second job signs with the crew's key from the repository secrets and publishes a GitHub Release
+with the APK, its checksum and its SBOM, all three carrying a signed provenance attestation. The
+signing secrets reach only the two steps that need them and the decoded keystore is deleted before
+anything else runs.
 
 ## Conventions
 

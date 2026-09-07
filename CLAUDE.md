@@ -8,7 +8,8 @@ flooding relay so multiple transports and multi-hop topologies work.
 ## Stack
 - Android Gradle Plugin 9.4 with its built-in Kotlin (the Kotlin Android plugin is applied nowhere; the root
   build puts Kotlin 2.4 on the build classpath, which is how the built-in compiler is moved past AGP's
-  default), Gradle 9.7, compileSdk 37, minSdk 29, targetSdk 34, JDK 17.
+  default), Gradle 9.7, compileSdk 37, minSdk 29, targetSdk 36, JDK 17 (a real toolchain: Gradle
+  will not download one). R8 shrinks release builds with names kept, so crash traces stay readable.
   Dependabot keeps AndroidX current; the toolchain itself (AGP, Kotlin, Gradle majors, compileSdk)
   is moved by hand, since a new AndroidX generation often needs a newer compileSdk or AGP (core 1.19
   needed AGP 9.1). AGP 10 will make the new Variant API mandatory; nothing here uses the old one.
@@ -39,28 +40,51 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 - `PttService`: bound while the activity is visible, promoted to a started foreground
   service (types microphone|connectedDevice) with a partial wake lock and a low-latency
   Wi-Fi lock for the duration of a session. Owns the engine; the notification mirrors the
-  status line and has a Disconnect action. The activity never disconnects on its own
-  lifecycle, only on the button or the notification action.
+  status line and has a Disconnect action. Joining and leaving run on its own `ptt-session`
+  thread: `connect(factory: (PttEngine) -> List<Transport>)` calls `startForeground` synchronously
+  on the caller's thread (the platform's ten seconds) and posts the slow work — the channel key
+  (~1 s of PBKDF2), the transport factory, which runs only once `engine.crypto` is ready because
+  the Aware secrets come from it, and `engine.connect`; `disconnect()` posts the teardown and
+  calls `stopSelf()` last. The notification is posted once with `startForeground` and updated
+  afterwards with `notify()` from the main thread, at most once per 250 ms. The activity never
+  disconnects on its own lifecycle, only on the button or the notification action.
 - Settings: `SettingsActivity` is a stock `PreferenceFragmentCompat` over the default
   SharedPreferences; `Prefs` reads them with validated fallbacks and `SettingsRules` holds the
   pure, unit-tested validation. Duplex mode, relay, codec, name and hop limit are pushed into
   the engine on every bind and resume (the settings, not the engine, are the source of truth);
   group/port/channel key are constructor arguments of the transports, so they need a reconnect.
   Sample rate is deliberately not a setting: 16 kHz is baked into the Opus path and the decimator.
-- `Packet`: 14-byte header `'P' 'T' | version=3 | codec | ttl | hops | senderId int32 | seq int32`,
-  followed by `nonce(12) | ciphertext | tag(16)` (`ChannelCrypto.seal` prepends the nonce). The
-  payload is AES-256-GCM under the channel key (`ChannelCrypto`, key by PBKDF2, random nonce per
-  packet, the header with the ttl byte zeroed as AAD). `hops` is the sender's original budget,
-  authenticated: a relay clamps ttl to min(ttl, hops, own limit). The engine charges the global
-  rate budget, opens the packet, drops a duplicate by the seen-cache, and only then charges the
-  sender's budget (every frame arrives twice on WLAN, multicast and broadcast, and again over each
-  other link; charging the copies exhausted a talker's 75/s budget after ~6 s, audible as voids);
-  anything that fails is `rejected`. `Prefs.channelKey` is generated at
-  random on first use (no default) and doubles as the Aware passphrase; `docs/SECURITY.md` has the
-  threat model.
-  Codec 0 = PCM16LE frame, 1 = Opus packet, 2 = `Hello` roster heartbeat (no audio; older
-  builds drop it as unknown, so it needed no version bump). Receivers decode per packet, so codecs can mix.
-  `seq` is per sender and per kind: audio frames count in one sequence, hellos in another.
+  Managed configuration (`res/xml/app_restrictions.xml`, `APP_RESTRICTIONS` meta-data): `Prefs`
+  reads `RestrictionsManager.applicationRestrictions` before SharedPreferences, a present and valid
+  restriction wins and is never written back to the phone, `Prefs.isManaged(key)` greys the row out
+  with "Set by your organisation", and `PttService` re-reads on `ACTION_APPLICATION_RESTRICTIONS_CHANGED`.
+  The channel key is 12-64 printable ASCII when typed in and 8-64 when already stored
+  (`SettingsRules.validChannelKey` / `validPassphrase`); the row shows `SettingsRules.maskChannelKey`,
+  never the key itself.
+- `Packet`: 18-byte header `'P' 'T' | version=4 | codec | ttl | hops | senderId int32 | seq int32 |
+  time uint32`, followed by `nonce(12) | ciphertext | tag(16)` (`ChannelCrypto.seal` prepends the
+  nonce). The payload is AES-256-GCM under the packet key (`ChannelCrypto`, PBKDF2-HMAC-SHA256 over
+  the channel key's UTF-8 bytes, 600 000 rounds, salt `CrewRadio channel key v4`, written out here
+  rather than taken from a provider because Android's own has treated non-ASCII differently between
+  releases; random nonce per packet, the header with the ttl byte zeroed as AAD). `hops` (the
+  sender's original budget) and `time` (its wall clock) are authenticated.
+  `Ingress` holds the whole receive decision in one pure, tested class, in this order: global rate
+  budget, AEAD, timestamp, seen-cache look, sender budget, seen-cache write. A packet more than
+  `Packet.REPLAY_WINDOW_S` (60 s) from our clock is `stale` and never reaches a cache — that is what
+  stops a recording being replayed. The caches (16384 audio, 2048 hello) and each sender's highest
+  number seen (256-sender LRU) belong to the process, not the session: `connect`/`disconnect` must
+  never clear them, or a replay survives a reconnect. Charging copies before the dedupe exhausted a
+  talker's budget after ~6 s once, audible as voids; keep the order.
+  Relay: a relay decrements the ttl it was given and forwards only while the packet is still within
+  its own `maxHops` of the origin (`Ingress.relayTtl`), so the roster's hop count is exact.
+  `Prefs.channelKey` is generated at random on first use (no default); the Wi-Fi Aware passphrase and
+  its discovery tag are HMACs of the packet key (`ChannelCrypto.awarePassphrase`, `awareIdTag`), never
+  the channel key itself. `docs/SECURITY.md` has the threat model.
+  Codec 0 = PCM16LE frame, 1 = Opus packet, 2 = `Hello` roster heartbeat (`ver=2 | transports | ttl |
+  versionCode uint16 | nameLen | name`; the build number is what marks an OLD BUILD on the roster).
+  Receivers decode per packet, so codecs can mix. `seq` is per sender and per kind: audio frames count
+  in one sequence, hellos in another. Names are sanitised on both sides (ISO control *and* Unicode
+  format characters stripped, whitespace collapsed).
 - `Transport` interface: `start(onPacket, onStatus)`, `send(packet, except)`, `stop()`,
   `relayWithin` (false for multicast). Stream transports frame packets with
   `StreamLink` (uint16 BE length prefix). A transport whose `start` throws is reported
@@ -223,16 +247,26 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 - `SECURITY.md` (disclosure route: GitHub private vulnerability reporting, enabled) and
   `docs/SECURITY.md` (threat model, CRA Annex I mapping). Keep both current when the wire format
   or the transports change.
-- CI: actions pinned to commit SHAs (Dependabot bumps them), CodeQL on push/PR/weekly, the
-  `release` job attaches an SBOM (`gradlew sbom`, CycloneDX 1.5 from the release runtime
-  classpath, no plugin) plus a SHA-256 and a build-provenance attestation to every Release.
+- CI: actions pinned to commit SHAs (Dependabot bumps them), CodeQL over Kotlin, the plugin's
+  JavaScript and the workflows on push/PR/weekly, Android Lint as a gate (`lint.abortOnError`), the
+  `release` job attaches an SBOM (`gradlew sbom`, CycloneDX 1.5 from the release runtime classpath,
+  no plugin) plus a SHA-256, with a build-provenance attestation over all three, and creates the
+  Release with `gh` under the workflow token. The signing secrets are scoped to the two steps that
+  need them and the decoded keystore is deleted before anything else runs.
+- Downloads are verified: `distributionSha256Sum` on the wrapper and `gradle/verification-metadata.xml`
+  (sha256) for every dependency. **Any dependency change means regenerating that file** — the recipe
+  is in `.github/dependabot.yml`, and a new AGP needs its Windows/macOS `aapt2` sums added by hand.
 - Engine: `Packet.MAX_SIZE` drops oversized packets unread; `RateLimiter` (pure, tested) charges a
-  global bucket (400/s, burst 800) before the packet is opened, and a per-sender one (75/s, burst
-  150, at most 128 senders, idle ones swept) after the AEAD check and the seen-cache look, so only
-  authenticated, first-copy packets cost a sender anything and a sender over budget writes nothing
-  into the cache. Rejections count as `rejected` on the Status screen.
+  global bucket (5000/s, burst 2000 — a figure the CPU can actually verify, so a keyless flood cannot
+  starve real traffic) before the packet is opened, a small junk bucket (200/s, burst 400) only when
+  the AEAD *fails*, and a per-sender one (75/s, burst 150, at most 128 senders, idle ones swept) after
+  the AEAD check and the seen-cache look, so only authenticated, first-copy packets cost a sender
+  anything and a sender over budget writes nothing into the cache. Rejections count as `rejected` and
+  clock-mismatched packets as `stale` on the Status screen.
 - Release job: fails closed without the keystore secrets and verifies the signer certificate against
   the `CREWRADIO_CERT_SHA256` repository variable before attesting or publishing.
+- The channel key is excluded from cloud backup and device transfer (`res/xml/data_extraction_rules.xml`,
+  `res/xml/backup_rules.xml`); `docs/SECURITY.md` says so.
 
 ## Documentation
 - `README.md` is written for the crew (install, quick start, talk keys, headsets, settings);
@@ -243,6 +277,14 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 ## Conventions
 - Keep transports symmetrical (every phone is both server and client) — no
   designated master, the app must survive any phone dropping out.
+- Every user-visible string lives in `res/values/strings.xml` or `arrays.xml` — nothing in Kotlin,
+  layouts or `preferences.xml` — so the app can be translated in one pass. `uppercase(Locale.getDefault())`
+  for text the crew typed, `Locale.ROOT` for fixed labels.
+- Screens are edge to edge (targetSdk 36 enforces it): `WindowCompat.setDecorFitsSystemWindows(window, false)`
+  plus `View.padForWindowInsets()` on the root; Status and Settings carry a `MaterialToolbar` in the
+  layout, not a window action bar. No `statusBarColor`/`navigationBarColor`.
+- `lintRelease` is a CI gate with `abortOnError`: no errors. Suppress an issue only inline, with a
+  comment saying why.
 - Anything blocking (sockets, AudioTrack.write) lives on its own named thread
   (`ptt-*`); never on the main thread.
 - Transport threads go through `transport/transportThread`: an uncaught throwable on a
