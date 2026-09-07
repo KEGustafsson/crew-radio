@@ -332,7 +332,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        ViewCompat.setAccessibilityLiveRegion(pttButton, ViewCompat.ACCESSIBILITY_LIVE_REGION_POLITE)
+        // The platform property, not ViewCompat: that wrapper is deprecated, and this has been on
+        // View since API 19, well below our minSdk. setStateDescription below still needs the
+        // compat call, since the platform gained that one only in API 30.
+        pttButton.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         refreshPttLabel()
     }
 
