@@ -321,6 +321,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        ViewCompat.setAccessibilityLiveRegion(pttButton, ViewCompat.ACCESSIBILITY_LIVE_REGION_POLITE)
         refreshPttLabel()
     }
 
@@ -470,11 +471,11 @@ class MainActivity : AppCompatActivity() {
             pttButton, AccessibilityActionCompat.ACTION_CLICK,
             getString(if (live) R.string.a11y_talk_stop else R.string.a11y_talk_start)
         ) { v, _ -> v.performClick() }
+        // The disc is a polite live region (set in onCreate), so a changed state description is
+        // spoken as it happens and is read again whenever the disc is focused. That replaces
+        // announceForAccessibility, which is deprecated and says nothing on focus.
         if (announcedLive != live) {
-            if (announcedLive != null) {
-                @Suppress("DEPRECATION")   // the compat announcement API is API 34+; this still reaches TalkBack
-                pttButton.announceForAccessibility(getString(if (live) R.string.a11y_on_air else R.string.a11y_listening))
-            }
+            ViewCompat.setStateDescription(pttButton, getString(if (live) R.string.a11y_on_air else R.string.a11y_listening))
             announcedLive = live
         }
     }
