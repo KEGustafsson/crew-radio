@@ -34,9 +34,12 @@ class OpusEncoder(private val onPacket: (ByteArray) -> Unit) {
                 fmt.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
                 codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             } catch (_: Exception) {
-                // The AOSP encoder ignores a mode it does not do; another may refuse it. Same format, no mode.
+                // The AOSP encoder ignores a mode it does not do; another may refuse it. Same format,
+                // neither the mode nor the complexity: both are requests, and the retry has to be the
+                // plain format or a codec that refused the complexity would fail twice and drop us to PCM.
                 codec.reset()
                 fmt.removeKey(MediaFormat.KEY_BITRATE_MODE)
+                fmt.removeKey(MediaFormat.KEY_COMPLEXITY)
                 codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             }
             codec.start()

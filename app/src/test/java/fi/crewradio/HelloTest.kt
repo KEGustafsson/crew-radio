@@ -67,6 +67,13 @@ class HelloTest {
         assertNull(Hello.decode(byteArrayOf(2, 0, 4, 0, 0, 1, -1), 0, 7))            // 0xFF is never valid UTF-8
         val tooLong = byteArrayOf(2, 0, 4, 0, 0, 33) + ByteArray(33) { 65 }         // 33 > MAX_NAME_BYTES
         assertNull(Hello.decode(tooLong, 0, tooLong.size))
+
+        // Off the array rather than off the contract: still null, never an exception.
+        val ok = byteArrayOf(2, 0, 4, 0, 0, 1, 65)
+        assertNull("offset past the end", Hello.decode(ok, 99, ok.size))
+        assertNull("negative offset", Hello.decode(ok, -1, ok.size))
+        assertNull("length past the end", Hello.decode(ok, 0, ok.size + 8))
+        assertNull("offset plus length past the end", Hello.decode(ok, 2, ok.size))
     }
 
     @Test

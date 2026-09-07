@@ -45,7 +45,10 @@ class Hello(val name: String, val transports: Int, val ttl: Int, val versionCode
          * goes through [sanitise] so it stays one plain line on screen.
          */
         fun decode(p: ByteArray, offset: Int, length: Int): Hello? {
-            if (length < HEAD || p[offset].toInt() != VERSION) return null
+            // The range first, before any index: a bad offset or a length past the end of the array
+            // would throw out of here instead of returning null, and this parser promises null.
+            if (offset < 0 || length < HEAD || length > p.size - offset) return null
+            if (p[offset].toInt() != VERSION) return null
             val nameLen = p[offset + 5].toInt() and 0xFF
             if (nameLen > MAX_NAME_BYTES || length != HEAD + nameLen) return null
             val name = try {

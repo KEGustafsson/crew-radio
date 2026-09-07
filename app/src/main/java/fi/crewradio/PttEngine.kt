@@ -147,7 +147,9 @@ class PttEngine(
     @Volatile var headsetVox = false
         set(value) { if (field != value) { field = value; syncMonitor() } }
 
-    private var monitor: AudioCapture? = null
+    // Written under monitorLock, but read without it by the audio-control thread (openTalk) and by
+    // the main thread (voiceArmed, micPeakNow): volatile is what gives those reads the writer's edge.
+    @Volatile private var monitor: AudioCapture? = null
     private val gate = MicGate()
     private val preroll = ArrayDeque<ByteArray>()
     @Volatile private var gateTalking = false      // the gate keyed the mic, so the gate un-keys it

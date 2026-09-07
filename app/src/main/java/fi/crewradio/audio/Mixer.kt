@@ -101,6 +101,7 @@ class Mixer(
     /** What [start] does short of the thread: counters, queues and the track. The tests drive [tick] themselves. */
     internal fun open() {
         running = true
+        streams.clear()          // a session starts with nothing carried over: see push()
         concealedFrames.set(0)
         underrunFrames.set(0)
         loops = 0
@@ -241,8 +242,15 @@ class Mixer(
         try { Thread.sleep(AudioConfig.FRAME_MS.toLong()) } catch (_: InterruptedException) {}
     }
 
+    /**
+     * A frame for [senderId]'s queue. Refused while stopped: a transport thread already inside
+     * onPacket can reach here after [stop], and a stream left behind that way would be prefilled
+     * and played at the start of the next session - a fragment of the last one. The check races
+     * [stop] by design, which is why [open] clears the streams as well; between the two, nothing
+     * from a finished session survives into the next.
+     */
     fun push(senderId: Int, data: ByteArray, offset: Int, length: Int) {
-        if (length != AudioConfig.FRAME_BYTES) return
+        if (!running || length != AudioConfig.FRAME_BYTES) return
         val now = clock()
         val st = streams.getOrPut(senderId) { Stream(now) }
         synchronized(st) {
@@ -254,6 +262,7 @@ class Mixer(
 
     /** Reserves [count] slots for frames the engine knows were lost, so timing holds and each is concealed in turn. */
     fun conceal(senderId: Int, count: Int) {
+        if (!running) return                          // as in push(): nothing is queued for a stopped mixer
         val st = streams[senderId] ?: return          // nothing heard from them yet: nothing to repeat either
         synchronized(st) {
             repeat(count.coerceAtMost(Conceal.MAX_FRAMES)) { st.frames.addLast(HOLE) }

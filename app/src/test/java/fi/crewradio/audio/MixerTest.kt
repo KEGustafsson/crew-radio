@@ -220,4 +220,30 @@ class MixerTest {
         repeat(50) { slot() }
         assertEquals(5L, mixer.underrunFrames.get())
     }
+
+    /**
+     * A transport thread already inside onPacket can reach push() after the session ended. The
+     * frame must not be waiting in the queue when the next session opens, or the first thing the
+     * crew hears is a fragment of the last one.
+     */
+    @Test
+    fun aFramePushedAfterStopIsNotPlayedByTheNextSession() {
+        push(1, 1000)
+        mixer.stop()
+        push(1, 2000)                    // the late copy, from a thread that had already started
+        assertEquals("a stopped mixer queues nothing", 0, mixer.streamCount())
+
+        mixer.open()
+        push(1, 3000); push(1, 4000)     // a full prefill of this session's own audio
+        assertEquals("the new session starts with its own first frame", 3000, slot())
+        assertEquals(4000, slot())
+    }
+
+    @Test
+    fun concealIsIgnoredWhileStopped() {
+        push(1, 1000); push(1, 2000)
+        mixer.stop()
+        mixer.conceal(1, 3)
+        assertEquals(0, mixer.streamCount())
+    }
 }
