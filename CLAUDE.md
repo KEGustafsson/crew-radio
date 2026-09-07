@@ -261,7 +261,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   starve real traffic) before the packet is opened, a small junk bucket (200/s, burst 400) only when
   the AEAD *fails*, and a per-sender one (75/s, burst 150, at most 128 senders, idle ones swept) after
   the AEAD check and the seen-cache look, so only authenticated, first-copy packets cost a sender
-  anything and a sender over budget writes nothing into the cache. Rejections count as `rejected` and
+  anything and a sender over budget writes nothing into the cache. That look, the charge and the
+  mark are **one step under the cache's lock** (`Ingress.admit`): apart, the same frame arriving on
+  two transports at once passes the look on both threads and is charged twice. Rejections count as `rejected` and
   clock-mismatched packets as `stale` on the Status screen.
 - Release job: fails closed without the keystore secrets and verifies the signer certificate against
   the `CREWRADIO_CERT_SHA256` repository variable before attesting or publishing.

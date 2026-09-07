@@ -75,11 +75,12 @@ Codec 0 is a PCM16 frame, 1 an Opus packet, 2 a `Hello` (roster heartbeat: name,
 flags, hop budget, build number). Audio frames and hellos number themselves independently per
 sender. The payload is sealed by `ChannelCrypto` (AES‑256‑GCM, random nonce per packet, key
 derived from the channel key by PBKDF2 over its UTF‑8 bytes, 600 000 rounds) with the header
-minus the ttl byte as associated data; `hops` is the sender's original budget and `time` its
+as associated data — all 18 bytes, with the ttl byte zeroed; `hops` is the sender's original budget and `time` its
 clock, both authenticated, so neither a relay nor a recorder can change them.
 
 `Ingress` makes every admission decision in one testable place, in this order: the global rate
-budget, the AEAD, the timestamp, the seen-cache, then the sender's own budget. A packet whose
+budget, the AEAD, the timestamp, the seen-cache, then the sender's own budget. The last three are
+taken together under one lock, so a copy racing its twin cannot be charged as a first sighting. A packet whose
 clock is more than a minute from ours is dropped as stale before any cache is touched, which is
 what stops a recording being replayed later; the caches are sized for that window and, together
 with each sender's highest number seen, they live as long as the process rather than the session,

@@ -217,16 +217,18 @@ Gradle distribution in `gradle/wrapper/gradle-wrapper.properties`, every depende
 request included) regenerate that file, as `.github/dependabot.yml` describes, and commit it with
 the change. Release builds are shrunk by R8 with names kept, so a crash report from a phone reads
 without a mapping file. Pure-Kotlin unit tests: `./gradlew testDebugUnitTest`; Android Lint
-(`./gradlew lintRelease`) has to come back clean, as it does in CI.
+(`./gradlew lintRelease`) must pass without errors, as it does in CI; warnings are reported, not fatal.
 Real testing needs two or more phones; the emulator has neither Bluetooth nor Wi‑Fi Aware.
 
 The version is `1.<number of commits on main>`, set by the build from git; every merge to `main`
 builds a signed APK and publishes it on the Releases page. Pull requests get the same APK as a
 workflow artifact, signed with the debug key (the release key is only used on `main`).
-`assembleRelease` signs with the crew's release key when the `CREWRADIO_KEYSTORE`,
-`CREWRADIO_KEYSTORE_PASSWORD`, `CREWRADIO_KEY_ALIAS` and `CREWRADIO_KEY_PASSWORD` variables are
-set and with the debug key otherwise; if `CREWRADIO_KEYSTORE` is set but the file or the password
-is missing, the build stops rather than quietly falling back. Android will not upgrade a
+`assembleRelease` signs with the crew's release key when it can find one: the keystore named by
+`CREWRADIO_KEYSTORE`, or `app/release.keystore` when that variable is unset, together with
+`CREWRADIO_KEYSTORE_PASSWORD`. `CREWRADIO_KEY_ALIAS` defaults to `crewradio` and
+`CREWRADIO_KEY_PASSWORD` to the store password. With no keystore it signs with the debug key; but
+if `CREWRADIO_KEYSTORE` is set and the file or the password is missing, the build stops rather
+than quietly falling back. Android will not upgrade a
 debug-signed install with a release-signed one in place, or the reverse: uninstall first when
 switching — and note the channel key down before you do, because it is the one thing on the phone
 worth keeping and it is deliberately left out of cloud backup and of device-to-device transfer.
