@@ -1,8 +1,11 @@
 name: Build
 
-# Every push and pull request: the `build` job runs the unit tests and a release-type APK signed
-# with the debug key, uploaded as a workflow artifact. It has a read-only token, no persisted
-# credentials and no secrets, so pull-request Gradle code can reach nothing sensitive.
+# Every push and pull request: the `build` job runs the unit tests, Android Lint and a
+# release-type APK signed with the debug key, uploaded as a workflow artifact. It has a read-only
+# token, no persisted credentials and no secrets, so pull-request Gradle code can reach nothing
+# sensitive. Every dependency the build downloads is checked against
+# gradle/verification-metadata.xml, and the Gradle distribution against the checksum in
+# gradle/wrapper/gradle-wrapper.properties.
 #
 # Every push to main: the `release` job builds again with the crew's release key from the
 # repository secrets and attaches CrewRadio-<version>.apk to a GitHub Release tagged v<version>.
@@ -10,7 +13,10 @@ name: Build
 # Secrets: CREWRADIO_KEYSTORE_BASE64 (the .keystore file, base64), CREWRADIO_KEYSTORE_PASSWORD,
 # CREWRADIO_KEY_ALIAS, CREWRADIO_KEY_PASSWORD; repository variable CREWRADIO_CERT_SHA256 (the
 # release certificate's SHA-256, checked before anything is published). Without them the
-# release job fails; it never publishes a debug-signed APK.
+# release job fails; it never publishes a debug-signed APK. The secrets are given only to the
+# two steps that need them (decode, build), the decoded keystore is deleted right after the
+# build, and the Release is created with `gh` and the workflow's own token: no third-party
+# action runs with the secrets in its environment or with the write token.
 
 on:
   push:
@@ -23,7 +29,9 @@ permissions:
 
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push replaces a pull request's run in progress. On main every push runs to the end:
+  # a cancelled release would leave a versionCode with no Release and no attestation.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -46,8 +54,9 @@ jobs:
       - name: Unit tests and APK (debug-signed)
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon testDebugUnitTest assembleRelease
-          VERSION=$(./gradlew --no-daemon -q printVersion | tail -1)
+          ./gradlew --no-daemon testDebugUnitTest assembleRelease printVersion
+          VERSION=$(cat app/build/version.txt)
+          echo "$VERSION" | grep -Eq '^1\.[0-9]+$' || { echo "::error::app/build/version.txt holds '$VERSION', not a version"; exit 1; }
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           cp app/build/outputs/apk/release/app-release.apk "CrewRadio-$VERSION-debugsigned.apk"
 
@@ -64,19 +73,27 @@ jobs:
           name: CrewRadio-${{ env.VERSION }}-debugsigned
           path: CrewRadio-${{ env.VERSION }}-debugsigned.apk
 
+      # After the APK, so a Lint error still leaves the build's APK to test with. An error fails
+      # the job (lint.abortOnError in app/build.gradle.kts); warnings are in the report.
+      - name: Android Lint
+        run: ./gradlew --no-daemon lintRelease
+
+      - name: Lint report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-release.html
+          if-no-files-found: ignore
+
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write        # the Release and its tag (gh, below)
       id-token: write        # build provenance attestation
       attestations: write
-    env:
-      KEYSTORE_BASE64: ${{ secrets.CREWRADIO_KEYSTORE_BASE64 }}
-      CREWRADIO_KEYSTORE_PASSWORD: ${{ secrets.CREWRADIO_KEYSTORE_PASSWORD }}
-      CREWRADIO_KEY_ALIAS: ${{ secrets.CREWRADIO_KEY_ALIAS }}
-      CREWRADIO_KEY_PASSWORD: ${{ secrets.CREWRADIO_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,6 +108,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       - name: Release keystore from secrets
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CREWRADIO_KEYSTORE_BASE64 }}
+          CREWRADIO_KEYSTORE_PASSWORD: ${{ secrets.CREWRADIO_KEYSTORE_PASSWORD }}
         run: |
           # Fail closed: a Release is never published with the debug key.
           if [ -z "$KEYSTORE_BASE64" ] || [ -z "$CREWRADIO_KEYSTORE_PASSWORD" ]; then
@@ -98,17 +118,26 @@ jobs:
             exit 1
           fi
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          echo "CREWRADIO_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
 
       - name: Signed release APK and SBOM
+        env:
+          CREWRADIO_KEYSTORE: ${{ runner.temp }}/release.keystore
+          CREWRADIO_KEYSTORE_PASSWORD: ${{ secrets.CREWRADIO_KEYSTORE_PASSWORD }}
+          CREWRADIO_KEY_ALIAS: ${{ secrets.CREWRADIO_KEY_ALIAS }}
+          CREWRADIO_KEY_PASSWORD: ${{ secrets.CREWRADIO_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleRelease sbom
-          VERSION=$(./gradlew --no-daemon -q printVersion | tail -1)
+          ./gradlew --no-daemon assembleRelease sbom printVersion
+          VERSION=$(cat app/build/version.txt)
+          echo "$VERSION" | grep -Eq '^1\.[0-9]+$' || { echo "::error::app/build/version.txt holds '$VERSION', not a version"; exit 1; }
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           cp app/build/outputs/apk/release/app-release.apk "CrewRadio-$VERSION.apk"
           cp app/build/reports/bom.json "CrewRadio-$VERSION.sbom.cdx.json"
           sha256sum "CrewRadio-$VERSION.apk" > "CrewRadio-$VERSION.apk.sha256"
+
+      - name: Remove the keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore"
 
       - name: Verify the APK is signed with the release certificate
         env:
@@ -129,20 +158,28 @@ jobs:
       - name: Build provenance attestation
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: CrewRadio-${{ env.VERSION }}.apk
-
-      - name: GitHub Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          tag_name: v${{ env.VERSION }}
-          name: Crew Radio ${{ env.VERSION }}
-          body: |
-            Built from ${{ github.sha }}. Every phone on the crew must run the same version.
-            Install: open this page on the phone, download the APK, allow the install.
-            The .sha256 file is the APK's checksum, the .sbom.cdx.json its software bill of
-            materials (CycloneDX), and the build carries a signed provenance attestation
-            (`gh attestation verify CrewRadio-<version>.apk --repo KEGustafsson/android-push-to-talk`).
-          files: |
+          subject-path: |
             CrewRadio-${{ env.VERSION }}.apk
             CrewRadio-${{ env.VERSION }}.apk.sha256
             CrewRadio-${{ env.VERSION }}.sbom.cdx.json
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          cat > release-notes.md <<EOF
+          Built from $COMMIT. Every phone on the crew must run the same version.
+          Install: open this page on the phone, download the APK, allow the install.
+          The .sha256 file is the APK's checksum, the .sbom.cdx.json its software bill of
+          materials (CycloneDX), and all three files carry a signed provenance attestation
+          (\`gh attestation verify CrewRadio-<version>.apk --repo KEGustafsson/crew-radio\`).
+          EOF
+          gh release create "v$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$COMMIT" \
+            --title "Crew Radio $VERSION" \
+            --notes-file release-notes.md \
+            "CrewRadio-$VERSION.apk" \
+            "CrewRadio-$VERSION.apk.sha256" \
+            "CrewRadio-$VERSION.sbom.cdx.json"

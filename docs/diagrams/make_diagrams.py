@@ -185,7 +185,7 @@ def status_screen(p, x, y):
     n.append(rect(p + "c3", x + 20, y + 591, 320, 176, arc=10))
     n.append(txt(p + "c3t", "NETWORK", x + 36, y + 601, 140, 20, 11, CYAN, spacing=2))
     n.append(txt(p + "c3r", "BT + AWARE", x + 200, y + 601, 126, 20, 11, MUTED, align="right", spacing=2))
-    rows = [("WLAN0", "192.168.0.35/24"), ("AWARE_DATA0", "fe80::cb:b7ff:fe6c:de48"), ("MULTICAST", "239.255.42.1:47474"), ("BLUETOOTH", "Mate's phone")]
+    rows = [("WLAN0", "192.168.0.35/24"), ("AWARE_DATA0", "fe80::1234:5678:9abc:def0"), ("MULTICAST", "239.255.42.1:47474"), ("BLUETOOTH", "Mate's phone")]
     for i, (k, v) in enumerate(rows):
         ry = y + 629 + i * 30
         n.append(txt(p + f"nk{i}", k, x + 36, ry, 120, 22, 11, MUTED, spacing=1))
