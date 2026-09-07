@@ -191,4 +191,32 @@ class IngressTest {
         val r = i.admit(header(seq = 1, ttl = 3, hops = 4), 0, now, 4, opens) as Ingress.Result.Accept
         assertEquals(2, r.relayTtl)
     }
+
+    /**
+     * The same frame arriving on two transports at once must cost its sender one token, not two:
+     * the look, the charge and the mark are one step. With them apart both threads passed the look
+     * before either marked, and the copy was charged like a first sighting.
+     */
+    @Test
+    fun aCopyRacingItsTwinIsChargedOnce() {
+        repeat(200) {
+            // A budget of exactly one token: a second charge would leave nothing for the next frame.
+            val limiter = RateLimiter(perSecond = 0.0, burst = 1.0)
+            val ingress = Ingress(limiter = limiter)
+            val results = java.util.Collections.synchronizedList(mutableListOf<Ingress.Result>())
+            val start = java.util.concurrent.CountDownLatch(1)
+            val threads = (1..4).map {
+                Thread {
+                    start.await()
+                    results.add(ingress.admit(header(), 0L, now, 4, opens))
+                }.also { t -> t.start() }
+            }
+            start.countDown()
+            threads.forEach { it.join(2_000) }
+            assertEquals("one thread accepts the frame", 1, results.count { it.accepted() })
+            assertEquals("the others see a duplicate", 3, results.count { it is Ingress.Result.Duplicate })
+            // The one token went to the frame, so a different sender's frame still has the budget.
+            assertTrue("a copy must not have spent the budget", limiter.allowSender(2, 0L))
+        }
+    }
 }

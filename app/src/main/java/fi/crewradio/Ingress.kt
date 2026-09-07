@@ -72,9 +72,17 @@ class Ingress(
         if (!limiter.allowGlobal(nowMs)) return Result.Rejected(Why.GLOBAL_BUDGET)
         val plain = open() ?: return Result.Rejected(if (limiter.allowJunk(nowMs)) Why.UNREADABLE else Why.JUNK_FLOOD)
         if (!Packet.isFresh(h.time, nowS)) return Result.Stale
-        if (isSeen(h)) return Result.Duplicate
-        if (!limiter.allowSender(h.senderId, nowMs)) return Result.Rejected(Why.SENDER_BUDGET)
-        if (!markSeen(h)) return Result.Duplicate                   // lost the race to its twin
+        // Look, charge and mark under one lock. Apart they are three steps, and the same frame
+        // arriving on two transports at once passes the look on both threads and costs its sender
+        // two tokens before either marks it — the very charging-for-copies that emptied a talker's
+        // budget in the field. A sender over its budget still writes nothing into the cache.
+        val cache = cacheFor(h)
+        val k = key(h)
+        synchronized(cache) {
+            if (cache.containsKey(k)) return Result.Duplicate
+            if (!limiter.allowSender(h.senderId, nowMs)) return Result.Rejected(Why.SENDER_BUDGET)
+            cache.put(k, true)
+        }
         return Result.Accept(plain, relayTtl(h, maxHops))
     }
 
@@ -94,16 +102,6 @@ class Ingress(
 
     private fun key(h: Packet.Header) = (h.senderId.toLong() shl 32) or (h.seq.toLong() and 0xFFFF_FFFFL)
     private fun cacheFor(h: Packet.Header) = if (h.codec == Packet.Codec.HELLO) seenHellos else seen
-
-    private fun isSeen(h: Packet.Header): Boolean {
-        val cache = cacheFor(h)
-        synchronized(cache) { return cache.containsKey(key(h)) }
-    }
-
-    private fun markSeen(h: Packet.Header): Boolean {
-        val cache = cacheFor(h)
-        synchronized(cache) { return cache.put(key(h), true) == null }
-    }
 
     companion object {
         /** Audio seen-cache entries: over five minutes of one talker, or the replay window for several. */
