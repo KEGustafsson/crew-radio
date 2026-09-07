@@ -1,7 +1,6 @@
 package fi.crewradio
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.ComponentName
@@ -12,9 +11,12 @@ import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.location.LocationManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.Settings
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
@@ -23,23 +25,48 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.accessibility.AccessibilityManager
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat.AccessibilityActionCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.slider.Slider
+import com.google.android.material.snackbar.Snackbar
 import fi.crewradio.audio.CallVolume
 import fi.crewradio.transport.BluetoothTransport
 import fi.crewradio.transport.LanTransport
 import fi.crewradio.transport.Transport
 import fi.crewradio.transport.WifiAwareTransport
+import java.util.Locale
+
+/**
+ * Pads a root view with the window insets, on top of whatever padding the layout gave it.
+ * From targetSdk 36 the system bars are always drawn over the app, so every screen has to make
+ * room for them itself; the base padding is read once, before the first inset arrives.
+ */
+internal fun View.padForWindowInsets() {
+    val l = paddingLeft
+    val t = paddingTop
+    val r = paddingRight
+    val b = paddingBottom
+    ViewCompat.setOnApplyWindowInsetsListener(this) { v, insets ->
+        val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+        v.setPadding(l + bars.left, t + bars.top, r + bars.right, b + bars.bottom)
+        insets
+    }
+}
 
 /**
  * Thin UI over [PttService]. The activity binds while visible and mirrors the
@@ -51,6 +78,11 @@ import fi.crewradio.transport.WifiAwareTransport
  * volume (an in-app gain with a mute), and the talk disc taking every pixel that is left. Settings
  * is behind the menu. Everything the user touches is at least 44 dp; the disc is
  * about 90% of the screen width.
+ *
+ * Permissions are asked for at the moment they are needed — the mic and, for the transports that
+ * are switched on, Bluetooth and nearby devices when Connect is pressed or a tile is tapped — and
+ * the connect continues by itself once they are granted. A permission turned off for good is said
+ * out loud, with a way into the app's settings.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -58,8 +90,10 @@ class MainActivity : AppCompatActivity() {
     private val engine: PttEngine? get() = service?.engine
 
     private lateinit var prefs: Prefs
+    private lateinit var root: View
     private lateinit var crewName: TextView
     private lateinit var channelLabel: TextView
+    private lateinit var peersBox: View
     private lateinit var peersIcon: ImageView
     private lateinit var peerCount: TextView
     private lateinit var pttButton: MaterialButton
@@ -81,9 +115,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tiles: List<Tile>
     private var pairedDevices: List<BluetoothDevice> = emptyList()
     private var btPeerIndex = 0                        // 0 = listen only, else pairedDevices[index - 1]
+    /** No Wi-Fi Aware radio on this phone: the tile is dead and says why. */
+    private var hasAware = false
 
     /** One transport tile: a view, its icon and label, and whether it is on. */
-    private inner class Tile(val key: String, val root: LinearLayout, val icon: ImageView, val label: TextView) {
+    private inner class Tile(
+        val key: String,
+        val root: LinearLayout,
+        val icon: ImageView,
+        val label: TextView,
+        val descriptionRes: Int
+    ) {
+        var available = true
         var on = false
             set(value) {
                 field = value
@@ -91,6 +134,11 @@ class MainActivity : AppCompatActivity() {
                 val tint = ContextCompat.getColor(this@MainActivity, if (value) R.color.primary else R.color.text_dim)
                 icon.imageTintList = ColorStateList.valueOf(tint)
                 label.setTextColor(tint)
+                root.contentDescription = getString(descriptionRes)
+                ViewCompat.setStateDescription(
+                    root,
+                    getString(if (!available) R.string.a11y_unavailable else if (value) R.string.a11y_on else R.string.a11y_off)
+                )
             }
     }
 
@@ -112,15 +160,40 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Everything the user is asked for, in one dialog run. What comes back decides what happens
+     * next: a granted set continues the connect that asked for it, a refusal that can be asked
+     * again is one line, and a refusal for good is one line with a way into the app's settings.
+     */
+    private val permissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
+            val wanted = pendingConnect
+            pendingConnect = false
+            val missing = requiredPermissions().filter { !granted(it) }
+            when {
+                missing.isEmpty() -> if (wanted) service?.let { connect(it) } else refreshPeer()
+                missing.any { !ActivityCompat.shouldShowRequestPermissionRationale(this, it) } ->
+                    snack(deniedMessage(missing.first()), R.string.perm_settings) { openAppSettings() }
+                else -> snack(getString(R.string.perm_needed), null) {}
+            }
+            syncUi()
+        }
+
+    /** True while a permission run is on its way back to a Connect the user already pressed. */
+    private var pendingConnect = false
+
     /** Wires the widgets; everything that needs the engine goes through [service], which arrives on bind. */
-    @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_main)
 
         prefs = Prefs(this)
+        root = findViewById(R.id.root)
+        root.padForWindowInsets()
         crewName = findViewById(R.id.crewName)
         channelLabel = findViewById(R.id.channelLabel)
+        peersBox = findViewById(R.id.peersBox)
         peersIcon = findViewById(R.id.peersIcon)
         peerCount = findViewById(R.id.peerCount)
         pttButton = findViewById(R.id.pttButton)
@@ -132,13 +205,20 @@ class MainActivity : AppCompatActivity() {
         channelSwitch = findViewById(R.id.channelSwitch)
         peerButton = findViewById(R.id.peerButton)
         menuButton = findViewById(R.id.menuButton)
+        hasAware = packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
         tiles = listOf(
-            Tile(Prefs.KEY_USE_LAN, findViewById(R.id.tileLan), findViewById(R.id.tileLanIcon), findViewById(R.id.tileLanLabel)),
-            Tile(Prefs.KEY_USE_BT, findViewById(R.id.tileBt), findViewById(R.id.tileBtIcon), findViewById(R.id.tileBtLabel)),
-            Tile(Prefs.KEY_USE_AWARE, findViewById(R.id.tileAware), findViewById(R.id.tileAwareIcon), findViewById(R.id.tileAwareLabel))
+            Tile(Prefs.KEY_USE_LAN, findViewById(R.id.tileLan), findViewById(R.id.tileLanIcon), findViewById(R.id.tileLanLabel), R.string.a11y_tile_lan),
+            Tile(Prefs.KEY_USE_BT, findViewById(R.id.tileBt), findViewById(R.id.tileBtIcon), findViewById(R.id.tileBtLabel), R.string.a11y_tile_bt),
+            Tile(Prefs.KEY_USE_AWARE, findViewById(R.id.tileAware), findViewById(R.id.tileAwareIcon), findViewById(R.id.tileAwareLabel), R.string.a11y_tile_aware)
         )
+        peerButton.contentDescription = getString(R.string.a11y_peer)
+        // The channel row is one thing to a screen reader, not a row and a switch that do the same.
+        channelSwitch.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        channelState.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        channelRow.contentDescription = getString(R.string.a11y_channel)
 
-        // The disc is a circle as big as its area allows: the smaller of width and height.
+        // The disc is a circle as big as its area allows: the smaller of width and height, so it
+        // stays a disc in landscape too.
         findViewById<View>(R.id.talkArea).addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ ->
             val size = minOf(r - l, b - t)
             val lp = pttButton.layoutParams
@@ -164,13 +244,19 @@ class MainActivity : AppCompatActivity() {
 
         // Every choice on this screen is remembered, so on the boat it is open the app, press Connect.
         for (tile in tiles) {
-            tile.on = prefs.bool(tile.key, tile.key == Prefs.KEY_USE_LAN)
+            tile.available = tile.key != Prefs.KEY_USE_AWARE || hasAware
+            tile.on = tile.available && prefs.bool(tile.key, tile.key == Prefs.KEY_USE_LAN)
+            tile.root.isEnabled = tile.available
+            tile.root.alpha = if (tile.available) 1f else 0.4f
             tile.root.setOnClickListener {
+                if (!tile.available) { snack(getString(R.string.aware_unavailable), null) {}; return@setOnClickListener }
                 if (engine?.isConnected == true) return@setOnClickListener   // takes effect on the next Connect anyway
                 tile.on = !tile.on
                 prefs.put(tile.key, tile.on)
-                if (tile.on && !hasPermissions()) requestPermissions()       // ask for what this transport needs, now
+                // Ask for what this transport needs, now, rather than at Connect on the water.
+                if (tile.on) askPermissions(thenConnect = false)
                 if (tile.key == Prefs.KEY_USE_BT) refreshPeer()
+                if (tile.key == Prefs.KEY_USE_AWARE && tile.on) warnIfLocationOff()
             }
         }
         peerButton.setOnClickListener { v -> if (engine?.isConnected != true) showPeerMenu(v) }
@@ -182,7 +268,7 @@ class MainActivity : AppCompatActivity() {
             val s = service
             when {
                 s == null -> syncUi()                                  // not bound yet; snap back
-                on && !s.engine.isConnected -> if (hasPermissions()) connect(s) else { requestPermissions(); syncUi() }
+                on && !s.engine.isConnected -> if (hasPermissions()) connect(s) else { askPermissions(thenConnect = true); syncUi() }
                 !on && s.engine.isConnected -> { s.disconnect(); syncUi() }
             }
         }
@@ -204,35 +290,37 @@ class MainActivity : AppCompatActivity() {
             syncUi()
         }
 
+        // Half duplex is hold-to-talk, which a screen reader's double tap cannot express: with touch
+        // exploration on the disc becomes a latch and the click handler below does the toggling.
         pttButton.setOnTouchListener { v, ev ->
             val e = engine ?: return@setOnTouchListener false
-            if (e.mode == PttEngine.Mode.HALF_DUPLEX) {
-                when (ev.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                        fingerDown = true
-                        e.startTalking()
-                        refreshPttLabel()
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        fingerDown = false
-                        e.stopTalking()
-                        refreshPttLabel()
-                    }
+            if (touchExploration() || e.mode != PttEngine.Mode.HALF_DUPLEX) return@setOnTouchListener false
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    fingerDown = true
+                    e.startTalking()
+                    refreshPttLabel()
                 }
-                true
-            } else false
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    fingerDown = false
+                    e.stopTalking()
+                    v.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                    v.performClick()                    // the click itself does nothing here; a11y wants it
+                    refreshPttLabel()
+                }
+            }
+            true
         }
         pttButton.setOnClickListener {
             val e = engine ?: return@setOnClickListener
-            if (e.mode == PttEngine.Mode.FULL_DUPLEX) {
+            if (e.mode == PttEngine.Mode.FULL_DUPLEX || touchExploration()) {
                 it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                 e.toggleTalking()
                 refreshPttLabel()
             }
         }
 
-        requestPermissions()
         refreshPttLabel()
     }
 
@@ -247,7 +335,7 @@ class MainActivity : AppCompatActivity() {
     /** Coming back from the settings screen: push the live-applicable settings into the engine. */
     override fun onResume() {
         super.onResume()
-        crewName.text = prefs.crewName.uppercase()
+        crewName.text = prefs.crewName.uppercase(Locale.getDefault())
         engine?.let { applySettings(it) }
         refreshPttLabel()
     }
@@ -264,26 +352,44 @@ class MainActivity : AppCompatActivity() {
 
     private fun tileOn(key: String) = tiles.first { it.key == key }.on
 
-    /** Builds the selected transports and hands them to the service. */
+    /**
+     * Hands the service a factory for the selected transports. The factory runs on the service's
+     * session thread, after the channel key has been stretched into the packet key, because Wi-Fi
+     * Aware's own secrets are derived from it ([ChannelCrypto]); everything the factory needs from
+     * this screen is read here, on the main thread, and captured.
+     */
     private fun connect(s: PttService) {
-        val ctx = applicationContext
-        val list = mutableListOf<Transport>()
-        if (tileOn(Prefs.KEY_USE_LAN)) list += LanTransport(ctx, prefs.group, prefs.port)
-        if (tileOn(Prefs.KEY_USE_BT)) list += BluetoothTransport(ctx, pairedDevices.getOrNull(btPeerIndex - 1))
-        if (tileOn(Prefs.KEY_USE_AWARE)) list += WifiAwareTransport(ctx, s.engine.senderId, prefs.channelKey)
-        if (list.isEmpty()) {
+        applySettings(s.engine)
+        if (tiles.none { it.on }) {
             Toast.makeText(this, R.string.pick_transport, Toast.LENGTH_SHORT).show()
             syncUi()
             return
         }
-        applySettings(s.engine)
-        s.connect(list)
+        if (tileOn(Prefs.KEY_USE_AWARE) && warnIfLocationOff()) return
+        val ctx = applicationContext
+        val lan = tileOn(Prefs.KEY_USE_LAN)
+        val bt = tileOn(Prefs.KEY_USE_BT)
+        val aware = tileOn(Prefs.KEY_USE_AWARE)
+        val group = prefs.group
+        val port = prefs.port
+        val peer = pairedDevices.getOrNull(btPeerIndex - 1)
+        s.connect { e ->
+            val list = mutableListOf<Transport>()
+            if (lan) list += LanTransport(ctx, group, port)
+            if (bt) list += BluetoothTransport(ctx, peer, e.senderId)
+            val crypto = e.crypto
+            if (aware && crypto != null) list += WifiAwareTransport(ctx, e.senderId, crypto.awarePassphrase, crypto::awareIdTag)
+            list
+        }
         syncUi()
     }
 
     /**
      * The settings that apply without a reconnect: duplex mode, relay, codec, hop limit
      * and the announced name. Changing the mode un-keys the mic, which is what you want.
+     * The channel key is deliberately not here: stretching it takes about a second, so the
+     * service's session thread does it at Connect and a key changed in Settings takes effect the
+     * next time the channel is joined.
      */
     private fun applySettings(e: PttEngine) {
         e.mode = if (prefs.fullDuplex) PttEngine.Mode.FULL_DUPLEX else PttEngine.Mode.HALF_DUPLEX
@@ -299,7 +405,6 @@ class MainActivity : AppCompatActivity() {
         e.headsetAsCall = prefs.headsetAsCall
         e.headsetVox = prefs.headsetVox
         e.useProximity = prefs.proximitySensor
-        e.channelKey = prefs.channelKey
         service?.cueTones = prefs.cueTones
         service?.refreshHardwareButtons()
     }
@@ -315,10 +420,12 @@ class MainActivity : AppCompatActivity() {
         syncingSwitch = true
         channelSwitch.isChecked = connected
         syncingSwitch = false
-        channelState.text = getString(if (muted) R.string.channel_on_muted else if (connected) R.string.channel_on else R.string.channel_off)
+        val state = getString(if (muted) R.string.channel_on_muted else if (connected) R.string.channel_on else R.string.channel_off)
+        channelState.text = state
+        ViewCompat.setStateDescription(channelRow, state)
         channelState.setTextColor(ContextCompat.getColor(this, if (muted) R.color.error else if (connected) R.color.primary else R.color.text_dim))
         renderVolume()
-        for (tile in tiles) tile.root.alpha = if (connected) 0.55f else 1f
+        for (tile in tiles) tile.root.alpha = if (!tile.available) 0.4f else if (connected) 0.55f else 1f
         peerButton.alpha = if (connected) 0.55f else 1f
         // The screen stays on only while on channel, and only if the user wants it to.
         if (connected && prefs.keepScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -327,17 +434,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var fingerDown = false
+    /** What the disc last said, so a screen reader is told only when it changes. */
+    private var announcedLive: Boolean? = null
 
     /**
      * Disc caption and colours: teal and TALK while idle, red and ON AIR while the mic is live.
      * ON AIR without a finger on the disc means a talk key latched it, so the hint says how to stop.
+     * The accessibility action carries the same words, and going on or off air is announced.
      */
     private fun refreshPttLabel() {
         val e = engine
         val live = e?.isTalking == true
+        val touch = touchExploration()
         val (big, small) = when (e?.mode ?: PttEngine.Mode.HALF_DUPLEX) {
             PttEngine.Mode.HALF_DUPLEX ->
-                if (!live) R.string.ptt_talk to R.string.ptt_talk_hint
+                if (!live) R.string.ptt_talk to (if (touch) R.string.ptt_talk_touch_hint else R.string.ptt_talk_hint)
+                else if (touch) R.string.ptt_on_air to R.string.ptt_on_air_touch_hint
                 else if (fingerDown) R.string.ptt_on_air to R.string.ptt_on_air_hint
                 else R.string.ptt_on_air to R.string.ptt_on_air_latched_hint
             PttEngine.Mode.FULL_DUPLEX -> if (live) R.string.ptt_mic_on to R.string.ptt_mic_on_hint else R.string.ptt_mic_off to R.string.ptt_mic_off_hint
@@ -354,6 +466,17 @@ class MainActivity : AppCompatActivity() {
         pttButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, if (live) R.color.on_air else R.color.primary))
         pttButton.setTextColor(ContextCompat.getColor(this, if (live) R.color.on_air_text else R.color.on_primary))
         pttButton.strokeColor = ColorStateList.valueOf(ContextCompat.getColor(this, if (live) R.color.error else R.color.outline))
+        ViewCompat.replaceAccessibilityAction(
+            pttButton, AccessibilityActionCompat.ACTION_CLICK,
+            getString(if (live) R.string.a11y_talk_stop else R.string.a11y_talk_start)
+        ) { v, _ -> v.performClick() }
+        if (announcedLive != live) {
+            if (announcedLive != null) {
+                @Suppress("DEPRECATION")   // the compat announcement API is API 34+; this still reaches TalkBack
+                pttButton.announceForAccessibility(getString(if (live) R.string.a11y_on_air else R.string.a11y_listening))
+            }
+            announcedLive = live
+        }
     }
 
     /**
@@ -377,7 +500,7 @@ class MainActivity : AppCompatActivity() {
         muteButton.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, if (muted) R.color.error else R.color.secondary))
         muteButton.contentDescription = getString(if (muted) R.string.volume_unmute else R.string.volume_mute)
         muteButton.alpha = if (connected) 1f else 0.55f
-        volumeValue.text = if (muted) getString(R.string.volume_muted_value) else level.toString()
+        volumeValue.text = if (muted) getString(R.string.volume_muted_value) else getString(R.string.volume_step, level)
         volumeValue.setTextColor(ContextCompat.getColor(this, if (muted) R.color.error else R.color.text))
         volumeSlider.thumbTintList = ColorStateList.valueOf(ContextCompat.getColor(this, if (muted) R.color.text_dim else R.color.primary))
         volumeSlider.trackActiveTintList = ColorStateList.valueOf(ContextCompat.getColor(this, if (muted) R.color.dot_idle else R.color.primary))
@@ -387,21 +510,35 @@ class MainActivity : AppCompatActivity() {
      * The header count, and whoever is talking shown in green on the label line above the
      * channel name. Nothing changes size or position: a layout shift under the talk disc is
      * the last thing a thumb about to press it needs. The full list lives on the Status screen.
+     *
+     * A crew member running a different build of the app is said on that same line when nobody is
+     * talking: the wire format has no legacy mode, so a mismatch is worth seeing before it matters.
      */
     private fun renderRoster(peers: List<Peer>) {
-        peerCount.text = peers.size.toString()
+        peerCount.text = getString(R.string.head_count, peers.size)
+        peersBox.contentDescription = resources.getQuantityString(R.plurals.a11y_aboard, peers.size, peers.size)
         val talking = peers.filter { it.talking }
         val green = ContextCompat.getColor(this, R.color.talking)
-        if (talking.isEmpty()) {
-            channelLabel.text = getString(R.string.crew_channel)
-            channelLabel.setTextColor(ContextCompat.getColor(this, R.color.text_teal_dim))
-            peersIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
-            peerCount.setTextColor(ContextCompat.getColor(this, R.color.text))
-        } else {
-            channelLabel.text = "\u25CF " + getString(R.string.talking_line, talking.joinToString(", ") { it.label.uppercase() })
-            channelLabel.setTextColor(green)
-            peersIcon.imageTintList = ColorStateList.valueOf(green)
-            peerCount.setTextColor(green)
+        val otherBuild = peers.any { it.versionCode != 0 && it.versionCode != BuildConfig.VERSION_CODE }
+        when {
+            talking.isNotEmpty() -> {
+                channelLabel.text = getString(R.string.talking_line, talking.joinToString(", ") { it.label.uppercase(Locale.getDefault()) })
+                channelLabel.setTextColor(green)
+                peersIcon.imageTintList = ColorStateList.valueOf(green)
+                peerCount.setTextColor(green)
+            }
+            otherBuild -> {
+                channelLabel.text = getString(R.string.other_build_aboard)
+                channelLabel.setTextColor(ContextCompat.getColor(this, R.color.error))
+                peersIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
+                peerCount.setTextColor(ContextCompat.getColor(this, R.color.text))
+            }
+            else -> {
+                channelLabel.text = getString(R.string.crew_channel)
+                channelLabel.setTextColor(ContextCompat.getColor(this, R.color.text_teal_dim))
+                peersIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
+                peerCount.setTextColor(ContextCompat.getColor(this, R.color.text))
+            }
         }
     }
 
@@ -417,7 +554,7 @@ class MainActivity : AppCompatActivity() {
         loadPairedDevices()
         val dev = pairedDevices.getOrNull(btPeerIndex - 1)
         peerButton.text = if (dev == null) getString(R.string.peer_listen_only)
-        else getString(R.string.peer_prefix) + (dev.name ?: dev.address).uppercase()
+        else getString(R.string.peer_line, deviceLabel(dev).uppercase(Locale.getDefault()))
     }
 
     /** Popup with "listen only" and every bonded device; the choice is remembered. */
@@ -425,7 +562,7 @@ class MainActivity : AppCompatActivity() {
         loadPairedDevices()
         PopupMenu(this, anchor).apply {
             menu.add(0, 0, 0, getString(R.string.bt_listen_only))
-            pairedDevices.forEachIndexed { i, d -> menu.add(0, i + 1, i + 1, d.name ?: d.address) }
+            pairedDevices.forEachIndexed { i, d -> menu.add(0, i + 1, i + 1, deviceLabel(d)) }
             setOnMenuItemClickListener { item ->
                 btPeerIndex = item.itemId
                 prefs.put(Prefs.KEY_BT_PEER, pairedDevices.getOrNull(btPeerIndex - 1)?.address ?: "")
@@ -435,15 +572,42 @@ class MainActivity : AppCompatActivity() {
         }.show()
     }
 
-    /** Reads the bonded devices and re-finds the remembered one. */
-    @SuppressLint("MissingPermission")
+    /**
+     * What to call a bonded device. Reading its name needs BLUETOOTH_CONNECT from Android 12 on;
+     * without it the address is all the app may know, and that still identifies the peer.
+     */
+    private fun deviceLabel(dev: BluetoothDevice): String {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        ) return dev.address
+        return try { dev.name } catch (_: SecurityException) { null } ?: dev.address
+    }
+
+    /** Reads the bonded devices and re-finds the remembered one; nothing without the permission. */
     private fun loadPairedDevices() {
-        val missing = bluetoothPermissions().any { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
-        if (missing) { requestPermissions(); return }
+        if (bluetoothPermissions().any { !granted(it) }) { pairedDevices = emptyList(); return }
         val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        pairedDevices = adapter?.bondedDevices?.toList()?.sortedBy { it.name ?: it.address } ?: emptyList()
+        pairedDevices = (try { adapter?.bondedDevices?.toList() } catch (_: SecurityException) { null })
+            .orEmpty().sortedBy { deviceLabel(it) }
         val remembered = pairedDevices.indexOfFirst { it.address == prefs.string(Prefs.KEY_BT_PEER) }
         btPeerIndex = if (remembered >= 0) remembered + 1 else 0
+    }
+
+    // ---- Wi-Fi Aware ----------------------------------------------------------------
+
+    /**
+     * Before Android 13 Aware discovery needs location services switched on system-wide, and finds
+     * nobody in silence when they are off. Says so once, with the way to turn them on.
+     * Returns true when it said something, so a Connect can stop and let the user decide.
+     */
+    private fun warnIfLocationOff(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return false
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
+        if (lm.isLocationEnabled) return false
+        snack(getString(R.string.location_off_for_aware), R.string.location_settings) {
+            startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+        }
+        return true
     }
 
     // ---- permissions --------------------------------------------------------------
@@ -453,14 +617,14 @@ class MainActivity : AppCompatActivity() {
      * on: the mic always, Bluetooth only with the Bluetooth tile, Aware discovery only with
      * the Aware tile. A LAN-only crew member never has to grant Bluetooth anything.
      */
-    private fun requiredPermissions(): Array<String> {
+    private fun requiredPermissions(): List<String> {
         val list = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (tileOn(Prefs.KEY_USE_BT)) list += bluetoothPermissions()
         if (tileOn(Prefs.KEY_USE_AWARE)) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) list += Manifest.permission.NEARBY_WIFI_DEVICES
             else list += Manifest.permission.ACCESS_FINE_LOCATION
         }
-        return list.toTypedArray()
+        return list
     }
 
     /** What listing bonded devices and dialling one need; nothing before Android 12. */
@@ -468,29 +632,63 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) listOf(Manifest.permission.BLUETOOTH_CONNECT) else emptyList()
 
     /**
-     * Asked for, but not required to Connect:
+     * Asked for alongside the required ones, but the session runs without them:
      * - POST_NOTIFICATIONS: without it the foreground notification is hidden on Android 13+,
-     *   but the service still runs.
+     *   but the service still runs. Asked for when the channel is first joined, where the
+     *   notification is what the crew is told to read.
      * - BLUETOOTH_SCAN: only used to cancel an in-progress system scan before dialling a peer,
      *   which makes RFCOMM connect faster; [BluetoothTransport] skips that step without it.
      */
-    private fun optionalPermissions(): Array<String> {
+    private fun optionalPermissions(connecting: Boolean): List<String> {
         val list = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) list += Manifest.permission.POST_NOTIFICATIONS
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) list += Manifest.permission.BLUETOOTH_SCAN
-        return list.toTypedArray()
+        if (connecting && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) list += Manifest.permission.POST_NOTIFICATIONS
+        if (tileOn(Prefs.KEY_USE_BT) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) list += Manifest.permission.BLUETOOTH_SCAN
+        return list
     }
+
+    private fun granted(permission: String) =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
     /** True when every required (not optional) permission is granted. */
-    private fun hasPermissions() = requiredPermissions().all {
-        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    private fun hasPermissions() = requiredPermissions().all { granted(it) }
+
+    /**
+     * Asks for whatever is still missing. With [thenConnect] the answer continues the Connect the
+     * user already pressed, so nobody has to press it twice.
+     */
+    private fun askPermissions(thenConnect: Boolean) {
+        val missing = (requiredPermissions() + optionalPermissions(thenConnect)).filter { !granted(it) }
+        if (missing.isEmpty()) {
+            if (thenConnect) service?.let { connect(it) }
+            return
+        }
+        pendingConnect = thenConnect
+        permissionLauncher.launch(missing.toTypedArray())
     }
 
-    /** Asks for whatever is still missing, required and optional in one dialog run. */
-    private fun requestPermissions() {
-        val missing = (requiredPermissions() + optionalPermissions()).filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+    /** Which refusal this is, in the crew's words. */
+    private fun deniedMessage(permission: String): String = getString(
+        when (permission) {
+            Manifest.permission.RECORD_AUDIO -> R.string.perm_mic_denied
+            Manifest.permission.BLUETOOTH_CONNECT -> R.string.perm_bt_denied
+            else -> R.string.perm_aware_denied
         }
-        if (missing.isNotEmpty()) ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
+    )
+
+    private fun openAppSettings() {
+        startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
+        )
     }
+
+    /** One line at the bottom of the screen, optionally with something to do about it. */
+    private fun snack(text: String, actionRes: Int?, action: () -> Unit) {
+        val bar = Snackbar.make(root, text, Snackbar.LENGTH_LONG)
+        if (actionRes != null) bar.setAction(actionRes) { action() }
+        bar.show()
+    }
+
+    /** True while a screen reader explores by touch, when hold-to-talk cannot be expressed. */
+    private fun touchExploration(): Boolean =
+        (getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager)?.isTouchExplorationEnabled == true
 }

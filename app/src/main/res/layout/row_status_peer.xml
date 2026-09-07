@@ -27,6 +27,17 @@
             android:maxLines="1"
             android:ellipsize="end" />
         <TextView
+            android:id="@+id/build"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.06"
+            android:textStyle="bold"
+            android:textSize="12sp"
+            android:textColor="@color/error"
+            android:visibility="gone" />
+        <TextView
             android:id="@+id/meta"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

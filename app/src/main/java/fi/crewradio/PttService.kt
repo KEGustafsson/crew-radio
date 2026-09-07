@@ -1,14 +1,18 @@
 package fi.crewradio
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import androidx.core.content.IntentCompat
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
@@ -22,10 +26,12 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import fi.crewradio.transport.Transport
+import java.util.concurrent.Executors
 
 /**
  * Foreground service that owns the [PttEngine] while connected, so the
@@ -36,6 +42,13 @@ import fi.crewradio.transport.Transport
  * a started foreground service with a partial wake lock and a low-latency
  * Wi-Fi lock; [disconnect] releases all of that and stops the service, which
  * then dies as soon as the activity unbinds.
+ *
+ * Joining and leaving run on the service's own `ptt-session` thread: stretching the channel key
+ * into the packet key takes about a second, and [PttEngine.connect]/[PttEngine.disconnect] wait
+ * for transport threads. Only the foreground promotion stays on the main thread, inside [connect],
+ * so the platform's ten seconds to call `startForeground` are never at risk. The transports
+ * themselves are built by a factory that runs on that thread, after the key is ready, because
+ * Wi-Fi Aware's secrets come from it.
  *
  * The ongoing notification mirrors the engine's status line and carries a
  * Disconnect action, so the session can be ended without reopening the app.
@@ -50,7 +63,7 @@ class PttService : Service() {
         private set
 
     /** Last status string from the engine; the activity shows it when it (re)binds. */
-    @Volatile var lastStatus: String = "Not connected"
+    @Volatile var lastStatus: String = ""
         private set
 
     /** Set by the bound activity. Called on whichever thread reported the status. */
@@ -72,31 +85,63 @@ class PttService : Service() {
     private var mediaSession: MediaSession? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    /** Everything that joins or leaves the channel; see the class comment. */
+    private val session = Executors.newSingleThreadExecutor { Thread(it, "ptt-session") }
     /** Screen off while the phone is at the ear, as in a call, so a cheek cannot press the talk button. */
     private var earLock: PowerManager.WakeLock? = null
+    private val lockObject = Any()
 
+    /**
+     * The proximity lock. Taken and released from the engine's callback on the main thread and
+     * from [releaseLocks] on the session thread, hence the monitor.
+     */
+    // WakelockTimeout: a proximity lock lasts exactly as long as the phone is at the ear, which is
+    // not a duration this can guess. Wakelock: a try/finally here would release it on the way out
+    // of the acquiring call; it is released by the engine's next callback and by releaseLocks().
+    @SuppressLint("WakelockTimeout", "Wakelock")
     private fun earWatch(on: Boolean) {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (on) {
-            if (earLock == null && pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
-                earLock = pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "ptt:ear").also {
-                    it.setReferenceCounted(false)
-                    it.acquire()
+        synchronized(lockObject) {
+            if (on) {
+                if (earLock == null && pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
+                    earLock = pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "ptt:ear").also {
+                        it.setReferenceCounted(false)
+                        it.acquire()
+                    }
                 }
+            } else {
+                earLock?.let { if (it.isHeld) it.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) }
+                earLock = null
             }
-        } else {
-            earLock?.let { if (it.isHeld) it.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) }
-            earLock = null
         }
     }
     private val wifiLocks = mutableListOf<WifiManager.WifiLock>()
 
+    /**
+     * An EMM changed the managed configuration. Nothing is cached across this: [Prefs] reads the
+     * restrictions when it is constructed, so re-reading the talk-button setting is enough here and
+     * the activity picks the rest up on its next resume.
+     */
+    private val restrictionsChanged = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            refreshHardwareButtons()
+            onStatus(getString(R.string.status_managed_changed))
+        }
+    }
+
     /** Creates the engine and the notification channel; the engine lives as long as the service. */
     override fun onCreate() {
         super.onCreate()
+        lastStatus = getString(R.string.status_not_connected)
         engine = PttEngine(this, ::onStatus, ::onRoster)
         engine.onEarWatch = { on -> mainHandler.post { earWatch(on) } }
         createChannel()
+        // Not deliverable to a manifest receiver, so it is registered for as long as the service lives.
+        ContextCompat.registerReceiver(
+            this, restrictionsChanged,
+            IntentFilter(Intent.ACTION_APPLICATION_RESTRICTIONS_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
     /** Hands the activity a local binder; the service is in-process only. */
@@ -111,36 +156,72 @@ class PttService : Service() {
 
     /** Last line of defence: tear the session down if the system destroys the service. */
     override fun onDestroy() {
+        unregisterReceiver(restrictionsChanged)
+        session.shutdown()          // never shutdownNow: a teardown in flight must finish
         engine.disconnect()
         releaseLocks()
         super.onDestroy()
     }
 
-    /** Starts the transports and keeps the phone awake until [disconnect]. Call from the foreground UI. */
-    fun connect(transports: List<Transport>) {
+    /**
+     * Joins the channel. Call from the foreground UI: the foreground promotion happens here, on
+     * the caller's thread, and everything slow is handed to the session thread — the channel key
+     * (about a second of PBKDF2), the transports the [factory] builds from the engine once its
+     * [PttEngine.crypto] is ready, and [PttEngine.connect] itself.
+     */
+    fun connect(factory: (PttEngine) -> List<Transport>) {
         // Started + foreground so the service outlives the activity's unbind.
         ContextCompat.startForegroundService(this, Intent(this, PttService::class.java))
+        val connecting = getString(R.string.status_connecting)
         try {
-            showForeground("Connecting…")
+            showForeground(connecting)
         } catch (e: Exception) {   // e.g. ForegroundServiceStartNotAllowedException when not in the foreground
             stopSelf()
-            onStatus("Can't start service: ${e.message}")
+            onStatus(getString(R.string.status_cant_start, e.message))
             return
         }
         acquireLocks()
-        engine.connect(transports)
-        refreshHardwareButtons()
+        onStatus(connecting)
+        val key = Prefs(this).channelKey
+        session.execute {
+            try {
+                engine.channelKey = key
+            } catch (e: Exception) {
+                onStatus(getString(R.string.status_key_failed, e.message))
+                return@execute
+            }
+            val list = try {
+                factory(engine)
+            } catch (e: Exception) {
+                onStatus(getString(R.string.status_cant_start, e.message))
+                emptyList()
+            }
+            if (list.isEmpty()) {
+                onStatus(getString(R.string.status_no_transport))
+                return@execute
+            }
+            reportedBuilds.clear()
+            engine.connect(list)
+            mainHandler.post {
+                refreshHardwareButtons()
+                statusListener?.invoke(lastStatus)
+            }
+        }
     }
 
-    /** Stops the transports, releases the locks and leaves the foreground; safe to call when already idle. */
+    /** Leaves the channel, releases the locks and drops the foreground; safe to call when already idle. */
     fun disconnect() {
         val wasConnected = engine.isConnected
         stopHardwareButtons()
-        engine.disconnect()
-        releaseLocks()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        stopSelf()
-        if (wasConnected) onStatus("Disconnected")
+        foregroundStarted = false
+        session.execute {
+            engine.disconnect()
+            releaseLocks()
+            if (wasConnected) onStatus(getString(R.string.status_disconnected))
+            mainHandler.post { statusListener?.invoke(lastStatus) }
+            stopSelf()          // last, so the service is not destroyed out from under the teardown
+        }
     }
 
     /** Engine status sink: remembers the line, forwards it to the UI and mirrors it in the notification. */
@@ -151,15 +232,30 @@ class PttService : Service() {
             while (log.size > LOG_LINES) log.removeFirst()
         }
         statusListener?.invoke(msg)
-        if (engine.isConnected) showForeground(msg)
+        if (engine.isConnected) postNotification()
     }
 
-    /** Engine roster sink: remembers the list, forwards it to the UI and puts the head count in the notification title. */
+    /**
+     * Engine roster sink: remembers the list, forwards it to the UI and puts the head count in the
+     * notification title. A crew member on a different build is worth one line in the log, once:
+     * the wire format has no legacy mode, so an "OLD BUILD" mark on the roster is the warning and
+     * this is how it reaches the status log too.
+     */
     private fun onRoster(peers: List<Peer>) {
         lastRoster = peers
         rosterListener?.invoke(peers)
-        if (engine.isConnected) showForeground(lastStatus)
+        for (p in peers) {
+            if (p.versionCode == 0 || p.versionCode == BuildConfig.VERSION_CODE) continue
+            synchronized(reportedBuilds) {
+                if (reportedBuilds.size >= MAX_REPORTED_BUILDS || !reportedBuilds.add(p.id)) return@synchronized
+                onStatus(getString(R.string.status_other_build, p.label))
+            }
+        }
+        if (engine.isConnected) postNotification()
     }
+
+    /** Ids already named in the log as running another build, so it is said once per peer per session. */
+    private val reportedBuilds = HashSet<Int>()
 
     // ---- hardware talk button --------------------------------------------------------
 
@@ -239,7 +335,7 @@ class PttService : Service() {
      * toggle on those that only click. No debounce: the events are clean already.
      */
     private fun headsetPress() {
-        val now = android.os.SystemClock.elapsedRealtime()
+        val now = SystemClock.elapsedRealtime()
         synchronized(hardwareLock) {
             if (now - headsetDownMs < BOUNCE_MS) return
             headsetDownMs = now
@@ -249,7 +345,7 @@ class PttService : Service() {
     }
 
     private fun headsetRelease() {
-        val now = android.os.SystemClock.elapsedRealtime()
+        val now = SystemClock.elapsedRealtime()
         synchronized(hardwareLock) {
             if (headsetKeyed && engine.isTalking && now - headsetDownMs >= HOLD_MS) setMic(false)
             headsetKeyed = false
@@ -262,7 +358,7 @@ class PttService : Service() {
      * a quiet [PRESS_GAP_MS] counts, so a hold is one press: mic on, and the next press off.
      */
     private fun volumePress() {
-        val now = android.os.SystemClock.elapsedRealtime()
+        val now = SystemClock.elapsedRealtime()
         synchronized(hardwareLock) {
             val quiet = now - lastVolumeEventMs >= PRESS_GAP_MS
             lastVolumeEventMs = now
@@ -279,7 +375,7 @@ class PttService : Service() {
         if (on && !now) return                            // mic failed to start: the engine has reported why
         buzz(if (now) longArrayOf(0, 40) else longArrayOf(0, 30, 80, 30))
         if (cueTones) engine.cue(if (now) Tones.micOn() else Tones.micOff())
-        onStatus(if (now) "Talk key: mic on" else "Talk key: mic off")   // also refreshes the disc on screen
+        onStatus(getString(if (now) R.string.status_mic_on else R.string.status_mic_off))   // also refreshes the disc on screen
     }
 
     private fun buzz(pattern: LongArray) {
@@ -294,12 +390,46 @@ class PttService : Service() {
 
     /** Re-posts the notification after something it shows (the mute) changed outside the engine's own callbacks. */
     fun refreshNotification() {
-        if (engine.isConnected) showForeground(lastStatus)
+        if (engine.isConnected) postNotification()
     }
 
-    /** (Re)posts the foreground notification. Re-calling startForeground is the documented way to update it. */
+    /** True once startForeground has been called for this session; afterwards it is notify(). */
+    @Volatile private var foregroundStarted = false
+    private var notifyPending = false          // main thread only
+    private var lastNotifyMs = 0L              // main thread only
+
+    /**
+     * Updates the ongoing notification. Status lines and roster changes arrive from engine and
+     * transport threads and can come several times a second; re-calling `startForeground` for each
+     * of them is both the wrong API after the first call and more work than the shade can show, so
+     * this coalesces them onto the main thread, at most one post per [NOTIFY_GAP_MS].
+     */
+    private fun postNotification() {
+        if (!foregroundStarted) return
+        mainHandler.post {
+            if (notifyPending || !foregroundStarted) return@post
+            notifyPending = true
+            val wait = (lastNotifyMs + NOTIFY_GAP_MS - SystemClock.uptimeMillis()).coerceIn(0L, NOTIFY_GAP_MS)
+            mainHandler.postDelayed({
+                notifyPending = false
+                lastNotifyMs = SystemClock.uptimeMillis()
+                if (!foregroundStarted || !engine.isConnected) return@postDelayed
+                // Without the permission the notification is simply not shown; the session runs on.
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+                ) {
+                    val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    nm.notify(NOTIFICATION_ID, buildNotification(lastStatus))
+                }
+            }, wait)
+        }
+    }
+
+    /** Promotes the service to the foreground. Called once per session, from the activity's thread. */
     private fun showForeground(text: String) {
         ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(text), foregroundTypes())
+        foregroundStarted = true
+        lastNotifyMs = SystemClock.uptimeMillis()
     }
 
     /** Foreground service types to declare: always connectedDevice, plus microphone where the API has it. */
@@ -310,12 +440,17 @@ class PttService : Service() {
         return types
     }
 
-    /** Silent, ongoing notification: tap opens the activity, the action disconnects. */
+    /**
+     * Silent, ongoing notification: tap opens the activity, the action disconnects. Marked
+     * immediate, because the README tells the crew to read it as soon as they have joined and
+     * Android 12+ would otherwise be free to hold it back for ten seconds.
+     */
     private fun buildNotification(text: String): Notification {
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         val open = PendingIntent.getActivity(
             this, 0,
-            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             flags
         )
         val disconnect = PendingIntent.getService(
@@ -324,9 +459,9 @@ class PttService : Service() {
             flags
         )
         val online = lastRoster.size
-        val title = getString(R.string.notification_title) +
-            (if (online > 0) " · $online online" else "") +
-            (if (engine.muted) " · " + getString(R.string.notification_muted) else "")
+        var title = if (online > 0) resources.getQuantityString(R.plurals.notification_title_online, online, online)
+        else getString(R.string.notification_title)
+        if (engine.muted) title = getString(R.string.notification_muted_suffix, title)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_ptt)
             .setContentTitle(title)
@@ -336,6 +471,7 @@ class PttService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setSilent(true)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -366,18 +502,20 @@ class PttService : Service() {
      */
     @SuppressLint("WakelockTimeout") // held for the whole session, released in disconnect()
     private fun acquireLocks() {
-        if (wakeLock == null) {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ptt:engine").also { it.acquire() }
-        }
-        if (wifiLocks.isEmpty()) {
-            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val modes = mutableListOf(WifiManager.WIFI_MODE_FULL_LOW_LATENCY)
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) modes += highPerfWifiMode()
-            for (mode in modes) {
-                wifiLocks += wm.createWifiLock(mode, "ptt:wifi:$mode").also {
-                    it.setReferenceCounted(false)
-                    it.acquire()
+        synchronized(lockObject) {
+            if (wakeLock == null) {
+                val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ptt:engine").also { it.acquire() }
+            }
+            if (wifiLocks.isEmpty()) {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                val modes = mutableListOf(WifiManager.WIFI_MODE_FULL_LOW_LATENCY)
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) modes += highPerfWifiMode()
+                for (mode in modes) {
+                    wifiLocks += wm.createWifiLock(mode, "ptt:wifi:$mode").also {
+                        it.setReferenceCounted(false)
+                        it.acquire()
+                    }
                 }
             }
         }
@@ -387,12 +525,15 @@ class PttService : Service() {
     @Suppress("DEPRECATION")
     private fun highPerfWifiMode(): Int = WifiManager.WIFI_MODE_FULL_HIGH_PERF
 
-    /** Releases whatever [acquireLocks] took; safe when nothing is held. */
+    /** Releases whatever [acquireLocks] took, and the proximity lock with it; safe when nothing is held. */
     private fun releaseLocks() {
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wakeLock = null
-        for (lock in wifiLocks) if (lock.isHeld) lock.release()
-        wifiLocks.clear()
+        earWatch(false)
+        synchronized(lockObject) {
+            wakeLock?.let { if (it.isHeld) it.release() }
+            wakeLock = null
+            for (lock in wifiLocks) if (lock.isHeld) lock.release()
+            wifiLocks.clear()
+        }
     }
 
     companion object {
@@ -406,6 +547,10 @@ class PttService : Service() {
         private const val HOLD_MS = 400L
         /** Two headset presses closer than this are contact bounce, not two presses. */
         private const val BOUNCE_MS = 120L
+        /** Shortest time between two notification updates; the shade cannot show more anyway. */
+        private const val NOTIFY_GAP_MS = 250L
+        /** A cap on the "runs another build" set, so a passing stranger cannot grow it forever. */
+        private const val MAX_REPORTED_BUILDS = 64
         const val ACTION_DISCONNECT = "fi.crewradio.action.DISCONNECT"
         private const val CHANNEL_ID = "ptt"
         private const val NOTIFICATION_ID = 1

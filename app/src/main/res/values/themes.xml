@@ -12,12 +12,19 @@
         <item name="colorError">@color/error</item>
         <item name="colorOnError">@color/on_error</item>
         <item name="colorSurface">@color/surface</item>
-        <item name="android:statusBarColor">@color/surface</item>
-        <item name="android:navigationBarColor">@color/surface</item>
+        <!-- The ground the screens are drawn on; the layouts do not paint it again (Overdraw). -->
+        <item name="android:windowBackground">@color/surface</item>
+        <!-- Edge to edge (targetSdk 36 enforces it): the bars are transparent and the activities
+             pad themselves with the window insets. The charcoal ground shows through, so the bar
+             icons have to be the light set. -->
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 
-    <!-- The settings screen wants an action bar for its back arrow, and the preference list its theme overlay. -->
-    <style name="Theme.PTT.Settings" parent="Theme.Material3.Dark">
+    <!-- Status and Settings: no window action bar, a MaterialToolbar in the layout instead, so the
+         toolbar can take the status-bar inset like everything else. The preference list needs its
+         own theme overlay. -->
+    <style name="Theme.PTT.Settings" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">@color/primary</item>
         <item name="colorOnPrimary">@color/on_primary</item>
         <item name="colorPrimaryContainer">@color/primary_container</item>
@@ -29,8 +36,9 @@
         <item name="colorError">@color/error</item>
         <item name="colorOnError">@color/on_error</item>
         <item name="colorSurface">@color/surface</item>
-        <item name="android:statusBarColor">@color/surface</item>
-        <item name="android:navigationBarColor">@color/surface</item>
+        <item name="android:windowBackground">@color/surface</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
         <item name="preferenceTheme">@style/PreferenceThemeOverlay</item>
     </style>
 
