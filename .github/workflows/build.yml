@@ -14,9 +14,11 @@ name: Build
 # CREWRADIO_KEY_ALIAS, CREWRADIO_KEY_PASSWORD; repository variable CREWRADIO_CERT_SHA256 (the
 # release certificate's SHA-256, checked before anything is published). Without them the
 # release job fails; it never publishes a debug-signed APK. The secrets are given only to the
-# two steps that need them (decode, build), the decoded keystore is deleted right after the
-# build, and the Release is created with `gh` and the workflow's own token: no third-party
-# action runs with the secrets in its environment or with the write token.
+# two steps that need them (decode, build) and the decoded keystore is deleted right after the
+# build. Signing and publishing are separate jobs: `release` builds, signs, verifies and attests
+# with a read-only token, and `publish` creates the Release with `gh` and the only write token in
+# the workflow, without a checkout or any project code. So no third-party action ever runs with
+# the secrets in its environment, and none runs with the write token.
 
 on:
   push:
@@ -86,14 +88,19 @@ jobs:
           path: app/build/reports/lint-results-release.html
           if-no-files-found: ignore
 
+  # Builds, signs, verifies and attests - and never holds a token that could write to the
+  # repository. The checkout, setup-gradle and the Gradle build all run here, so a compromised
+  # one of them can read this repository and nothing more. Publishing is `publish` below.
   release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write        # the Release and its tag (gh, below)
+      contents: read         # deliberately not write; see `publish`
       id-token: write        # build provenance attestation
       attestations: write
+    outputs:
+      version: ${{ steps.build.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -120,6 +127,7 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
 
       - name: Signed release APK and SBOM
+        id: build
         env:
           CREWRADIO_KEYSTORE: ${{ runner.temp }}/release.keystore
           CREWRADIO_KEYSTORE_PASSWORD: ${{ secrets.CREWRADIO_KEYSTORE_PASSWORD }}
@@ -131,6 +139,7 @@ jobs:
           VERSION=$(cat app/build/version.txt)
           echo "$VERSION" | grep -Eq '^1\.[0-9]+$' || { echo "::error::app/build/version.txt holds '$VERSION', not a version"; exit 1; }
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           cp app/build/outputs/apk/release/app-release.apk "CrewRadio-$VERSION.apk"
           cp app/build/reports/bom.json "CrewRadio-$VERSION.sbom.cdx.json"
           sha256sum "CrewRadio-$VERSION.apk" > "CrewRadio-$VERSION.apk.sha256"
@@ -162,6 +171,33 @@ jobs:
             CrewRadio-${{ env.VERSION }}.apk
             CrewRadio-${{ env.VERSION }}.apk.sha256
             CrewRadio-${{ env.VERSION }}.sbom.cdx.json
+
+      - name: Hand the release files to the publish job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-files
+          path: |
+            CrewRadio-${{ env.VERSION }}.apk
+            CrewRadio-${{ env.VERSION }}.apk.sha256
+            CrewRadio-${{ env.VERSION }}.sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # The only job with a write token, and it is kept as small as that implies: no checkout, no
+  # Gradle, no signing secrets - it downloads what `release` already built, signed, verified and
+  # attested, and creates the Release. Nothing here executes code from the repository.
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # the Release and its tag (gh, below)
+    env:
+      VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-files
 
       - name: GitHub Release
         env:
