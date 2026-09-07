@@ -158,7 +158,16 @@ class PttService : Service() {
     override fun onDestroy() {
         unregisterReceiver(restrictionsChanged)
         session.shutdown()          // never shutdownNow: a teardown in flight must finish
-        engine.disconnect()
+        // Wait for it before disconnecting here: PttEngine.connect and disconnect are not
+        // synchronized, so a join still running on the session thread and this call would be two
+        // threads in the same engine state. If the wait runs out, the session still owns the
+        // engine and the safe thing is to leave it alone; the process is going anyway.
+        val done = try {
+            session.awaitTermination(SHUTDOWN_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt(); false
+        }
+        if (done) engine.disconnect()
         releaseLocks()
         super.onDestroy()
     }
@@ -188,6 +197,7 @@ class PttService : Service() {
                 engine.channelKey = key
             } catch (e: Exception) {
                 onStatus(getString(R.string.status_key_failed, e.message))
+                abandon()
                 return@execute
             }
             val list = try {
@@ -198,15 +208,31 @@ class PttService : Service() {
             }
             if (list.isEmpty()) {
                 onStatus(getString(R.string.status_no_transport))
+                abandon()
                 return@execute
             }
-            reportedBuilds.clear()
+            synchronized(reportedBuilds) { reportedBuilds.clear() }   // onRoster adds under the same monitor
             engine.connect(list)
             mainHandler.post {
                 refreshHardwareButtons()
                 statusListener?.invoke(lastStatus)
             }
         }
+    }
+
+    /**
+     * A join that never happened: connect() promoted the service and took the wake and Wi-Fi locks
+     * before handing the slow work over, so a session that gives up before [PttEngine.connect] has
+     * to give all of that back. Without it the phone holds a CPU wake lock and keeps the Wi-Fi
+     * radio out of power save, with a "connecting" notification that nothing will ever refresh,
+     * until someone finds the Disconnect action.
+     */
+    private fun abandon() {
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        foregroundStarted = false
+        releaseLocks()
+        mainHandler.post { statusListener?.invoke(lastStatus) }
+        stopSelf()
     }
 
     /** Leaves the channel, releases the locks and drops the foreground; safe to call when already idle. */
@@ -551,6 +577,9 @@ class PttService : Service() {
         private const val NOTIFY_GAP_MS = 250L
         /** A cap on the "runs another build" set, so a passing stranger cannot grow it forever. */
         private const val MAX_REPORTED_BUILDS = 64
+
+        /** How long onDestroy waits for the session thread before leaving the engine to it. */
+        private const val SHUTDOWN_WAIT_MS = 2_000L
         const val ACTION_DISCONNECT = "fi.crewradio.action.DISCONNECT"
         private const val CHANNEL_ID = "ptt"
         private const val NOTIFICATION_ID = 1

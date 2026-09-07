@@ -7,6 +7,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
+import fi.crewradio.Packet
 import java.io.IOException
 import java.net.DatagramPacket
 import java.net.Inet4Address
@@ -210,12 +211,29 @@ class LanTransport(
         socket?.close()
     }
 
-    /** Sends to the group, to the subnet broadcast address when we know one, and unicast to everyone heard lately. */
+    /**
+     * Unicast to everyone heard lately, and the group and broadcast copies as well while nobody is
+     * known or the packet is a hello.
+     *
+     * Access points send multicast and broadcast at their lowest rate and never retry, which is why
+     * the unicast copies exist at all - a phone in the same cabin still loses a few percent of the
+     * group copies, audible as voids. But adding unicast on top of both left every audio frame
+     * leaving the phone 2 + N times: six peers at 32 kB/s is about 256 kB/s of upstream per talker,
+     * on the air the whole crew shares. Audio therefore goes unicast alone once a peer is known.
+     *
+     * Hellos keep both copies whatever the table holds: they are one packet a second, they are how a
+     * phone that nobody has heard yet is found, and a table that has gone stale is repopulated from
+     * them. Dropping them to unicast would mean a crew already talking could not hear a latecomer.
+     */
     override fun send(packet: ByteArray, except: Any?): Boolean {
         val s = socket ?: return false
-        sendTo(s, packet, groupAddr)
-        broadcastAddr?.let { sendTo(s, packet, it) }
-        for (a in peers.live(System.currentTimeMillis())) if (a != except) sendTo(s, packet, a)
+        val live = peers.live(System.currentTimeMillis())
+        val hello = packet.size > 3 && packet[3].toInt() == Packet.Codec.HELLO.id
+        if (hello || live.isEmpty()) {
+            sendTo(s, packet, groupAddr)
+            broadcastAddr?.let { sendTo(s, packet, it) }
+        }
+        for (a in live) if (a != except) sendTo(s, packet, a)
         return true
     }
 

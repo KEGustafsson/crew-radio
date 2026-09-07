@@ -19,7 +19,9 @@ package fi.crewradio.transport
 internal class SendQueue(
     private val capacity: Int = CAPACITY,
     private val stuckMs: Long = STUCK_MS,
-    private val clock: () -> Long = System::currentTimeMillis
+    // Monotonic, not wall clock: a time adjustment while the queue is full would either hold a dead
+    // link open until wall time caught up, or close a healthy one early.
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000L }
 ) {
     private val lock = java.lang.Object()
     private val items = ArrayDeque<ByteArray>()

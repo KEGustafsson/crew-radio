@@ -169,11 +169,16 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
             val wanted = pendingConnect
             pendingConnect = false
+            // Always, and before the connect: loadPairedDevices returns nothing while BLUETOOTH_CONNECT
+            // is missing, so a connect that runs first would dial no peer and only listen all session.
+            refreshPeer()
             val missing = requiredPermissions().filter { !granted(it) }
+            // The one refused for good, not merely the first missing: the message names a permission
+            // and the settings shortcut is only right for that one.
+            val forGood = missing.firstOrNull { !ActivityCompat.shouldShowRequestPermissionRationale(this, it) }
             when {
-                missing.isEmpty() -> if (wanted) service?.let { connect(it) } else refreshPeer()
-                missing.any { !ActivityCompat.shouldShowRequestPermissionRationale(this, it) } ->
-                    snack(deniedMessage(missing.first()), R.string.perm_settings) { openAppSettings() }
+                missing.isEmpty() -> if (wanted) service?.let { connect(it) }
+                forGood != null -> snack(deniedMessage(forGood), R.string.perm_settings) { openAppSettings() }
                 else -> snack(getString(R.string.perm_needed), null) {}
             }
             syncUi()
@@ -246,7 +251,9 @@ class MainActivity : AppCompatActivity() {
         for (tile in tiles) {
             tile.available = tile.key != Prefs.KEY_USE_AWARE || hasAware
             tile.on = tile.available && prefs.bool(tile.key, tile.key == Prefs.KEY_USE_LAN)
-            tile.root.isEnabled = tile.available
+            // Left enabled on purpose: a disabled view swallows the touch, and then the tap that is
+            // meant to explain why the tile is dead never reaches the listener below. The alpha and
+            // the "unavailable" state description carry the state instead.
             tile.root.alpha = if (tile.available) 1f else 0.4f
             tile.root.setOnClickListener {
                 if (!tile.available) { snack(getString(R.string.aware_unavailable), null) {}; return@setOnClickListener }
@@ -268,7 +275,11 @@ class MainActivity : AppCompatActivity() {
             val s = service
             when {
                 s == null -> syncUi()                                  // not bound yet; snap back
-                on && !s.engine.isConnected -> if (hasPermissions()) connect(s) else { askPermissions(thenConnect = true); syncUi() }
+                // askPermissions, never hasPermissions: the latter covers only the required set, so a
+                // phone that granted those through a tile would never be asked for POST_NOTIFICATIONS
+                // and would lose the status line and the Disconnect action. It connects straight away
+                // when nothing is missing, so this is the same for a phone that has everything.
+                on && !s.engine.isConnected -> { askPermissions(thenConnect = true); syncUi() }
                 !on && s.engine.isConnected -> { s.disconnect(); syncUi() }
             }
         }
@@ -366,7 +377,7 @@ class MainActivity : AppCompatActivity() {
             syncUi()
             return
         }
-        if (tileOn(Prefs.KEY_USE_AWARE) && warnIfLocationOff()) return
+        if (tileOn(Prefs.KEY_USE_AWARE) && warnIfLocationOff()) { syncUi(); return }   // no session: put the switch back
         val ctx = applicationContext
         val lan = tileOn(Prefs.KEY_USE_LAN)
         val bt = tileOn(Prefs.KEY_USE_BT)
@@ -587,7 +598,7 @@ class MainActivity : AppCompatActivity() {
     /** Reads the bonded devices and re-finds the remembered one; nothing without the permission. */
     private fun loadPairedDevices() {
         if (bluetoothPermissions().any { !granted(it) }) { pairedDevices = emptyList(); return }
-        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        val adapter = (getSystemService(BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
         pairedDevices = (try { adapter?.bondedDevices?.toList() } catch (_: SecurityException) { null })
             .orEmpty().sortedBy { deviceLabel(it) }
         val remembered = pairedDevices.indexOfFirst { it.address == prefs.string(Prefs.KEY_BT_PEER) }

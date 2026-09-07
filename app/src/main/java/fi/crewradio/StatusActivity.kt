@@ -304,11 +304,10 @@ class StatusActivity : AppCompatActivity() {
             dot.backgroundTintList = ColorStateList.valueOf(color(R.color.talking))
         } else {
             val via = p.via.uppercase(Locale.ROOT)
-            meta.text = when {
-                p.hops <= 0 -> via
-                p.hops == 1 -> getString(R.string.peer_meta_hops, via, p.hops)
-                else -> getString(R.string.peer_meta_hops_plural, via, p.hops)
-            }
+            // A plurals resource, not two hand-rolled forms: Polish, Russian and Arabic need more
+            // than two, and a translator cannot add them to a when.
+            meta.text = if (p.hops <= 0) via
+            else resources.getQuantityString(R.plurals.peer_meta_hops, p.hops, via, p.hops)
             meta.setTextColor(color(R.color.text_dim))
             dot.backgroundTintList = null
         }
@@ -389,7 +388,7 @@ class StatusActivity : AppCompatActivity() {
 
     @SuppressLint("MissingPermission")   // BLUETOOTH_CONNECT is asked for by MainActivity; the read is in a try/catch
     private fun bluetoothName(): String {
-        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        val adapter = (getSystemService(BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
             ?: return getString(R.string.value_none)
         if (!adapter.isEnabled) return getString(R.string.value_off)
         return try { adapter.name } catch (_: SecurityException) { null } ?: getString(R.string.value_on)

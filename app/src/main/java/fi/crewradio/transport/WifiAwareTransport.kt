@@ -108,7 +108,10 @@ class WifiAwareTransport(
     private val backoffs = ConcurrentHashMap<Int, Backoff>()
     private val awareIfaces = ConcurrentHashMap.newKeySet<String>()   // NAN interface names the data paths reported
     private val attachBackoff = Backoff()
-    private val discoveryBackoff = Backoff()
+    // One each: shared, a subscribe that keeps starting cleanly would reset the wait for a publish
+    // that keeps failing, and the failing side would retry at the minimum interval all session.
+    private val publishBackoff = Backoff()
+    private val subscribeBackoff = Backoff()
     private val attaching = AtomicBoolean()                       // one WifiAwareManager.attach() in flight at most
     private val lifecycle = Any()                                 // orders "add a link" against "stop and close them all"
     private lateinit var onPacket: (ByteArray, Transport, Any?) -> Unit
@@ -223,10 +226,10 @@ class WifiAwareTransport(
     }
 
     /** Publish or subscribe failed or ended: try again with backoff, on the same session only. */
-    private fun retryDiscovery(s: WifiAwareSession, why: String, again: (WifiAwareSession) -> Unit) {
+    private fun retryDiscovery(s: WifiAwareSession, backoff: Backoff, why: String, again: (WifiAwareSession) -> Unit) {
         if (!running || session !== s) return
         onStatus(why)
-        handler.postDelayed({ if (running && session === s) again(s) }, discoveryBackoff.next())
+        handler.postDelayed({ if (running && session === s) again(s) }, backoff.next())
     }
 
     /** Responder requests belong to the publish session; drop them whenever it goes. */
@@ -256,7 +259,7 @@ class WifiAwareTransport(
             s.publish(cfg, object : DiscoverySessionCallback() {
                 override fun onPublishStarted(ps: PublishDiscoverySession) {
                     publish = ps
-                    discoveryBackoff.reset()
+                    publishBackoff.reset()
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         // Responder accepting any initiator: one request covers all peers, and it
                         // survives individual data paths coming and going.
@@ -268,7 +271,7 @@ class WifiAwareTransport(
                     }
                 }
                 override fun onSessionConfigFailed() {
-                    retryDiscovery(s, "Aware: publish failed, retrying") { startPublish(it) }
+                    retryDiscovery(s, publishBackoff, "Aware: publish failed, retrying") { startPublish(it) }
                 }
                 override fun onMessageReceived(peer: PeerHandle, message: ByteArray) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return
@@ -283,11 +286,11 @@ class WifiAwareTransport(
                 override fun onSessionTerminated() {
                     publish = null
                     clearResponders()                   // the restart registers fresh ones
-                    retryDiscovery(s, "Aware: publish ended, restarting") { startPublish(it) }
+                    retryDiscovery(s, publishBackoff, "Aware: publish ended, restarting") { startPublish(it) }
                 }
             }, handler)
         } catch (t: Throwable) {
-            retryDiscovery(s, "Aware publish: ${t.message}") { startPublish(it) }
+            retryDiscovery(s, publishBackoff, "Aware publish: ${t.message}") { startPublish(it) }
         }
     }
 
@@ -297,7 +300,7 @@ class WifiAwareTransport(
             s.subscribe(cfg, object : DiscoverySessionCallback() {
                 override fun onSubscribeStarted(ss: SubscribeDiscoverySession) {
                     subscribe = ss
-                    discoveryBackoff.reset()
+                    subscribeBackoff.reset()
                 }
 
                 override fun onServiceDiscovered(peer: PeerHandle, ssi: ByteArray?, filters: List<ByteArray>?) {
@@ -317,16 +320,16 @@ class WifiAwareTransport(
                 }
 
                 override fun onSessionConfigFailed() {
-                    retryDiscovery(s, "Aware: subscribe failed, retrying") { startSubscribe(it) }
+                    retryDiscovery(s, subscribeBackoff, "Aware: subscribe failed, retrying") { startSubscribe(it) }
                 }
 
                 override fun onSessionTerminated() {
                     subscribe = null
-                    retryDiscovery(s, "Aware: subscribe ended, restarting") { startSubscribe(it) }
+                    retryDiscovery(s, subscribeBackoff, "Aware: subscribe ended, restarting") { startSubscribe(it) }
                 }
             }, handler)
         } catch (t: Throwable) {
-            retryDiscovery(s, "Aware subscribe: ${t.message}") { startSubscribe(it) }
+            retryDiscovery(s, subscribeBackoff, "Aware subscribe: ${t.message}") { startSubscribe(it) }
         }
     }
 

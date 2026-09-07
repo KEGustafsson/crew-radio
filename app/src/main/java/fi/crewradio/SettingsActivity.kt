@@ -98,7 +98,7 @@ class SettingsActivity : AppCompatActivity() {
             findPreference<Preference>(Prefs.KEY_CHANNEL_KEY_SHOW)?.setOnPreferenceClickListener {
                 AlertDialog.Builder(requireContext())
                     .setTitle(R.string.pref_channel_key_title)
-                    .setMessage(key)
+                    .setMessage(prefs.channelKey)          // read now: "New random key" may have replaced it
                     .setPositiveButton(R.string.ok, null)
                     .show()
                 true
@@ -107,11 +107,14 @@ class SettingsActivity : AppCompatActivity() {
                 val send = Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
                     putExtra(Intent.EXTRA_SUBJECT, getString(R.string.key_share_subject))
-                    putExtra(Intent.EXTRA_TEXT, getString(R.string.key_share_text, key))
+                    putExtra(Intent.EXTRA_TEXT, getString(R.string.key_share_text, prefs.channelKey))
                 }
                 startActivity(Intent.createChooser(send, getString(R.string.pref_key_share_title)))
                 true
             }
+            // A managed key belongs to the administrator: Prefs.channelKey keeps returning theirs, so
+            // replacing it here would write a key the app never uses and claim a change that did not happen.
+            findPreference<Preference>(Prefs.KEY_CHANNEL_KEY_NEW)?.isVisible = !prefs.isManaged(Prefs.KEY_CHANNEL_KEY)
             findPreference<Preference>(Prefs.KEY_CHANNEL_KEY_NEW)?.setOnPreferenceClickListener {
                 AlertDialog.Builder(requireContext())
                     .setTitle(R.string.key_new_confirm_title)

@@ -72,6 +72,7 @@ class BluetoothTransport(
     private val dialWaiter = Waiter()
     @Volatile private var server: BluetoothServerSocket? = null
     @Volatile private var dialActive = false                      // a dial loop is running (guarded by lifecycle)
+    @Volatile private var dialWanted = false                      // a redial asked for while one was running
     @Volatile private var dialing: BluetoothSocket? = null        // mid-connect(); interrupt() does not abort that, close() does
     @Volatile private var running = false
     @Volatile private var receiverRegistered = false
@@ -173,15 +174,25 @@ class BluetoothTransport(
      */
     private fun redial(dev: BluetoothDevice) {
         synchronized(lifecycle) {
-            if (!running || dialActive) return
+            if (!running) return
+            // A request that arrives while a loop is running is remembered, not dropped. Both links
+            // of a pair can end at once; the second call used to return here, and if the running
+            // loop had already read the tie-break before the first link was removed it would decline
+            // and exit, leaving no link and no loop - Bluetooth down for the rest of the session.
+            if (dialActive) { dialWanted = true; return }
             if (links.any { it.isDialed && it.device.address == dev.address }) return
             dialActive = true
+            dialWanted = false
         }
         transportThread("ptt-bt-connect", { onStatus("BT connect stopped: ${it.message}") }) {
             try {
                 dialLoop(dev)
             } finally {
-                synchronized(lifecycle) { dialActive = false }
+                val again = synchronized(lifecycle) {
+                    dialActive = false
+                    dialWanted && running
+                }
+                if (again) redial(dev)
             }
         }
     }
