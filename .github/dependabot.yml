@@ -1,6 +1,15 @@
 # Keeps the two things this project depends on current: the Gradle/AndroidX dependencies and
 # the pinned GitHub Actions. One grouped pull request per ecosystem per week at most; review
 # like any other PR.
+#
+# A Gradle update PR needs one more step before it is green: every artifact the build downloads
+# is checked against gradle/verification-metadata.xml, and Dependabot does not know how to add
+# the new versions' checksums. On the PR branch, with the SDK and a JDK 17 on the machine:
+#
+#     ./gradlew --write-verification-metadata sha256 help testDebugUnitTest assembleRelease assembleDebug lintRelease sbom
+#
+# then look through the diff of gradle/verification-metadata.xml (only the bumped modules should
+# change), commit and push. Gradle merges into the existing file, so nothing else moves.
 version: 2
 updates:
   - package-ecosystem: gradle
