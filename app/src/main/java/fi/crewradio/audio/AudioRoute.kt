@@ -95,7 +95,17 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
 
     private val healRunnable = Runnable { if (active && !passive && bluetoothWanted) { scoDevice = null; apply(announce = false) } }
 
+    /**
+     * Heals are counted like retries, and stop at the same cap: a headset that is listed but
+     * refused would otherwise be cleared, re-applied and refused again every 700 ms for as long
+     * as it is listed. A switch that succeeds starts the count over, so a headset whose link
+     * really does drop now and then is picked up again every time.
+     */
+    private var heals = 0
+
     private fun heal() {
+        if (heals >= MAX_RETRIES) return
+        heals++
         handler.removeCallbacks(healRunnable)
         handler.postDelayed(healRunnable, 700)     // let the stack finish tearing the link down first
     }
@@ -141,6 +151,7 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
         handler.removeCallbacks(healRunnable)
         handler.removeCallbacks(retryRunnable)
         retries = 0
+        heals = 0
         audioManager.unregisterAudioDeviceCallback(deviceCallback)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) commDeviceListener?.let { audioManager.removeOnCommunicationDeviceChangedListener(it) }
         else try { context.unregisterReceiver(scoReceiver) } catch (e: Exception) { onStatus("Audio route: ${e.message}") }
@@ -197,14 +208,18 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
                             ?: audioManager.availableCommunicationDevices.firstOrNull { it.type == headset.type }
                         if (dev != null && audioManager.setCommunicationDevice(dev)) {
                             retries = 0
+                            heals = 0
                         } else {
-                            audioManager.clearCommunicationDevice()
+                            // Step off the headset only if it is still the device: clearing a route that
+                            // is already the speaker fires the device listener, and that is one more heal.
+                            if (audioManager.communicationDevice?.type == headset.type) audioManager.clearCommunicationDevice()
                             current = "Speaker"
                             applied = false
                             retryLater()
                         }
                     } else {
                         retries = 0
+                        heals = 0
                         audioManager.clearCommunicationDevice()
                         val type = if (earpiece) AudioDeviceInfo.TYPE_BUILTIN_EARPIECE else AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
                         audioManager.availableCommunicationDevices.firstOrNull { it.type == type }

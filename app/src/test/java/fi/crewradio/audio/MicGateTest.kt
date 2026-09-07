@@ -64,4 +64,23 @@ class MicGateTest {
         repeat(200) { assertNull(g.feed(60.0)) }
         assertFalse(g.open)
     }
+
+    @Test
+    fun thePhoneMicNeedsCloseTalkAndCountsAQuietTableAsQuiet() {
+        val g = MicGate()
+        g.tune(phoneMic = true)
+        assertEquals(MicGate.PHONE_OPEN, g.openRms, 0.0)
+        assertEquals(MicGate.PHONE_CLOSE, g.closeRms, 0.0)
+        repeat(10) { assertNull(g.feed(200.0)) }                   // a headset's speech level: room noise on the phone
+        assertFalse(g.open)
+        assertNull(g.feed(400.0))
+        assertEquals(MicGate.Change.OPEN, g.feed(400.0))           // close talk peaks 400-1150
+        repeat(MicGate.HANG_FRAMES - 1) { assertNull(g.feed(100.0)) }   // 100 would hold a headset open; not the phone
+        assertEquals(MicGate.Change.CLOSE, g.feed(100.0))
+        g.tune(phoneMic = false)
+        assertEquals(MicGate.HEADSET_OPEN, g.openRms, 0.0)
+        assertEquals(MicGate.HEADSET_CLOSE, g.closeRms, 0.0)
+        assertNull(g.feed(200.0))
+        assertEquals(MicGate.Change.OPEN, g.feed(200.0))           // the same 200 keys a headset
+    }
 }

@@ -15,6 +15,7 @@ import fi.crewradio.audio.OpusEncoder
 import fi.crewradio.transport.Transport
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -23,11 +24,12 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.random.Random
 
 /**
- * One crew member as the roster sees it. [name] stays null for a phone on a build that
- * predates hello packets; it is then listed from its audio, by id.
+ * One crew member as the roster sees it. [name] stays null until a hello has been heard (or
+ * when the hello carries no name); it is then listed from its audio, by id.
  *
  * [via] is the transport this phone heard it on last; [hops] how many relays that took;
- * [transports] the flags from its hello ([Hello.describe]), i.e. what it is connected to.
+ * [transports] the flags from its hello ([Hello.describe]), i.e. what it is connected to;
+ * [versionCode] the build it runs, 0 until a hello arrives or for a node that is not the app.
  */
 class Peer(
     val id: Int,
@@ -37,7 +39,8 @@ class Peer(
     val hops: Int,
     val talking: Boolean,
     /** Milliseconds since we last heard anything from it, at the time the list was built. */
-    val seenAgoMs: Long
+    val seenAgoMs: Long,
+    val versionCode: Int
 ) {
     val label: String get() = name ?: id.toUInt().toString(16)
 }
@@ -50,7 +53,11 @@ class Stats(
     /** Packets dropped because a sender exceeded its rate budget or failed validation. */
     val rejected: Long,
     /** 20 ms slots the mixer filled with a faded repeat because the packet never came. */
-    val concealed: Long
+    val concealed: Long,
+    /** Authentic packets dropped because their timestamp was more than [Packet.REPLAY_WINDOW_S] off this clock. */
+    val stale: Long,
+    /** Frames the playback track ran dry for, as the mixer counted them. */
+    val underruns: Long
 )
 
 /**
@@ -66,17 +73,27 @@ class Stats(
  * decoded by what their header says, one [OpusDecoder] per remote sender, so a
  * mixed crew of Opus and PCM phones just works.
  *
- * Relay: every packet carries (senderId, seq) and a ttl. A packet not seen before
- * is played and, if relay is on and ttl allows, forwarded on every transport
- * (excluding the link it came from) with ttl decremented. Duplicates are dropped
- * by the seen-cache, so a flood across a multi-hop Aware/BT topology terminates.
- * Running several transports at once makes this phone a bridge (e.g. boat Wi-Fi <-> Aware).
+ * Ingress: every packet carries (senderId, seq), a ttl and the sender's clock. [Ingress] makes
+ * the decisions in order (global budget, AEAD, timestamp, seen-cache, sender budget) and the
+ * engine counts the outcome; a packet not seen before is played and, if [relay] is on and the
+ * ttl allows, forwarded on every transport (excluding the link it came from) with the ttl
+ * decremented. Duplicates are dropped by the seen-cache, so a flood across a multi-hop
+ * Aware/BT topology terminates. Running several transports at once makes this phone a bridge
+ * (e.g. boat Wi-Fi <-> Aware).
  *
  * Roster: while connected a heartbeat thread sends a [Hello] every second, and every
  * hello or audio packet heard refreshes that sender's entry. A sender silent for
  * [PEER_TIMEOUT_MS] is dropped; at most [MAX_NODES] are tracked. Timing uses the
- * monotonic clock, so a wall-clock change never ages or revives anyone. [onRoster]
- * fires only when the list actually changes.
+ * monotonic clock, so a wall-clock change never ages or revives anyone (the wall clock is only
+ * stamped on packets). [onRoster] fires only when the list actually changes.
+ *
+ * Threads: [connect] and [disconnect] join transport and capture threads and may block for a
+ * moment; call them from the service's session thread, not the main thread (they are safe from
+ * any thread). [startTalking], [stopTalking] and [toggleTalking] never block the caller: the
+ * talk state flips at once under [talkLock], so [isTalking] is right immediately, and the
+ * blocking work (opening the mic, stopping the capture, releasing the codec) runs on the
+ * single `ptt-audio-ctl` thread in the order the calls were made. Setting [channelKey] derives
+ * the packet key, which takes about a second: do that off the main thread too.
  */
 class PttEngine(
     private val context: Context,
@@ -100,7 +117,7 @@ class PttEngine(
     /** Outgoing audio codec, PCM or OPUS. Takes effect the next time the mic is keyed. */
     @Volatile var codec: Packet.Codec = Packet.Codec.OPUS
 
-    /** Hop budget stamped on packets this phone originates. */
+    /** Hop budget stamped on packets this phone originates; as a relay it forwards only packets still within that many hops of their origin ([Ingress.relayTtl]). */
     @Volatile var maxHops: Int = AudioConfig.DEFAULT_TTL
 
     val senderId: Int = Random.nextInt()
@@ -123,15 +140,20 @@ class PttEngine(
      * Voice-operated keying (setting `headset_vox`, and always on the earpiece route): the mic
      * is captured all the time and speech keys it, 1.5 s of quiet un-keys it ([MicGate]); the
      * last [PREROLL] frames before the gate opened go out first, so the first syllable is not
-     * clipped. A muted headset is quiet, so mute means off air.
+     * clipped. A muted headset is quiet, so mute means off air. A key held open for
+     * [VOX_TIMEOUT_FRAMES] (steady wind or engine noise above the gate) is dropped with a status
+     * line, and the gate has to close on quiet before it keys the mic again.
      */
     @Volatile var headsetVox = false
         set(value) { if (field != value) { field = value; syncMonitor() } }
 
-    private var monitor: AudioCapture? = null
+    // Written under monitorLock, but read without it by the audio-control thread (openTalk) and by
+    // the main thread (voiceArmed, micPeakNow): volatile is what gives those reads the writer's edge.
+    @Volatile private var monitor: AudioCapture? = null
     private val gate = MicGate()
     private val preroll = ArrayDeque<ByteArray>()
     @Volatile private var gateTalking = false      // the gate keyed the mic, so the gate un-keys it
+    private var voxFrames = 0                      // frames sent since the gate keyed the mic; under monitorLock
 
     private val monitorLock = Any()
 
@@ -228,14 +250,17 @@ class PttEngine(
                     gate.tune(phoneMic)
                     if (phoneMic) watchProximity(true)
                     preroll.clear()
+                    lateinit var m: AudioCapture
+                    m = AudioCapture(
+                        onFrame = { pcm -> synchronized(monitorLock) { if (monitor === m) voiceFrame(pcm) } },
+                        onError = { why -> monitorFailed(m, why) }
+                    )
+                    monitor = m                                   // published first: the worker may call back before start() returns
                     // A talk in progress on the engine's own capture (a setting or the route changed
                     // mid-press) hands over to the monitor, which feeds sendFrame while talking: two
-                    // captures would send every frame twice and fight over the mic. Its callback takes
-                    // no lock, so stopping it here is safe.
-                    capture?.let { it.stop(); capture = null }
-                    lateinit var m: AudioCapture
-                    m = AudioCapture { pcm -> synchronized(monitorLock) { if (monitor === m) voiceFrame(pcm) } }
-                    monitor = m                                   // published first: the worker may call back before start() returns
+                    // captures would send every frame twice and fight over the mic. The capture is
+                    // owned by the audio-control thread, which is told, and waited for, here.
+                    onAudioCtl { capture?.stop(); capture = null }
                     try {
                         m.start()
                         onStatus(if (phoneMic && earWatched) "Voice keys the mic at the ear" else "Voice keys the mic")
@@ -260,21 +285,34 @@ class PttEngine(
             if (gateTalking) { gateTalking = false; stopTalking() }
             gate.reset()
             if (talking) sendFrame(pcm)
-            else { preroll.addLast(pcm); while (preroll.size > PREROLL) preroll.removeFirst() }
+            else keepForPreroll(pcm)
             return
         }
         when (gate.feed(rms)) {
             MicGate.Change.OPEN -> if (!talking) {
                 gateTalking = true
+                voxFrames = 0
                 startTalking()
                 if (talking) for (f in preroll) sendFrame(f)      // the syllable that opened the gate
                 else gateTalking = false                          // the mic did not open; the gate owns nothing
+                preroll.clear()                                   // sent, or stale by the next opening
             }
             MicGate.Change.CLOSE -> if (gateTalking) { gateTalking = false; stopTalking() }
             null -> Unit
         }
+        if (gateTalking && ++voxFrames >= VOX_TIMEOUT_FRAMES) {
+            // The gate stays open in its own view, so it must see quiet (CLOSE) before it can OPEN again.
+            gateTalking = false
+            stopTalking()
+            onStatus("Voice key timed out")
+        }
         if (talking) sendFrame(pcm)
-        else { preroll.addLast(pcm); while (preroll.size > PREROLL) preroll.removeFirst() }
+        else keepForPreroll(pcm)
+    }
+
+    private fun keepForPreroll(pcm: ByteArray) {
+        preroll.addLast(pcm)
+        while (preroll.size > PREROLL) preroll.removeFirst()
     }
 
     /** A hardware talk key that reaches the engine through Telecom (a Bluetooth headset's button). Set by the service. */
@@ -323,6 +361,30 @@ class PttEngine(
         route.onHeadsetChanged = { syncMonitor() }
     }
 
+    /**
+     * Off-thread recovery from a mic that stopped under us. The capture reports its failure from
+     * its own worker, which must not be joined from inside itself, so the release and the retry
+     * happen here instead; [syncMonitor] then starts a fresh capture if the session still wants one.
+     */
+    private val recovery: ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { Thread(it, "ptt-mic-retry") }
+
+    /**
+     * The always-on voice capture stopped (the audio server restarted, or a call took the mic).
+     * Drops it, un-keys anything it was keying, and tries again shortly: without this the phone
+     * looks like it is on voice keying while no frame can ever arrive.
+     */
+    private fun monitorFailed(failed: AudioCapture, message: String) {
+        val ours = synchronized(monitorLock) {
+            if (monitor !== failed) false
+            else { monitor = null; gateTalking = false; gate.reset(); preroll.clear(); true }
+        }
+        if (!ours) return
+        stopTalking()
+        onStatus("Voice keying stopped: $message")
+        recovery.schedule({ failed.stop(); syncMonitor() }, MIC_RETRY_MS, TimeUnit.MILLISECONDS)
+    }
+
     private fun syncCall(bluetoothPresent: Boolean) {
         if (bluetoothPresent && headsetAsCall && isConnected) {
             if (!CallBridge.start(context)) {
@@ -345,7 +407,8 @@ class PttEngine(
         }
     /** Where the voice is going right now, for the Status screen. */
     val audioRouteNow: String get() = route.current
-    private val mixer = Mixer()
+    // A playback track that died and was rebuilt says so on the status line.
+    private val mixer = Mixer().also { it.onStatus = onStatus }
 
     /**
      * The user's mute: received speech is silenced in the mixer (a gain of 0), the cue tones stay,
@@ -358,10 +421,27 @@ class PttEngine(
     /** True while a Bluetooth headset carries the audio; the slider picks its stream by it. */
     val bluetoothHeadsetNow: Boolean get() = route.bluetoothHeadset
     private val transports = CopyOnWriteArrayList<Transport>()
-    private var capture: AudioCapture? = null
-    @Volatile private var encoder: OpusEncoder? = null
+
+    // ---- talk state ---------------------------------------------------------------
+    //
+    // `talking` flips under talkLock on the caller's thread; everything that blocks (the mic,
+    // the encoder) is owned by the audio-control thread, which runs the opens and closes in
+    // the order the calls were made, so start-stop-start ends with one open capture. Frames
+    // captured before the encoder is up wait in `pending` and go out first, in order, under
+    // sendLock, which also serialises the encoder's use against its release.
+    private val talkLock = Any()
+    private val sendLock = Any()
+    private val audioCtl: ExecutorService = Executors.newSingleThreadExecutor { Thread(it, "ptt-audio-ctl") }
+    @Volatile private var talking = false
+    private var talkGen = 0                            // under talkLock: which start a failed open belongs to
+    private var armed = false                          // under talkLock: the encoder for the current talk is up
+    private val pending = ArrayDeque<ByteArray>()      // under talkLock: frames captured before armed
+    private var capture: AudioCapture? = null          // audio-control thread only
+    private var encoder: OpusEncoder? = null           // under sendLock
+
     private val decoders = ConcurrentHashMap<Int, OpusDecoder>()
-    private val undecodable = ConcurrentHashMap.newKeySet<Int>()   // senders whose decoder failed; reported once
+    private val decodeFailures = ConcurrentHashMap<Int, Int>()      // consecutive decode errors per sender
+    private val undecodable = ConcurrentHashMap<Int, Long>()        // sender -> when (monotonic ms) to try decoding it again
     private val packetCount = AtomicInteger()
     private val audioSeq = AtomicInteger()                           // one per frame, so a gap in it is lost audio
     private val helloSeq = AtomicInteger()                           // hellos count separately; they are not frames
@@ -379,20 +459,31 @@ class PttEngine(
         val duplicates = AtomicLong()
         val hellos = AtomicLong()
         val rejected = AtomicLong()
-        fun snapshot(concealed: Long) = Stats(rxPackets.get(), rxBytes.get(), txPackets.get(), txBytes.get(), relayed.get(), duplicates.get(), hellos.get(), rejected.get(), concealed)
+        val stale = AtomicLong()
+        fun snapshot(concealed: Long, underruns: Long) = Stats(
+            rxPackets.get(), rxBytes.get(), txPackets.get(), txBytes.get(), relayed.get(), duplicates.get(),
+            hellos.get(), rejected.get(), concealed, stale.get(), underruns
+        )
     }
     @Volatile private var counters = Counters()
-    @Volatile private var talking = false
 
     private val nodes = ConcurrentHashMap<Int, Node>()
-    private val seqTracker = SeqTracker()                            // per sender audio sequence: gaps mean lost frames
-    private val rateLimiter = RateLimiter()                          // a sender beyond its budget is dropped before it costs anything
+    /** The receive pipeline: budgets, AEAD, timestamp, seen-caches, sequence marks. Lives with the engine, not the session. */
+    private val ingress = Ingress()
+    private val staleReportedAt = AtomicLong(-REPORT_INTERVAL_MS)
+    private val junkReportedAt = AtomicLong(-REPORT_INTERVAL_MS)
+    @Volatile private var heartbeatFailed = false
 
     /** Seals and opens every packet; null until [channelKey] is set, and then nothing is sent or accepted either. */
-    @Volatile private var crypto: ChannelCrypto? = null
+    @Volatile var crypto: ChannelCrypto? = null
+        private set
     private var cryptoFor: String? = null
 
-    /** The crew's channel key. Deriving the packet key takes a moment, so it is done once per value. */
+    /**
+     * The crew's channel key. Deriving the packet key from it takes about a second of CPU
+     * ([ChannelCrypto.ITERATIONS]), so the setter is memoised per value and must be called off
+     * the main thread; [crypto] is ready when it returns.
+     */
     var channelKey: String = ""
         set(value) {
             if (value == field && cryptoFor == value) return
@@ -410,36 +501,21 @@ class PttEngine(
         @Volatile var transports = 0
         @Volatile var via = "?"
         @Volatile var hops = 0
+        @Volatile var versionCode = 0
         @Volatile var lastSeen = 0L
         @Volatile var lastAudio = 0L
         @Volatile var talking = false
     }
 
-    private class SeenCache(private val capacity: Int) : LinkedHashMap<Long, Boolean>(capacity, 0.75f, false) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Boolean>?) = size > capacity
-        override fun clone(): Any = SeenCache(capacity).also { it.putAll(this) }   // HashMap is Cloneable; keep the bound
-    }
-    private val seen = SeenCache(4096)          // audio: ~80 s of one talker, plenty for a relay echo
-    private val seenHellos = SeenCache(512)     // hellos: 1 Hz per node, their own sequence space
-
-    /** Returns true if this (sender, seq) is new; hellos and audio number themselves independently. */
-    private fun markSeen(senderId: Int, seq: Int, codec: Packet.Codec): Boolean {
-        val key = (senderId.toLong() shl 32) or (seq.toLong() and 0xFFFF_FFFFL)
-        val cache = if (codec == Packet.Codec.HELLO) seenHellos else seen
-        synchronized(cache) { return cache.put(key, true) == null }
-    }
-
-    /** True if this (sender, seq) is already in the seen-cache; a look, nothing is recorded. */
-    private fun isSeen(senderId: Int, seq: Int, codec: Packet.Codec): Boolean {
-        val key = (senderId.toLong() shl 32) or (seq.toLong() and 0xFFFF_FFFFL)
-        val cache = if (codec == Packet.Codec.HELLO) seenHellos else seen
-        synchronized(cache) { return cache.containsKey(key) }
-    }
-
-    /** Starts playback and the given transports; any transport that fails to start is reported and dropped. */
+    /**
+     * Starts playback and the given transports; any transport that fails to start is reported
+     * and dropped. Blocks while the previous session, if any, winds down: call it from the
+     * session thread.
+     */
     fun connect(list: List<Transport>) {
         disconnect()
         counters = Counters()
+        heartbeatFailed = false
         CallBridge.listener = callListener
         route.start()
         mixer.start()
@@ -455,43 +531,70 @@ class PttEngine(
             }
         }
         heartbeat = Executors.newSingleThreadScheduledExecutor { Thread(it, "ptt-heartbeat") }.also {
-            it.scheduleAtFixedRate({ tick() }, 0, TICK_MS, TimeUnit.MILLISECONDS)
+            // A periodic task that throws is cancelled by the executor for good, and this phone
+            // would drop off every roster while it can still talk: catch everything, say so once.
+            // A fixed delay, not a fixed rate: after a doze the heartbeat should resume, not fire
+            // a burst of catch-up hellos at once.
+            it.scheduleWithFixedDelay({
+                try {
+                    tick()
+                } catch (e: Throwable) {
+                    if (!heartbeatFailed) { heartbeatFailed = true; onStatus("Heartbeat error: ${e.message}") }
+                }
+            }, 0, TICK_MS, TimeUnit.MILLISECONDS)
         }
         syncMonitor()
     }
 
-    /** Stops everything and releases codecs; safe to call when already idle. */
+    /**
+     * Stops everything and releases codecs; safe to call when already idle. Waits, briefly, for
+     * the mic to be released, so the caller may drop the foreground microphone afterwards. The
+     * seen-caches and sequence marks are kept on purpose: a recording of the last session must
+     * not open here. Call it from the session thread.
+     */
     fun disconnect() {
         val m = synchronized(monitorLock) { monitor.also { monitor = null; gateTalking = false; if (phoneMic) watchProximity(false) } }
         m?.stop()
         stopTalking()
+        onAudioCtl { }                                  // the close above has run when this returns
         heartbeat?.shutdownNow()
         heartbeat = null
         for (t in transports) t.stop()
         transports.clear()
         mixer.stop()
         releaseDecoders()
-        synchronized(seen) { seen.clear() }
-        synchronized(seenHellos) { seenHellos.clear() }
         nodes.clear()
-        seqTracker.clear()
-        rateLimiter.clear()
         publishRoster()
+        CallBridge.stop()                               // end the Telecom call before the route it was using goes
         route.stop()
-        CallBridge.stop()
         CallBridge.listener = null
         mixer.muted = false
         held = false
         muted = false
     }
 
-    fun stats(): Stats = counters.snapshot(mixer.concealedFrames.get())
+    fun stats(): Stats = counters.snapshot(mixer.concealedFrames.get(), mixer.underrunFrames.get())
 
-    /** Keys the mic: opens the encoder (if Opus) and the capture; on failure everything is released again. */
+    /**
+     * Keys the mic. The state flips here, at once; the encoder (if Opus) and the capture are
+     * opened on the audio-control thread, and if the mic cannot be opened the key is dropped
+     * again and reported. Returns without blocking.
+     */
     fun startTalking() {
-        if (talking || transports.isEmpty() || held) return
-        talking = true
-        encoder = if (codec == Packet.Codec.OPUS) {
+        val gen: Int
+        synchronized(talkLock) {
+            if (talking || transports.isEmpty() || held) return
+            talking = true
+            armed = false
+            pending.clear()
+            gen = ++talkGen
+        }
+        audioCtl.execute { openTalk(gen) }
+    }
+
+    /** Audio-control thread: opens the encoder and, unless the monitor feeds us, the mic; then lets the waiting frames go. */
+    private fun openTalk(gen: Int) {
+        val enc = if (codec == Packet.Codec.OPUS) {
             try {
                 OpusEncoder { broadcast(Packet.Codec.OPUS, it) }
             } catch (e: Exception) {
@@ -499,27 +602,60 @@ class PttEngine(
                 null
             }
         } else null
-        if (monitor != null) {             // the always-on headset capture feeds sendFrame while talking
-            onStatus(if (mode == Mode.FULL_DUPLEX) "Mic on" else "Transmitting")
-            return
-        }
-        val cap = AudioCapture { pcm -> sendFrame(pcm) }
-        try {
-            cap.start()
-        } catch (e: Exception) {
-            cap.stop()                     // frees an AudioRecord that was created but never started
-            encoder?.release()
-            encoder = null
-            talking = false
-            onStatus("Mic error: ${e.message}")
-            return
+        var cap: AudioCapture? = null
+        if (monitor == null) {             // otherwise the always-on capture feeds sendFrame while talking
+            cap = AudioCapture(
+                onFrame = { pcm -> sendFrame(pcm) },
+                // Reported from the capture's own worker, so the un-key goes to another thread:
+                // stopTalking() ends with a join of exactly that worker.
+                onError = { why -> onStatus("Mic stopped: $why"); recovery.execute { stopTalking() } }
+            )
+            try {
+                cap.start()
+            } catch (e: Exception) {
+                cap.stop()                 // frees an AudioRecord that was created but never started
+                enc?.release()
+                synchronized(talkLock) {
+                    if (talkGen == gen && talking) { talking = false; gateTalking = false; pending.clear() }
+                }
+                onStatus("Mic error: ${e.message}")
+                return
+            }
         }
         capture = cap
-        onStatus(if (mode == Mode.FULL_DUPLEX) "Mic on" else "Transmitting")
+        val drain: List<ByteArray>
+        synchronized(sendLock) {
+            encoder = enc
+            synchronized(talkLock) {
+                armed = talking
+                drain = if (talking) pending.toList() else emptyList()
+                pending.clear()
+            }
+            for (f in drain) encodeAndSend(f)
+        }
+        if (talking) onStatus(if (mode == Mode.FULL_DUPLEX) "Mic on" else "Transmitting")
     }
 
-    /** One captured frame out: through the Opus encoder when there is one, else raw. */
+    /**
+     * One captured frame out, in capture order: through the Opus encoder when there is one,
+     * else raw; kept back while the encoder is still being opened, dropped once un-keyed.
+     */
     private fun sendFrame(pcm: ByteArray) {
+        synchronized(sendLock) {
+            synchronized(talkLock) {
+                if (!talking) return
+                if (!armed) {
+                    pending.addLast(pcm)
+                    while (pending.size > MAX_PENDING) pending.removeFirst()
+                    return
+                }
+            }
+            encodeAndSend(pcm)
+        }
+    }
+
+    /** Holds [sendLock]. */
+    private fun encodeAndSend(pcm: ByteArray) {
         val e = encoder
         if (e == null) {
             broadcast(Packet.Codec.PCM, pcm)
@@ -535,16 +671,36 @@ class PttEngine(
         }
     }
 
-    /** Un-keys the mic and releases the capture and encoder. */
+    /** Un-keys the mic at once; the capture and encoder are released on the audio-control thread. Returns without blocking. */
     fun stopTalking() {
-        if (!talking) return
-        talking = false
-        gateTalking = false
+        synchronized(talkLock) {
+            if (!talking) return
+            talking = false
+            gateTalking = false
+            pending.clear()
+        }
+        audioCtl.execute { closeTalk() }
+    }
+
+    /** Audio-control thread: the capture first, outside sendLock (its worker may be waiting for that), then the encoder. */
+    private fun closeTalk() {
         capture?.stop()
         capture = null
-        encoder?.release()
-        encoder = null
+        synchronized(sendLock) {
+            synchronized(talkLock) { armed = false }
+            encoder?.release()
+            encoder = null
+        }
         onStatus(if (mode == Mode.FULL_DUPLEX) "Mic off" else "Listening")
+    }
+
+    /** Runs [work] on the audio-control thread and waits for it, bounded; a report if it did not finish in time. */
+    private fun onAudioCtl(work: () -> Unit) {
+        try {
+            audioCtl.submit(work).get(AUDIO_CTL_WAIT_MS, TimeUnit.MILLISECONDS)
+        } catch (e: Exception) {
+            onStatus("Audio control slow: ${e.javaClass.simpleName}")
+        }
     }
 
     /** Full-duplex mic toggle. */
@@ -553,12 +709,11 @@ class PttEngine(
     /** Plays a short cue (see [fi.crewradio.audio.Tones]) in the ear, or the speaker; nothing when not on channel. */
     fun cue(frames: List<ByteArray>) = mixer.cue(frames)
 
-    /** Stamps and sends one of our own packets on every transport. */
+    /** Stamps (id, sequence, hop budget, clock) and sends one of our own packets on every transport. */
     private fun broadcast(codec: Packet.Codec, payload: ByteArray) {
         val cr = crypto ?: return                                   // no key, nothing goes on the air
         val s = (if (codec == Packet.Codec.HELLO) helloSeq else audioSeq).getAndIncrement()
-        markSeen(senderId, s, codec)
-        val header = Packet.encode(senderId, s, codec, maxHops, ByteArray(0))
+        val header = Packet.encode(senderId, s, codec, maxHops, ByteArray(0), time = System.currentTimeMillis() / 1000)
         val packet = header + cr.seal(Packet.aadOf(header), payload)
         val c = counters
         c.txPackets.incrementAndGet()
@@ -566,38 +721,35 @@ class PttEngine(
         for (t in transports) t.send(packet)
     }
 
-    /** Receive path for every transport: dedupe, relay within the hop budget, then roster, then decode and play. */
+    /** Receive path for every transport: [Ingress] decides, then relay within the hop budget, then roster, then decode and play. */
     private fun onPacket(p: ByteArray, from: Transport, link: Any?) {
         if (transports.isEmpty()) return                  // a transport still winding down after disconnect
         val c = counters                                  // this session's set, whatever happens meanwhile
         val h = Packet.parse(p) ?: run { c.rejected.incrementAndGet(); return }
         if (h.senderId == senderId) return
-        val now = SystemClock.elapsedRealtime()
-        if (!rateLimiter.allowGlobal(now)) { c.rejected.incrementAndGet(); return }
-        // Authenticate before anything else: a packet without the crew's key must not reach the
-        // seen-cache (a forged sender+number would shadow the real packet), the relay, the roster,
-        // nor the sender's own rate budget (a forged sender id would starve the real one).
-        // The order after that is dedupe, then the sender's budget: see below.
         val cr = crypto ?: return
-        val plain = cr.open(Packet.aadOf(p), p, Packet.HEADER, p.size - Packet.HEADER) ?: run { c.rejected.incrementAndGet(); return }
-        // Drop duplicates before charging the sender: every frame arrives twice on WLAN (multicast
-        // and broadcast) and again over every other link, so charging each copy would spend a
-        // 75/s budget on 100+ copies/s and, once the burst is gone, refuse real frames too. Only
-        // authenticated packets get here, so a forgery cannot occupy a (sender, seq) slot. The
-        // cache is looked at first and written only for a packet within the budget, so a sender
-        // over its budget cannot churn the shared cache either; a copy that slips in between on
-        // another transport's thread is caught by the write and counted as the duplicate it is.
-        if (isSeen(h.senderId, h.seq, h.codec)) { c.duplicates.incrementAndGet(); return }       // duplicate via another path
-        if (!rateLimiter.allowSender(h.senderId, now)) { c.rejected.incrementAndGet(); return }
-        if (!markSeen(h.senderId, h.seq, h.codec)) { c.duplicates.incrementAndGet(); return }   // lost the race to its twin
+        val now = SystemClock.elapsedRealtime()
+        val plain: ByteArray
+        val relayTtl: Int
+        when (val r = ingress.admit(h, now, System.currentTimeMillis() / 1000, maxHops, { cr.open(Packet.aadOf(p), p, Packet.HEADER, p.size - Packet.HEADER) })) {
+            is Ingress.Result.Accept -> { plain = r.plain; relayTtl = r.relayTtl }
+            Ingress.Result.Duplicate -> { c.duplicates.incrementAndGet(); return }
+            Ingress.Result.Stale -> {
+                c.stale.incrementAndGet()
+                reportOnce(staleReportedAt, now) { "Clock: ${c.stale.get()} packets more than ${Packet.REPLAY_WINDOW_S} s off" }
+                return
+            }
+            is Ingress.Result.Rejected -> {
+                c.rejected.incrementAndGet()
+                if (r.why == Ingress.Why.JUNK_FLOOD) reportOnce(junkReportedAt, now) { "Unreadable packets: another key, or a flood" }
+                return
+            }
+        }
         c.rxPackets.incrementAndGet()
         c.rxBytes.addAndGet(p.size.toLong())
 
-        // A peer's ttl is capped at our own budget and at the budget the sender signed into the
-        // packet, so nobody can stamp 255, nor bump a captured packet's ttl, and ride further.
-        val ttl = minOf(h.ttl, h.hops, maxHops)
-        if (relay && ttl > 1) {
-            Packet.setTtl(p, ttl - 1)
+        if (relay && relayTtl > 0) {
+            Packet.setTtl(p, relayTtl)
             var forwarded = false
             for (t in transports) {
                 if (t === from) { if (t.relayWithin && t.send(p, except = link)) forwarded = true }
@@ -616,15 +768,9 @@ class PttEngine(
         if ((packetCount.incrementAndGet() and 0xFF) == 0) pruneDecoders()
         val playing = !(mode == Mode.HALF_DUPLEX && talking)   // radio semantics: not while we transmit
 
-        // Audio frames number themselves consecutively, so a gap is lost audio and its slots are
-        // reserved before this frame is queued. Admission and reservation stay atomic per sender:
-        // the same sender's frames can arrive on several transport threads at once. A late frame
-        // is dropped, its slot was concealed already.
-        synchronized(seqTracker) {
-            val gap = seqTracker.admit(h.senderId, h.seq)
-            if (gap < 0) return
-            if (playing && gap in 1..Conceal.MAX_FRAMES) mixer.conceal(h.senderId, gap)
-        }
+        // A gap before this frame is lost audio: its slots are reserved in the mixer atomically
+        // with the admission. A late frame is dropped, its slot was concealed already.
+        if (!ingress.admitAudio(h.senderId, h.seq) { gap -> if (playing && gap <= Conceal.MAX_FRAMES) mixer.conceal(h.senderId, gap) }) return
         if (!playing) return
 
         when (h.codec) {
@@ -632,6 +778,12 @@ class PttEngine(
             Packet.Codec.OPUS -> decodeOpus(h.senderId, plain)
             Packet.Codec.HELLO -> Unit                        // handled above
         }
+    }
+
+    /** A status line for a condition that recurs on every packet: at most once per [REPORT_INTERVAL_MS], whichever thread sees it. */
+    private fun reportOnce(last: AtomicLong, now: Long, message: () -> String) {
+        val prev = last.get()
+        if (now - prev >= REPORT_INTERVAL_MS && last.compareAndSet(prev, now)) onStatus(message())
     }
 
     // ---- roster -------------------------------------------------------------------
@@ -649,20 +801,21 @@ class PttEngine(
                 changed = true
             }
         }
-        seqTracker.retain(nodes.keys)
         if (changed) publishRoster()
     }
 
     private fun sendHello() {
         var flags = 0
         for (t in transports) flags = flags or Hello.bitFor(t.name)
-        broadcast(Packet.Codec.HELLO, Hello(displayName, flags, maxHops).encode())
+        broadcast(Packet.Codec.HELLO, Hello(displayName, flags, maxHops, BuildConfig.VERSION_CODE).encode())
     }
 
+    /** [ttlLeft] is what arrived on the header; every relay decrements from what it received, so the difference is the hops travelled. */
     private fun heardHello(id: Int, hello: Hello, from: Transport, ttlLeft: Int) {
         val n = nodeFor(id) ?: return
-        n.name = hello.name
+        n.name = hello.name.ifBlank { null }
         n.transports = hello.transports
+        n.versionCode = hello.versionCode
         n.via = from.name
         n.hops = (hello.ttl - ttlLeft).coerceAtLeast(0)
         n.lastSeen = SystemClock.elapsedRealtime()
@@ -694,7 +847,7 @@ class PttEngine(
     private fun buildRoster(): List<Peer> {
         val now = SystemClock.elapsedRealtime()
         return nodes.entries
-            .map { (id, n) -> Peer(id, n.name, n.transports, n.via, n.hops, n.talking, now - n.lastSeen) }
+            .map { (id, n) -> Peer(id, n.name, n.transports, n.via, n.hops, n.talking, now - n.lastSeen, n.versionCode) }
             .sortedBy { it.label.lowercase() }
     }
 
@@ -702,7 +855,7 @@ class PttEngine(
     @Synchronized
     private fun publishRoster() {
         val list = buildRoster()
-        val key = list.joinToString("|") { "${it.id}/${it.name}/${it.transports}/${it.via}/${it.hops}/${it.talking}" }
+        val key = list.joinToString("|") { "${it.id}/${it.name}/${it.transports}/${it.via}/${it.hops}/${it.talking}/${it.versionCode}" }
         if (key == lastRosterKey) return
         lastRosterKey = key
         lastRoster = list
@@ -711,15 +864,21 @@ class PttEngine(
 
     // ---- codecs -------------------------------------------------------------------
 
-    /** Feeds one Opus packet to the sender's decoder and plays whatever frames come out. */
+    /**
+     * Feeds one Opus packet to the sender's decoder and plays whatever frames come out. A sender
+     * whose decoder cannot be created, or fails [MAX_DECODE_FAILURES] times running, is left
+     * alone for [UNDECODABLE_MS] (reported once) rather than given a fresh MediaCodec 50 times a
+     * second; a decode that works clears its count.
+     */
     private fun decodeOpus(sender: Int, p: ByteArray) {
-        if (undecodable.contains(sender)) return
+        undecodable[sender]?.let { until ->
+            if (SystemClock.elapsedRealtime() < until) return
+            undecodable.remove(sender, until)
+        }
         val dec = try {
-            decoderFor(sender) ?: return                     // over capacity and everyone is talking: drop
+            decoderFor(sender) ?: return                     // over capacity and everyone is talking, or disconnecting: drop
         } catch (e: Exception) {
-            if (undecodable.size >= MAX_UNDECODABLE) undecodable.clear()
-            undecodable.add(sender)
-            onStatus("Opus decoder unavailable, can't play ${sender.toUInt().toString(16)}")
+            giveUp(sender, "Opus decoder unavailable")
             return
         }
         synchronized(dec) {
@@ -727,23 +886,40 @@ class PttEngine(
                 dec.decode(p, 0, p.size) { frame ->
                     mixer.push(sender, frame, 0, frame.size)
                 }
+                decodeFailures.remove(sender)
             } catch (e: Exception) {
-                decoders.remove(sender)
-                dec.release()
-                onStatus("Opus decode error: ${e.message}")
+                if (decoders.remove(sender, dec)) dec.release()   // only ours: another thread may have replaced it
+                val n = (decodeFailures[sender] ?: 0) + 1
+                if (n >= MAX_DECODE_FAILURES) {
+                    decodeFailures.remove(sender)
+                    giveUp(sender, "Opus decode error: ${e.message}")
+                } else decodeFailures[sender] = n
             }
         }
+    }
+
+    private fun giveUp(sender: Int, why: String) {
+        if (undecodable.size >= MAX_UNDECODABLE) undecodable.clear()
+        undecodable[sender] = SystemClock.elapsedRealtime() + UNDECODABLE_MS
+        onStatus("$why, ${sender.toUInt().toString(16)} muted ${UNDECODABLE_MS / 1000} s")
     }
 
     /**
      * The sender's decoder, created on demand. Decoders are a bounded resource (each is a
      * MediaCodec), so at most [MAX_DECODERS] exist; a new sender beyond that evicts the
-     * quietest one if it has paused, and is dropped if every slot is actively talking.
+     * quietest one if it has paused, and is dropped if every slot is actively talking. A packet
+     * still in flight while [disconnect] runs must not leave a codec behind in a map that has
+     * just been emptied, so one created after the transports went is released at once.
      */
     private fun decoderFor(sender: Int): OpusDecoder? {
         decoders[sender]?.let { return it }
         if (decoders.size >= MAX_DECODERS && !evictQuietest()) return null
-        return decoders.computeIfAbsent(sender) { OpusDecoder() }   // atomic: never two codecs for one sender
+        val dec = decoders.computeIfAbsent(sender) { OpusDecoder() }   // atomic: never two codecs for one sender
+        if (transports.isEmpty() && decoders.remove(sender, dec)) {
+            synchronized(dec) { dec.release() }
+            return null
+        }
+        return dec
     }
 
     /** Releases the decoder that has been quiet longest, if it has paused at all. */
@@ -764,20 +940,33 @@ class PttEngine(
         }
     }
 
-    /** Drops every decoder and the failed-sender list, on disconnect. */
+    /** Drops every decoder and the failed-sender lists, on disconnect. */
     private fun releaseDecoders() {
-        for (dec in decoders.values) synchronized(dec) { dec.release() }
-        decoders.clear()
+        for ((sender, dec) in decoders) {
+            if (decoders.remove(sender, dec)) synchronized(dec) { dec.release() }
+        }
+        decodeFailures.clear()
         undecodable.clear()
     }
 
     private companion object {
         /** Frames kept from before the voice gate opened and sent first: 100 ms. */
         const val PREROLL = 5
+        /** Frames held back while the encoder opens (the pre-roll and a few more); older ones are dropped. */
+        const val MAX_PENDING = 25
+        /** How long the voice gate may hold the key: 60 s of frames. */
+        const val VOX_TIMEOUT_FRAMES = 60_000 / AudioConfig.FRAME_MS
+        /** How long after a mic failure the always-on capture is tried again. */
+        const val MIC_RETRY_MS = 2_000L
+        const val AUDIO_CTL_WAIT_MS = 2_000L
         const val DECODER_IDLE_NS = 30_000_000_000L
         const val EVICT_IDLE_NS = 2_000_000_000L
         const val MAX_DECODERS = 8            // a crew, not a crowd; each one is a MediaCodec instance
         const val MAX_UNDECODABLE = 64
+        const val MAX_DECODE_FAILURES = 3
+        const val UNDECODABLE_MS = 10_000L
+        /** How often a recurring condition (stale packets, unreadable packets) is put on the status line. */
+        const val REPORT_INTERVAL_MS = 30_000L
 
         const val TICK_MS = 1_000L            // hello cadence; also how often talking marks and timeouts are checked
         const val PEER_TIMEOUT_MS = 4_000L    // three missed hellos and a bit

@@ -10,6 +10,11 @@ import kotlin.math.sin
  * [factor]-th sample. FIR history and phase carry across calls, so consecutive
  * frames join without clicks. Used to bring the platform Opus decoder's fixed
  * 48 kHz output down to the 16 kHz the mixer runs at.
+ *
+ * Sixteen taps per unit of factor (49 for 3) put the passband edge above 6 kHz,
+ * so sibilants come through flat, and the stop band under -20 dB by 9 kHz, where
+ * anything left would fold onto the speech; one 20 ms frame costs 320 x 49
+ * multiplies, nothing on a phone.
  */
 class Decimator(val factor: Int) {
 
@@ -38,10 +43,10 @@ class Decimator(val factor: Int) {
     }
 
     companion object {
-        /** Hamming-windowed sinc, cutoff at 0.9x the new Nyquist, 8*factor+1 taps, unity DC gain. */
+        /** Hamming-windowed sinc, cutoff at 0.96x the new Nyquist, 16*factor+1 taps, unity DC gain. */
         fun design(factor: Int): FloatArray {
-            val n = 8 * factor + 1
-            val fc = 0.45 / factor
+            val n = 16 * factor + 1
+            val fc = 0.48 / factor
             val mid = (n - 1) / 2.0
             val h = DoubleArray(n) { k ->
                 val x = k - mid

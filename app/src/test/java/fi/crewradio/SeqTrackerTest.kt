@@ -52,14 +52,30 @@ class SeqTrackerTest {
         assertEquals(-1, t.admit(1, Int.MAX_VALUE))   // now late
     }
 
+    /** A sender that went quiet, or one we stopped listening to, is still held to its mark: its old packets stay late. */
     @Test
-    fun retainForgetsGoneSenders() {
+    fun aQuietSenderIsNotForgotten() {
         val t = SeqTracker()
         t.admit(1, 50)
+        for (s in 0 until 200) t.admit(2, s)          // a lot of traffic from someone else meanwhile
+        assertEquals(-1, t.admit(1, 50))              // a recording of its last packet
+        assertEquals(-1, t.admit(1, 10))
+        assertEquals(0, t.admit(1, 51))
+    }
+
+    /** Only when more senders than the capacity have been heard is the least recently heard one let go. */
+    @Test
+    fun onlyTheLeastRecentlyHeardSenderIsEvicted() {
+        val t = SeqTracker(capacity = 3)
+        t.admit(1, 50)
         t.admit(2, 50)
-        t.retain(listOf(2))
-        assertEquals(0, t.admit(1, 10))      // sender 1 starts afresh
-        assertEquals(-1, t.admit(2, 49))     // sender 2 remembered
+        t.admit(3, 50)
+        t.admit(1, 51)                                // sender 1 heard again: 2 is now the oldest
+        t.admit(4, 50)                                // a fourth sender pushes 2 out
+        assertEquals(-1, t.admit(1, 49))              // remembered
+        assertEquals(-1, t.admit(3, 49))              // remembered
+        assertEquals(0, t.admit(2, 10))               // forgotten: starts afresh
+        assertEquals(SeqTracker.DEFAULT_CAPACITY, 256)
     }
 
     /**
