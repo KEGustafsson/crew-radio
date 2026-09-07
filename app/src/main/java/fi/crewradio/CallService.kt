@@ -1,8 +1,10 @@
 package fi.crewradio
 
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.Resources
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -38,12 +40,12 @@ import androidx.annotation.RequiresApi
 class CallService : ConnectionService() {
 
     override fun onCreateOutgoingConnection(from: PhoneAccountHandle?, request: ConnectionRequest?): Connection {
-        val c = ChannelConnection()
+        val c = ChannelConnection(applicationContext.resources)
         c.connectionProperties = Connection.PROPERTY_SELF_MANAGED
         c.connectionCapabilities = Connection.CAPABILITY_HOLD or Connection.CAPABILITY_SUPPORT_HOLD or Connection.CAPABILITY_MUTE
         c.audioModeIsVoip = true
         c.setAddress(request?.address ?: CallBridge.ADDRESS, TelecomManager.PRESENTATION_ALLOWED)
-        c.setCallerDisplayName("Crew Radio", TelecomManager.PRESENTATION_ALLOWED)
+        c.setCallerDisplayName(getString(R.string.app_name), TelecomManager.PRESENTATION_ALLOWED)
         if (!CallBridge.attached(c)) {
             // The engine gave up on this placement (headset gone, session ended) before Telecom answered.
             c.setDisconnected(DisconnectCause(DisconnectCause.CANCELED))
@@ -55,11 +57,16 @@ class CallService : ConnectionService() {
     }
 
     override fun onCreateOutgoingConnectionFailed(from: PhoneAccountHandle?, request: ConnectionRequest?) {
-        CallBridge.failed("Headset call refused by the phone")
+        CallBridge.failed(getString(R.string.call_refused))
     }
 
-    /** One channel session as Telecom sees it. Callbacks arrive on the main thread. */
-    class ChannelConnection : Connection() {
+    /**
+     * One channel session as Telecom sees it. Callbacks arrive on the main thread.
+     * A [Connection] is not a Context of its own, and [CallBridge] holds the live one in a static
+     * field, so what is passed in is the application's [Resources] — enough for the route labels,
+     * and nothing that could keep an activity alive.
+     */
+    class ChannelConnection(private val res: Resources) : Connection() {
 
         /** The headset button (HFP hang-up): a talk key, not the end of the session. */
         override fun onDisconnect() { CallBridge.listener?.onHeadsetButton() }
@@ -77,10 +84,10 @@ class CallService : ConnectionService() {
         override fun onCallAudioStateChanged(state: CallAudioState) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
             val label = when (state.route) {
-                CallAudioState.ROUTE_BLUETOOTH -> "Headset · " + bluetoothName(state)
-                CallAudioState.ROUTE_WIRED_HEADSET -> "Wired headset"
-                CallAudioState.ROUTE_SPEAKER -> "Speaker"
-                else -> "Earpiece"
+                CallAudioState.ROUTE_BLUETOOTH -> res.getString(R.string.call_headset, bluetoothName(state))
+                CallAudioState.ROUTE_WIRED_HEADSET -> res.getString(R.string.call_wired_headset)
+                CallAudioState.ROUTE_SPEAKER -> res.getString(R.string.call_speaker)
+                else -> res.getString(R.string.call_earpiece)
             }
             val wanted = CallBridge.wantedRoute(state)
             if (wanted != null && wanted != state.route) setAudioRoute(wanted)
@@ -116,17 +123,20 @@ class CallService : ConnectionService() {
 
         @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
         private fun label(e: CallEndpoint): String = when (e.endpointType) {
-            CallEndpoint.TYPE_BLUETOOTH -> "Headset · " + e.endpointName.toString().trim().ifEmpty { "Bluetooth" }
-            CallEndpoint.TYPE_WIRED_HEADSET -> "Wired headset"
-            CallEndpoint.TYPE_SPEAKER -> "Speaker"
-            CallEndpoint.TYPE_EARPIECE -> "Earpiece"
-            else -> "Streaming"
+            CallEndpoint.TYPE_BLUETOOTH -> res.getString(
+                R.string.call_headset,
+                e.endpointName.toString().trim().ifEmpty { res.getString(R.string.call_bluetooth) }
+            )
+            CallEndpoint.TYPE_WIRED_HEADSET -> res.getString(R.string.call_wired_headset)
+            CallEndpoint.TYPE_SPEAKER -> res.getString(R.string.call_speaker)
+            CallEndpoint.TYPE_EARPIECE -> res.getString(R.string.call_earpiece)
+            else -> res.getString(R.string.call_streaming)
         }
 
         private fun bluetoothName(state: CallAudioState): String =
-            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) state.activeBluetoothDevice?.let { dev ->
+            state.activeBluetoothDevice?.let { dev ->
                 try { dev.name } catch (_: SecurityException) { null }
-            } else null)?.takeIf { it.isNotBlank() } ?: "Bluetooth"
+            }?.takeIf { it.isNotBlank() } ?: res.getString(R.string.call_bluetooth)
 
         fun end(cause: Int) {
             setDisconnected(DisconnectCause(cause))
@@ -190,6 +200,10 @@ object CallBridge {
     }
 
     /** Places the call; [Listener.onCallActive] or [Listener.onCallEnded] follows on the main thread. */
+    // MANAGE_OWN_CALLS is a normal permission, declared in the manifest and granted at install;
+    // placeCall for a self-managed account needs nothing else, and the catch below covers the
+    // case where an OEM refuses anyway.
+    @SuppressLint("MissingPermission")
     fun start(context: Context): Boolean {
         if (connection != null || placing) return true
         if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELECOM)) return false
@@ -197,7 +211,7 @@ object CallBridge {
         val handle = PhoneAccountHandle(ComponentName(context, CallService::class.java), ACCOUNT_ID)
         return try {
             tm.registerPhoneAccount(
-                PhoneAccount.builder(handle, "Crew Radio")
+                PhoneAccount.builder(handle, context.getString(R.string.app_name))
                     .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
                     .addSupportedUriScheme(ADDRESS.scheme)
                     .build()
@@ -209,7 +223,7 @@ object CallBridge {
             true
         } catch (e: Exception) {
             placing = false
-            listener?.onCallEnded("Headset call failed: ${e.message}")
+            listener?.onCallEnded(context.getString(R.string.call_failed, e.message))
             false
         }
     }

@@ -1,41 +1,262 @@
 <resources>
     <string name="app_name">Crew Radio</string>
+
+    <!-- Notification -->
     <string name="notification_channel">Intercom session</string>
     <string name="notification_title">Crew Radio</string>
+    <plurals name="notification_title_online">
+        <item quantity="one">Crew Radio · %1$d online</item>
+        <item quantity="other">Crew Radio · %1$d online</item>
+    </plurals>
+    <string name="notification_muted_suffix">%1$s · muted</string>
     <string name="notification_disconnect">Disconnect</string>
+
+    <!-- Menus -->
     <string name="menu_settings">Settings</string>
     <string name="menu_status">Status</string>
-    <string name="talking_line">%s TALKING</string>
+
+    <!-- Main screen -->
+    <string name="talking_line">● %s TALKING</string>
     <string name="pick_transport">Pick a transport first</string>
     <string name="crew_channel">CHANNEL</string>
     <string name="tile_lan">WLAN</string>
     <string name="tile_bt">BLUETOOTH</string>
     <string name="tile_aware">AWARE</string>
     <string name="peer_listen_only">PEER · LISTEN ONLY</string>
-    <string name="peer_prefix">"PEER · "</string>
-    <string name="peer_none">NO PEER · BLUETOOTH OFF</string>
+    <string name="peer_line">PEER · %1$s</string>
     <string name="bt_listen_only">Listen only (act as server)</string>
     <string name="channel_off">OFF · TAP TO JOIN</string>
     <string name="channel_on">ON CHANNEL</string>
     <string name="channel_on_muted">ON CHANNEL · MUTED</string>
-    <string name="notification_muted">muted</string>
     <string name="volume_mute">Mute</string>
     <string name="volume_unmute">Unmute</string>
     <string name="volume_slider">Volume</string>
     <string name="volume_muted_value">MUTE</string>
-    <string name="state_off">OFF</string>
-    <string name="status_off_hint">Switch the channel on to see who is aboard</string>
-    <string name="status_idle">NOT CONNECTED</string>
-    <string name="aboard">%d ABOARD</string>
+    <string name="volume_step">%1$d</string>
+    <string name="head_count">%1$d</string>
     <string name="ptt_talk">TALK</string>
     <string name="ptt_talk_hint">HOLD</string>
     <string name="ptt_on_air">ON AIR</string>
     <string name="ptt_on_air_hint">RELEASE TO LISTEN</string>
     <string name="ptt_on_air_latched_hint">TAP OR KEY TO STOP</string>
+    <string name="ptt_on_air_touch_hint">DOUBLE TAP TO STOP</string>
+    <string name="ptt_talk_touch_hint">DOUBLE TAP TO TALK</string>
     <string name="ptt_mic_on">MIC ON</string>
     <string name="ptt_mic_on_hint">TAP TO MUTE</string>
     <string name="ptt_mic_off">MIC OFF</string>
     <string name="ptt_mic_off_hint">TAP TO TALK</string>
+    <string name="other_build_aboard">● ANOTHER BUILD ABOARD</string>
+
+    <!-- Accessibility -->
+    <plurals name="a11y_aboard">
+        <item quantity="one">%1$d aboard</item>
+        <item quantity="other">%1$d aboard</item>
+    </plurals>
+    <string name="a11y_talk_start">Start talking</string>
+    <string name="a11y_talk_stop">Stop talking</string>
+    <string name="a11y_on_air">On air</string>
+    <string name="a11y_listening">Listening</string>
+    <string name="a11y_channel">Channel</string>
+    <string name="a11y_on">on</string>
+    <string name="a11y_off">off</string>
+    <string name="a11y_tile_lan">WLAN transport</string>
+    <string name="a11y_tile_bt">Bluetooth transport</string>
+    <string name="a11y_tile_aware">Wi-Fi Aware transport</string>
+    <string name="a11y_unavailable">not available on this phone</string>
+    <string name="a11y_peer">Bluetooth peer</string>
+
+    <!-- Permissions -->
+    <string name="perm_settings">App settings</string>
+    <string name="perm_mic_denied">Crew Radio cannot talk without the microphone. Turn it on in App settings.</string>
+    <string name="perm_bt_denied">Bluetooth is off for Crew Radio. Turn it on in App settings.</string>
+    <string name="perm_aware_denied">Nearby devices is off for Crew Radio. Turn it on in App settings.</string>
+    <string name="perm_needed">Crew Radio needs that permission to join the channel.</string>
+
+    <!-- Wi-Fi Aware -->
+    <string name="aware_unavailable">This phone has no Wi-Fi Aware</string>
+    <string name="location_off_for_aware">Wi-Fi Aware finds nobody with location services off</string>
+    <string name="location_settings">Location settings</string>
+
+    <!-- Service status lines (shown verbatim in the status line and the notification) -->
+    <string name="status_not_connected">Not connected</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_no_transport">No transport started</string>
+    <string name="status_cant_start">Can\'t start service: %1$s</string>
+    <string name="status_key_failed">Channel key failed: %1$s</string>
+    <string name="status_mic_on">Talk key: mic on</string>
+    <string name="status_mic_off">Talk key: mic off</string>
+    <string name="status_other_build">%1$s runs another build</string>
+    <string name="status_managed_changed">Managed settings changed</string>
+
+    <!-- Status screen -->
+    <string name="state_off">OFF</string>
+    <string name="status_off_hint">Switch the channel on to see who is aboard</string>
     <string name="roster_alone">Nobody else aboard yet</string>
     <string name="meta_talking">TALKING</string>
+    <string name="aboard">%d ABOARD</string>
+    <string name="card_crew">CREW</string>
+    <string name="card_this_phone">THIS PHONE</string>
+    <string name="card_network">NETWORK</string>
+    <string name="card_packets">PACKETS</string>
+    <string name="card_log">LOG</string>
+    <string name="kv_my_name">MY NAME</string>
+    <string name="kv_mode">MODE</string>
+    <string name="kv_relay">RELAY</string>
+    <string name="kv_codec">CODEC</string>
+    <string name="kv_audio">AUDIO</string>
+    <string name="kv_call_volume">CALL VOLUME</string>
+    <string name="kv_hop_limit">HOP LIMIT</string>
+    <string name="kv_version">VERSION</string>
+    <string name="kv_voice_gate">VOICE GATE</string>
+    <string name="kv_updates">UPDATES</string>
+    <string name="kv_multicast">MULTICAST</string>
+    <string name="kv_aware">AWARE</string>
+    <string name="kv_channel_key">CHANNEL KEY</string>
+    <string name="kv_bluetooth">BLUETOOTH</string>
+    <string name="kv_wifi">WI-FI</string>
+    <string name="tile_received">RECEIVED</string>
+    <string name="tile_sent">SENT</string>
+    <string name="tile_relayed">RELAYED</string>
+    <string name="tile_duplicates">DUPLICATES</string>
+    <string name="tile_concealed">CONCEALED</string>
+    <string name="tile_hellos">HELLOS</string>
+    <string name="tile_rejected">REJECTED</string>
+    <string name="tile_clock">CLOCK</string>
+    <string name="tile_underruns">UNDERRUNS</string>
+    <string name="value_on">On</string>
+    <string name="value_off">Off</string>
+    <string name="value_none">None</string>
+    <string name="value_unknown">unknown</string>
+    <string name="value_dash">-</string>
+    <string name="value_number">%1$d</string>
+    <string name="value_full_duplex">Full duplex</string>
+    <string name="value_half_duplex">Half duplex</string>
+    <string name="value_opus">Opus</string>
+    <string name="value_pcm">PCM</string>
+    <string name="value_check_updates">Check for updates</string>
+    <string name="value_no_interface">no interface up</string>
+    <string name="value_since_join">SINCE JOIN · %1$s</string>
+    <string name="value_bytes">%1$d B</string>
+    <string name="value_kilobytes">%1$d kB</string>
+    <string name="value_just_now">just now</string>
+    <string name="value_seconds_ago">%1$d s ago</string>
+    <string name="value_volume">%1$d / %2$d</string>
+    <string name="value_volume_muted">%1$d / %2$d · muted</string>
+    <string name="value_endpoint">%1$s:%2$d</string>
+    <string name="value_version">%1$s · %2$s</string>
+    <string name="value_gate_armed">armed</string>
+    <string name="value_gate_away">away from ear</string>
+    <string name="value_gate">%1$s · peak %2$d · opens at %3$d</string>
+    <string name="value_address">%1$s/%2$d</string>
+    <string name="value_key_ends">…%1$s (ends)</string>
+    <plurals name="peer_meta_hops">
+        <item quantity="one">%1$s · %2$d HOP</item>
+        <item quantity="other">%1$s · %2$d HOPS</item>
+    </plurals>
+    <string name="peer_detail">on %1$s · id %2$s · heard %3$s</string>
+    <string name="peer_old_build">OLD BUILD</string>
+    <string name="peer_newer_build">NEWER BUILD</string>
+    <string name="releases_url" translatable="false">https://github.com/KEGustafsson/crew-radio/releases</string>
+    <string name="no_browser">No browser on this phone</string>
+
+    <!-- Telecom call (CallService) -->
+    <string name="call_headset">Headset · %1$s</string>
+    <string name="call_wired_headset">Wired headset</string>
+    <string name="call_speaker">Speaker</string>
+    <string name="call_earpiece">Earpiece</string>
+    <string name="call_streaming">Streaming</string>
+    <string name="call_bluetooth">Bluetooth</string>
+    <string name="call_refused">Headset call refused by the phone</string>
+    <string name="call_failed">Headset call failed: %1$s</string>
+
+    <!-- Settings screen -->
+    <string name="managed_by_org">Set by your organisation</string>
+    <string name="pref_cat_me">Me</string>
+    <string name="pref_cat_channel">Channel</string>
+    <string name="pref_cat_talking">Talking</string>
+    <string name="pref_cat_wlan">WLAN — takes effect on the next Connect</string>
+    <string name="pref_cat_mesh">Mesh</string>
+    <string name="pref_name_title">My name</string>
+    <string name="pref_name_message">What the others see in their crew list, e.g. Skipper. Leave empty to use the name of this phone. Up to 32 bytes; applies immediately.</string>
+    <string name="pref_crew_name_title">Channel name</string>
+    <string name="pref_crew_name_message">Shown large at the top of the main screen: the boat or the crew, e.g. NORTH STAR. Up to 24 characters; empty shows the app name.</string>
+    <string name="pref_channel_key_title">Channel key</string>
+    <string name="pref_channel_key_message">Every phone on the crew must have the same key: it encrypts everything on the air and only phones that have it can join. This phone made one for you; read it out or type it into the others, or type theirs here. 12 to 64 plain characters. Takes effect on the next join, so leave the channel and join again after changing it.</string>
+    <string name="pref_key_show_title">Show the key</string>
+    <string name="pref_key_show_summary">Read it out to the crew; it is never shown in full anywhere else.</string>
+    <string name="pref_key_share_title">Share the key</string>
+    <string name="pref_key_share_summary">Send it to another phone. Anyone who sees it can join the channel.</string>
+    <string name="pref_key_new_title">New random key</string>
+    <string name="pref_key_new_summary">Makes a fresh key on this phone. Every other phone on the crew has to be given the new one.</string>
+    <string name="pref_full_duplex_title">Full duplex</string>
+    <string name="pref_full_duplex_on">The big button toggles the mic; everyone is heard at once. Best with a headset.</string>
+    <string name="pref_full_duplex_off">Hold the big button to talk; others are muted while you hold it.</string>
+    <string name="pref_hw_button_title">Talk button</string>
+    <string name="pref_hw_button_dialog">Which buttons key the mic</string>
+    <string name="pref_hw_button_help">Press once: mic on. Press again: mic off. Holding a headset button talks for as long as you hold it. A volume key works the same, press for press.</string>
+    <string name="pref_audio_route_title">Audio output</string>
+    <string name="pref_audio_route_dialog">Where the voice goes</string>
+    <string name="pref_headset_vox_title">Voice keys the mic</string>
+    <string name="pref_headset_vox_summary">With a Bluetooth headset: just speak. The mic keys itself when you talk and un-keys 1.5 s after you stop; mute the headset to be sure you are off air. For headsets whose button does not reach the app. With the phone at your ear it is always on, on any output but the loudspeaker.</string>
+    <string name="pref_proximity_title">Phone at the ear</string>
+    <string name="pref_proximity_summary">Use the proximity sensor: lifted to the ear, the sound moves to the earpiece, the screen goes dark and your voice keys the mic. Off if the sensor misfires in a pocket or under spray: the loudspeaker stays, the screen stays on, and voice keying on the phone works only with the earpiece output chosen.</string>
+    <string name="pref_cue_tones_title">Talk key tones</string>
+    <string name="pref_cue_tones_summary">One tone in the ear when a talk key keys the mic, two when it un-keys it. Off: the buzz on the phone only.</string>
+    <string name="pref_headset_call_title">Headset button hangs up</string>
+    <string name="pref_headset_call_summary">Only if a Bluetooth headset\'s button does nothing here: some headsets send a hang-up instead of a media key. This registers the channel with the phone as a call while such a headset is in use, so the hang-up becomes the talk key. It shows on car kits as a call, and a phone call puts the channel on hold.</string>
+    <string name="pref_keep_screen_on_title">Keep screen on</string>
+    <string name="pref_keep_screen_on_summary">While on the channel. Turn off when a headset or the volume keys do the talking.</string>
+    <string name="pref_relay_title">Relay</string>
+    <string name="pref_relay_summary">Forward what this phone hears to its other links, so phones out of each other\'s range still connect through it. Leave on.</string>
+    <string name="pref_opus_title">Opus compression</string>
+    <string name="pref_opus_summary">About a tenth of the bandwidth of raw audio. Falls back to raw by itself if this phone cannot encode Opus. Applies the next time the mic is keyed.</string>
+    <string name="pref_group_title">Multicast group</string>
+    <string name="pref_group_message">An IPv4 multicast address, 224.0.0.0 to 239.255.255.255. Every phone on the crew must use the same one.</string>
+    <string name="pref_port_title">UDP port</string>
+    <string name="pref_port_message">1024 to 65535, the same on every phone.</string>
+    <string name="pref_hops_title">Hop limit</string>
+    <string name="pref_hops_message">How many relays a packet may cross, 1 to 16. Also caps what this phone forwards for others. Applies immediately.</string>
+
+    <!-- Settings validation -->
+    <string name="why_crew_name">Channel name: up to 24 characters</string>
+    <string name="why_name">My name: up to 32 bytes; leave empty to use the name of this phone</string>
+    <string name="why_group">Must be an IPv4 multicast address, 224.0.0.0 to 239.255.255.255</string>
+    <string name="why_port">Port must be 1024 to 65535</string>
+    <string name="why_channel_key">Channel key: 12 to 64 plain characters, the same on every phone</string>
+    <string name="why_hops">Hop limit must be 1 to 16</string>
+
+    <!-- Channel key actions -->
+    <string name="key_not_set">Not set</string>
+    <string name="key_short">short key, make a new one</string>
+    <string name="key_masked_short">%1$s · %2$s</string>
+    <string name="key_share_subject">Crew Radio channel key</string>
+    <string name="key_share_text">Crew Radio channel key: %1$s\n\nType it into Settings › Channel key on every phone on the crew. Anyone who has it can hear and talk on the channel.</string>
+    <string name="key_new_confirm_title">New random key?</string>
+    <string name="key_new_confirm_message">This phone gets a fresh key and stops hearing the crew until every other phone is given the same one. The old key cannot be recovered.</string>
+    <string name="key_new_confirm_ok">Make a new key</string>
+    <string name="cancel">Cancel</string>
+    <string name="ok">OK</string>
+
+    <!-- Managed configuration (res/xml/app_restrictions.xml) -->
+    <string name="restriction_channel_key_title">Channel key</string>
+    <string name="restriction_channel_key_desc">The shared key that encrypts the channel; 12 to 64 printable ASCII characters.</string>
+    <string name="restriction_crew_name_title">Channel name</string>
+    <string name="restriction_crew_name_desc">The boat or crew name shown at the top of the main screen; up to 24 characters.</string>
+    <string name="restriction_display_name_title">Announced name</string>
+    <string name="restriction_display_name_desc">The name the others see in their crew list; empty uses the name of the phone.</string>
+    <string name="restriction_group_title">Multicast group</string>
+    <string name="restriction_group_desc">IPv4 multicast address the WLAN transport joins, 224.0.0.0 to 239.255.255.255.</string>
+    <string name="restriction_port_title">UDP port</string>
+    <string name="restriction_port_desc">Port the WLAN transport uses, 1024 to 65535.</string>
+    <string name="restriction_hops_title">Hop limit</string>
+    <string name="restriction_hops_desc">How many relays a packet may cross, 1 to 16.</string>
+    <string name="restriction_relay_title">Relay</string>
+    <string name="restriction_relay_desc">Forward what this phone hears to its other links.</string>
+    <string name="restriction_full_duplex_title">Full duplex</string>
+    <string name="restriction_full_duplex_desc">Mic on and off is a toggle and everyone is heard at once.</string>
+    <string name="restriction_opus_title">Opus compression</string>
+    <string name="restriction_opus_desc">Compress the voice with Opus instead of sending raw audio.</string>
+    <string name="restriction_audio_route_title">Audio output</string>
+    <string name="restriction_audio_route_desc">Where the voice goes: auto, speaker or earpiece.</string>
 </resources>

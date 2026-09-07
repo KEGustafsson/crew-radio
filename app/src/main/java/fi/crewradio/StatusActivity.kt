@@ -2,6 +2,7 @@ package fi.crewradio
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -16,17 +17,27 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.Toolbar
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
+import androidx.core.view.WindowCompat
+import fi.crewradio.audio.CallVolume
 import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.NetworkInterface
+import java.util.Locale
 
 /**
  * Everything the main screen deliberately leaves out, in the main screen's own language:
  * the same header, cards with a teal label, label-value rows, the crew as dot/name/meta
- * rows, packet counters as tiles, and the status log last. Rebuilt every two seconds
- * while open; nothing here is tappable.
+ * rows, packet counters as tiles, and the status log last.
+ *
+ * The tree is built once, in [buildCards], and every tick only sets text on the views that are
+ * already there; the three lists whose length changes (the crew, the network interfaces and the
+ * log) are rebuilt only when their content changes, so the scroll position stays where the reader
+ * left it. The one tappable row is "Check for updates".
  */
 class StatusActivity : AppCompatActivity() {
 
@@ -36,6 +47,7 @@ class StatusActivity : AppCompatActivity() {
     private lateinit var crewName: TextView
     private lateinit var statePill: TextView
     private lateinit var cards: LinearLayout
+    private lateinit var callVolume: CallVolume
     private val handler = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() {
@@ -43,6 +55,21 @@ class StatusActivity : AppCompatActivity() {
             handler.postDelayed(this, 2_000)
         }
     }
+
+    // The views the tick writes into, kept so nothing is inflated twice.
+    private val values = HashMap<Int, TextView>()          // label string id -> value view
+    private val tileValues = HashMap<Int, TextView>()      // tile label string id -> value view
+    private lateinit var crewAside: TextView
+    private lateinit var crewRows: LinearLayout
+    private var crewKey = ""
+    private lateinit var netAside: TextView
+    private lateinit var nicRows: LinearLayout
+    private var nicKey = ""
+    private lateinit var packetsAside: TextView
+    private lateinit var phoneAside: TextView
+    private lateinit var logRows: LinearLayout
+    private var logKey = ""
+    private lateinit var gateRow: View
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
@@ -54,14 +81,19 @@ class StatusActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_status)
+        setSupportActionBar(findViewById<Toolbar>(R.id.toolbar))
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
+        findViewById<View>(R.id.root).padForWindowInsets()
         prefs = Prefs(this)
         inflater = LayoutInflater.from(this)
+        callVolume = CallVolume(this)
         crewName = findViewById(R.id.crewName)
         statePill = findViewById(R.id.statePill)
         cards = findViewById(R.id.cards)
-        crewName.text = prefs.crewName.uppercase()
+        crewName.text = prefs.crewName.uppercase(Locale.getDefault())
+        buildCards()
     }
 
     override fun onSupportNavigateUp(): Boolean {
@@ -82,6 +114,51 @@ class StatusActivity : AppCompatActivity() {
         super.onStop()
     }
 
+    // ---- the tree, built once ------------------------------------------------------
+
+    private fun buildCards() {
+        card(R.string.card_crew).let { (aside, rows) ->
+            crewAside = aside
+            crewRows = rows
+        }
+
+        card(R.string.card_this_phone).let { (aside, rows) ->
+            phoneAside = aside
+            for (label in listOf(
+                R.string.kv_my_name, R.string.kv_mode, R.string.kv_relay, R.string.kv_codec,
+                R.string.kv_audio, R.string.kv_call_volume, R.string.kv_hop_limit, R.string.kv_version
+            )) rows.addView(kv(label))
+            gateRow = kv(R.string.kv_voice_gate).also { it.visibility = View.GONE; rows.addView(it) }
+            // The one row on this screen that does something: the Releases page in a browser.
+            val updates = kv(R.string.kv_updates)
+            values[R.string.kv_updates]?.text = getString(R.string.value_check_updates)
+            values[R.string.kv_updates]?.setTextColor(color(R.color.primary))
+            updates.isClickable = true
+            updates.isFocusable = true
+            updates.contentDescription = getString(R.string.value_check_updates)
+            updates.setOnClickListener { openReleases() }
+            rows.addView(updates)
+        }
+
+        card(R.string.card_network).let { (aside, rows) ->
+            netAside = aside
+            nicRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            rows.addView(nicRows)
+            for (label in listOf(R.string.kv_multicast, R.string.kv_aware, R.string.kv_channel_key, R.string.kv_bluetooth)) {
+                rows.addView(kv(label))
+            }
+        }
+
+        card(R.string.card_packets).let { (aside, rows) ->
+            packetsAside = aside
+            rows.addView(tiles(R.string.tile_received, R.string.tile_sent, R.string.tile_relayed))
+            rows.addView(tiles(R.string.tile_duplicates, R.string.tile_concealed, R.string.tile_hellos))
+            rows.addView(tiles(R.string.tile_rejected, R.string.tile_clock, R.string.tile_underruns))
+        }
+
+        card(R.string.card_log).let { (_, rows) -> logRows = rows }
+    }
+
     // ---- rendering ----------------------------------------------------------------
 
     private fun render() {
@@ -92,88 +169,129 @@ class StatusActivity : AppCompatActivity() {
         statePill.text = getString(if (on) R.string.channel_on else R.string.state_off)
         statePill.setTextColor(color(if (on) R.color.primary else R.color.text_dim))
 
-        cards.removeAllViews()
-
         // Crew
         val peers = e?.rosterNow ?: emptyList()
-        card("CREW", getString(R.string.aboard, peers.size)).let { rows ->
-            if (peers.isEmpty()) {
-                rows.addView(note(if (on) getString(R.string.roster_alone) else getString(R.string.status_off_hint)))
-            } else for (p in peers) rows.addView(peerRow(p))
+        crewAside.text = getString(R.string.aboard, peers.size)
+        val key = peers.joinToString("|") { "${it.id}/${it.label}/${it.talking}/${it.via}/${it.hops}/${it.transports}/${it.versionCode}" } + "/$on"
+        if (key != crewKey) {
+            crewKey = key
+            crewRows.removeAllViews()
+            if (peers.isEmpty()) crewRows.addView(note(getString(if (on) R.string.roster_alone else R.string.status_off_hint)))
+            else for (p in peers) crewRows.addView(peerRow(p))
+        } else {
+            // Only the "heard N s ago" moves; rewrite that line in place.
+            for (i in peers.indices) {
+                val row = crewRows.getChildAt(i) ?: break
+                row.findViewById<TextView>(R.id.detail).text = peerDetail(peers[i])
+            }
         }
 
         // This phone
-        card("THIS PHONE", e?.senderId?.let { hex(it) } ?: "").let { rows ->
-            rows.addView(kv("MY NAME", prefs.name ?: e?.defaultName ?: "-"))
-            rows.addView(kv("MODE", if (prefs.fullDuplex) "Full duplex" else "Half duplex"))
-            rows.addView(kv("RELAY", if (prefs.relay) "On" else "Off"))
-            rows.addView(kv("CODEC", if (prefs.opus) "Opus" else "PCM"))
-            rows.addView(kv("AUDIO", if (on) e?.audioRouteNow ?: "-" else when (prefs.audioRoute) {
-                Prefs.ROUTE_SPEAKER -> "Speaker"
-                Prefs.ROUTE_EARPIECE -> "Earpiece"
-                else -> "Headset or speaker"
-            }))
-            val cv = fi.crewradio.audio.CallVolume(this)
-            val stream = cv.stream(e?.bluetoothHeadsetNow == true)
-            rows.addView(kv("CALL VOLUME", "${cv.get(stream)} / ${cv.max(stream)}" + (if (on && e?.muted == true) " · muted" else "")))
-            rows.addView(kv("HOP LIMIT", prefs.hops.toString()))
-            rows.addView(kv("VERSION", "${BuildConfig.VERSION_NAME} · ${BuildConfig.GIT_SHA}"))
-            val peak = e?.micPeakNow ?: -1
-            if (peak >= 0) rows.addView(kv("VOICE GATE", (if (e?.voiceArmed == true) "armed" else "away from ear") + " · peak $peak · opens at ${e?.gateOpenRms}"))
-        }
+        phoneAside.text = e?.senderId?.let { hex(it) }.orEmpty()
+        set(R.string.kv_my_name, prefs.name ?: e?.defaultName ?: getString(R.string.value_dash))
+        set(R.string.kv_mode, getString(if (prefs.fullDuplex) R.string.value_full_duplex else R.string.value_half_duplex))
+        set(R.string.kv_relay, getString(if (prefs.relay) R.string.value_on else R.string.value_off))
+        set(R.string.kv_codec, getString(if (prefs.opus) R.string.value_opus else R.string.value_pcm))
+        set(R.string.kv_audio, if (on) e?.audioRouteNow ?: getString(R.string.value_dash) else routeLabel())
+        val stream = callVolume.stream(e?.bluetoothHeadsetNow == true)
+        val muted = on && e?.muted == true
+        set(R.string.kv_call_volume, getString(
+            if (muted) R.string.value_volume_muted else R.string.value_volume,
+            callVolume.get(stream), callVolume.max(stream)
+        ))
+        set(R.string.kv_hop_limit, getString(R.string.value_number, prefs.hops))
+        set(R.string.kv_version, getString(R.string.value_version, BuildConfig.VERSION_NAME, BuildConfig.GIT_SHA))
+        val peak = e?.micPeakNow ?: -1
+        gateRow.visibility = if (peak >= 0) View.VISIBLE else View.GONE
+        if (peak >= 0) set(R.string.kv_voice_gate, getString(
+            R.string.value_gate,
+            getString(if (e?.voiceArmed == true) R.string.value_gate_armed else R.string.value_gate_away),
+            peak, e?.gateOpenRms ?: 0
+        ))
 
         // Network
-        card("NETWORK", e?.activeTransports?.joinToString(" + ")?.uppercase().orEmpty()).let { rows ->
-            for ((nic, addr) in interfaces()) rows.addView(kv(nic.uppercase(), addr))
-            rows.addView(kv("MULTICAST", "${prefs.group}:${prefs.port}"))
-            rows.addView(kv("AWARE", fi.crewradio.transport.WifiAwareTransport.SERVICE_NAME))
-            rows.addView(kv("CHANNEL KEY", "…" + prefs.channelKey.takeLast(4) + " (ends)"))   // enough to compare across phones, not enough to copy
-            rows.addView(kv("BLUETOOTH", bluetoothName()))
+        netAside.text = e?.activeTransports?.joinToString(" + ")?.uppercase(Locale.ROOT).orEmpty()
+        val nics = interfaces()
+        val nicsKey = nics.joinToString("|") { "${it.first}=${it.second}" }
+        if (nicsKey != nicKey) {
+            nicKey = nicsKey
+            nicRows.removeAllViews()
+            for ((nic, addr) in nics) nicRows.addView(kvLiteral(nic.uppercase(Locale.ROOT), addr))
         }
+        set(R.string.kv_multicast, getString(R.string.value_endpoint, prefs.group, prefs.port))
+        set(R.string.kv_aware, fi.crewradio.transport.WifiAwareTransport.SERVICE_NAME)
+        // Enough to compare across phones, not enough to copy.
+        set(R.string.kv_channel_key, getString(R.string.value_key_ends, prefs.channelKey.takeLast(4)))
+        set(R.string.kv_bluetooth, bluetoothName())
 
         // Packets
         val st = e?.stats()
-        card("PACKETS", if (on) "SINCE JOIN · " + kb((st?.rxBytes ?: 0) + (st?.txBytes ?: 0)) else "").let { rows ->
-            rows.addView(tiles(
-                "RECEIVED" to (st?.rxPackets ?: 0).toString(),
-                "SENT" to (st?.txPackets ?: 0).toString(),
-                "RELAYED" to (st?.relayed ?: 0).toString()
-            ))
-            rows.addView(tiles(
-                "DUPLICATES" to (st?.duplicates ?: 0).toString(),
-                "CONCEALED" to (st?.concealed ?: 0).toString(),
-                "HELLOS" to (st?.hellos ?: 0).toString()
-            ))
-            rows.addView(tiles(
-                "REJECTED" to (st?.rejected ?: 0).toString(),
-                "" to "",
-                "" to ""
-            ))
-        }
+        packetsAside.text = if (on) getString(R.string.value_since_join, kb((st?.rxBytes ?: 0) + (st?.txBytes ?: 0))) else ""
+        setTile(R.string.tile_received, st?.rxPackets)
+        setTile(R.string.tile_sent, st?.txPackets)
+        setTile(R.string.tile_relayed, st?.relayed)
+        setTile(R.string.tile_duplicates, st?.duplicates)
+        setTile(R.string.tile_concealed, st?.concealed)
+        setTile(R.string.tile_hellos, st?.hellos)
+        setTile(R.string.tile_rejected, st?.rejected)
+        setTile(R.string.tile_clock, st?.stale)
+        setTile(R.string.tile_underruns, st?.underruns)
 
         // Log
-        card("LOG", "").let { rows ->
-            val lines = s?.statusLog.orEmpty().asReversed()
-            if (lines.isEmpty()) rows.addView(note("-"))
-            else for (line in lines) rows.addView(logLine(line))
+        val lines = s?.statusLog.orEmpty().asReversed()
+        val lineKey = lines.joinToString("\n")
+        if (lineKey != logKey) {
+            logKey = lineKey
+            logRows.removeAllViews()
+            if (lines.isEmpty()) logRows.addView(note(getString(R.string.value_dash)))
+            else for (line in lines) logRows.addView(logLine(line))
         }
     }
 
-    /** Adds a card with a title (and an optional right-hand aside) and returns its row container. */
-    private fun card(title: String, aside: String): LinearLayout {
-        val v = inflater.inflate(R.layout.card_status, cards, false)
-        v.findViewById<TextView>(R.id.title).text = title
-        v.findViewById<TextView>(R.id.aside).text = aside
-        cards.addView(v)
-        return v.findViewById(R.id.rows)
+    /** What the audio-output setting says while the channel is off and there is no route in use. */
+    private fun routeLabel(): String {
+        val values = resources.getStringArray(R.array.audio_route_values)
+        val labels = resources.getStringArray(R.array.audio_route_short)
+        val i = values.indexOf(prefs.audioRoute)
+        return labels.getOrElse(if (i >= 0) i else 0) { labels[0] }
     }
 
-    private fun kv(key: String, value: String): View {
+    private fun openReleases() {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, getString(R.string.releases_url).toUri()))
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.no_browser, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ---- the pieces the tree is made of --------------------------------------------
+
+    /** Adds a card with a title and returns its aside (right-hand) label and its row container. */
+    private fun card(title: Int): Pair<TextView, LinearLayout> {
+        val v = inflater.inflate(R.layout.card_status, cards, false)
+        v.findViewById<TextView>(R.id.title).setText(title)
+        cards.addView(v)
+        return v.findViewById<TextView>(R.id.aside) to v.findViewById(R.id.rows)
+    }
+
+    /** A label-value row whose value this screen writes by its label's resource id. */
+    private fun kv(label: Int): View {
+        val v = inflater.inflate(R.layout.row_kv, cards, false)
+        v.findViewById<TextView>(R.id.key).setText(label)
+        values[label] = v.findViewById(R.id.value)
+        return v
+    }
+
+    /** The same row for something with no fixed label: an interface name, which the phone names. */
+    private fun kvLiteral(key: String, value: String): View {
         val v = inflater.inflate(R.layout.row_kv, cards, false)
         v.findViewById<TextView>(R.id.key).text = key
         v.findViewById<TextView>(R.id.value).text = value
         return v
     }
+
+    private fun set(label: Int, value: String) { values[label]?.text = value }
+    private fun setTile(label: Int, value: Long?) { tileValues[label]?.text = getString(R.string.value_number, value ?: 0L) }
 
     private fun peerRow(p: Peer): View {
         val v = inflater.inflate(R.layout.row_status_peer, cards, false)
@@ -181,28 +299,45 @@ class StatusActivity : AppCompatActivity() {
         val meta = v.findViewById<TextView>(R.id.meta)
         val dot = v.findViewById<View>(R.id.dot)
         if (p.talking) {
-            meta.text = getString(R.string.meta_talking)
+            meta.setText(R.string.meta_talking)
             meta.setTextColor(color(R.color.talking))
             dot.backgroundTintList = ColorStateList.valueOf(color(R.color.talking))
         } else {
-            meta.text = p.via.uppercase() + if (p.hops > 0) " · ${p.hops} HOP" + (if (p.hops == 1) "" else "S") else ""
+            val via = p.via.uppercase(Locale.ROOT)
+            // A plurals resource, not two hand-rolled forms: Polish, Russian and Arabic need more
+            // than two, and a translator cannot add them to a when.
+            meta.text = if (p.hops <= 0) via
+            else resources.getQuantityString(R.plurals.peer_meta_hops, p.hops, via, p.hops)
             meta.setTextColor(color(R.color.text_dim))
             dot.backgroundTintList = null
         }
-        val on = Hello.describe(p.transports).ifEmpty { "-" }
-        v.findViewById<TextView>(R.id.detail).text = "on $on · id ${hex(p.id)} · heard ${ago(p.seenAgoMs)}"
+        // Every phone on the crew must run the same build: the wire format has no legacy mode.
+        val build = v.findViewById<TextView>(R.id.build)
+        val theirs = p.versionCode
+        if (theirs != 0 && theirs != BuildConfig.VERSION_CODE) {
+            build.setText(if (theirs < BuildConfig.VERSION_CODE) R.string.peer_old_build else R.string.peer_newer_build)
+            build.visibility = View.VISIBLE
+        } else {
+            build.visibility = View.GONE
+        }
+        v.findViewById<TextView>(R.id.detail).text = peerDetail(p)
         return v
     }
 
-    private fun tiles(vararg pairs: Pair<String, String>): View {
+    private fun peerDetail(p: Peer): String = getString(
+        R.string.peer_detail, Hello.describe(p.transports).ifEmpty { getString(R.string.value_dash) }, hex(p.id), ago(p.seenAgoMs)
+    )
+
+    private fun tiles(vararg labels: Int): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            isBaselineAligned = false
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
         }
-        pairs.forEachIndexed { i, (label, value) ->
+        labels.forEachIndexed { i, label ->
             val t = inflater.inflate(R.layout.tile_stat, row, false)
-            t.findViewById<TextView>(R.id.value).text = value
-            t.findViewById<TextView>(R.id.label).text = label
+            t.findViewById<TextView>(R.id.label).setText(label)
+            tileValues[label] = t.findViewById(R.id.value)
             (t.layoutParams as LinearLayout.LayoutParams).marginStart = if (i == 0) 0 else dp(8)
             row.addView(t)
         }
@@ -227,8 +362,10 @@ class StatusActivity : AppCompatActivity() {
     private fun color(id: Int) = ContextCompat.getColor(this, id)
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun hex(id: Int) = id.toUInt().toString(16)
-    private fun kb(bytes: Long) = if (bytes < 10_000) "$bytes B" else "${bytes / 1024} kB"
-    private fun ago(ms: Long) = if (ms < 1_000) "just now" else "${ms / 1000} s ago"
+    private fun kb(bytes: Long) =
+        if (bytes < 10_000) getString(R.string.value_bytes, bytes) else getString(R.string.value_kilobytes, bytes / 1024)
+    private fun ago(ms: Long) =
+        if (ms < 1_000) getString(R.string.value_just_now) else getString(R.string.value_seconds_ago, ms / 1000)
 
     /** Every interface that is up with an address: wlan0, the Aware data interface, a hotspot. */
     private fun interfaces(): List<Pair<String, String>> = try {
@@ -238,21 +375,22 @@ class StatusActivity : AppCompatActivity() {
                 nic.interfaceAddresses.mapNotNull { ia ->
                     val a = ia.address
                     when {
-                        a is Inet4Address -> nic.name to "${a.hostAddress}/${ia.networkPrefixLength}"
+                        a is Inet4Address -> nic.name to getString(R.string.value_address, a.hostAddress, ia.networkPrefixLength)
                         a is Inet6Address && nic.name.startsWith("aware") -> nic.name to (a.hostAddress?.substringBefore('%') ?: "")
                         else -> null
                     }
                 }
             }
-            .ifEmpty { listOf("WI-FI" to "no interface up") }
-    } catch (e: Exception) {
-        listOf("WI-FI" to "unknown")
+            .ifEmpty { listOf(getString(R.string.kv_wifi) to getString(R.string.value_no_interface)) }
+    } catch (_: Exception) {
+        listOf(getString(R.string.kv_wifi) to getString(R.string.value_unknown))
     }
 
-    @SuppressLint("MissingPermission")
+    @SuppressLint("MissingPermission")   // BLUETOOTH_CONNECT is asked for by MainActivity; the read is in a try/catch
     private fun bluetoothName(): String {
-        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter ?: return "None"
-        if (!adapter.isEnabled) return "Off"
-        return try { adapter.name } catch (_: SecurityException) { null } ?: "On"
+        val adapter = (getSystemService(BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+            ?: return getString(R.string.value_none)
+        if (!adapter.isEnabled) return getString(R.string.value_off)
+        return try { adapter.name } catch (_: SecurityException) { null } ?: getString(R.string.value_on)
     }
 }

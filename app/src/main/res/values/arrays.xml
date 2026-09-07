@@ -11,12 +11,18 @@
         <item>Always the loudspeaker</item>
         <item>Earpiece: phone to the ear, voice keys the mic</item>
     </string-array>
-    <string-array name="audio_route_values">
+    <!-- The same three choices in the Status screen's width: one label set, indexed by audio_route_values. -->
+    <string-array name="audio_route_short">
+        <item>Headset or speaker</item>
+        <item>Speaker</item>
+        <item>Earpiece</item>
+    </string-array>
+    <string-array name="audio_route_values" translatable="false">
         <item>auto</item>
         <item>speaker</item>
         <item>earpiece</item>
     </string-array>
-    <string-array name="hw_button_values">
+    <string-array name="hw_button_values" translatable="false">
         <item>off</item>
         <item>headset</item>
         <item>volume</item>

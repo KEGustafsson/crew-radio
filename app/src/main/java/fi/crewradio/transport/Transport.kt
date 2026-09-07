@@ -6,7 +6,7 @@ package fi.crewradio.transport
  *
  * `link` is an opaque token identifying the specific peer connection a packet
  * arrived on, so the relay can avoid echoing it straight back. Broadcast
- * transports (LAN multicast) pass null.
+ * transports (LAN multicast) pass the datagram's source address instead.
  */
 interface Transport {
     val name: String
@@ -14,8 +14,16 @@ interface Transport {
     /** True if forwarding a packet to *other* links of this same transport makes sense (BT, Aware). False for multicast. */
     val relayWithin: Boolean
 
+    /**
+     * True while this transport can actually carry packets right now — a listener up, a socket
+     * open or a link alive — which is what the hello may claim. A Bluetooth transport whose
+     * adapter is off is started but not ready. Defaults to "as soon as started".
+     */
+    val ready: Boolean get() = true
+
     fun start(onPacket: (packet: ByteArray, transport: Transport, link: Any?) -> Unit, onStatus: (String) -> Unit)
-    /** Sends to every link but [except]; true if the packet went to at least one. Send failures are transient and count as sent. */
+    /** Queues for every link but [except] and returns at once; true if the packet went to at least one. Send failures are transient and count as sent. */
     fun send(packet: ByteArray, except: Any? = null): Boolean
+    /** Returns within a few milliseconds: flags are set here, sockets are closed by the transport's own threads. */
     fun stop()
 }

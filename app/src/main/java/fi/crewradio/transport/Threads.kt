@@ -44,3 +44,40 @@ internal inline fun reporting(onStatus: (String) -> Unit, what: String, block: (
 
 /** Node ids as they appear in status lines: unsigned hex, e.g. `58738d38`. */
 internal fun hex(id: Int): String = id.toUInt().toString(16)
+
+/**
+ * A wait that a request cuts short — and that a request made *before* the wait skips.
+ *
+ * Every transport waits with [Backoff] between attempts, and something (a Wi-Fi change, the
+ * Bluetooth adapter coming on, `stop()`) regularly wants the next attempt now. A semaphore
+ * drained right before the wait lost the permit a request had just released, so a rejoin
+ * still sat out the full first backoff; this remembers one pending wake instead.
+ */
+internal class Waiter {
+    private val lock = java.lang.Object()
+    private var pending = false
+
+    /** Cuts the current wait short, or the next one if none is in progress. */
+    fun wake() = synchronized(lock) {
+        pending = true
+        lock.notifyAll()
+    }
+
+    /** Waits up to [ms] unless a wake is pending or arrives; true if woken (or interrupted), false on timeout. */
+    fun await(ms: Long): Boolean = synchronized(lock) {
+        val end = System.nanoTime() + ms * 1_000_000
+        while (!pending) {
+            val left = (end - System.nanoTime()) / 1_000_000
+            if (left <= 0) break
+            try {
+                lock.wait(left)
+            } catch (_: InterruptedException) {
+                pending = false
+                return true
+            }
+        }
+        val woken = pending
+        pending = false
+        woken
+    }
+}

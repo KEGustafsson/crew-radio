@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Managed configuration: what an EMM may set for a fleet of phones. Every key here is the
+  same key the settings screen writes into SharedPreferences (see Prefs), so a managed value
+  simply wins over what is stored: Prefs reads the restriction first, checks it against
+  SettingsRules and falls back to the phone's own value if it is not valid. A managed row is
+  shown disabled in Settings with "Set by your organisation".
+
+  Deliberately not managed: the main screen's transport tiles and the Bluetooth peer (they are
+  per phone and per trip), and the talk-button, headset and proximity settings (they follow the
+  hardware the crew member carries).
+-->
+<restrictions xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <restriction
+        android:key="channel_key"
+        android:restrictionType="string"
+        android:title="@string/restriction_channel_key_title"
+        android:description="@string/restriction_channel_key_desc"
+        android:defaultValue="" />
+
+    <restriction
+        android:key="crew_name"
+        android:restrictionType="string"
+        android:title="@string/restriction_crew_name_title"
+        android:description="@string/restriction_crew_name_desc"
+        android:defaultValue="" />
+
+    <restriction
+        android:key="display_name"
+        android:restrictionType="string"
+        android:title="@string/restriction_display_name_title"
+        android:description="@string/restriction_display_name_desc"
+        android:defaultValue="" />
+
+    <restriction
+        android:key="multicast_group"
+        android:restrictionType="string"
+        android:title="@string/restriction_group_title"
+        android:description="@string/restriction_group_desc"
+        android:defaultValue="239.255.42.1" />
+
+    <restriction
+        android:key="lan_port"
+        android:restrictionType="integer"
+        android:title="@string/restriction_port_title"
+        android:description="@string/restriction_port_desc"
+        android:defaultValue="47474" />
+
+    <restriction
+        android:key="max_hops"
+        android:restrictionType="integer"
+        android:title="@string/restriction_hops_title"
+        android:description="@string/restriction_hops_desc"
+        android:defaultValue="4" />
+
+    <restriction
+        android:key="relay"
+        android:restrictionType="bool"
+        android:title="@string/restriction_relay_title"
+        android:description="@string/restriction_relay_desc"
+        android:defaultValue="true" />
+
+    <restriction
+        android:key="full_duplex"
+        android:restrictionType="bool"
+        android:title="@string/restriction_full_duplex_title"
+        android:description="@string/restriction_full_duplex_desc"
+        android:defaultValue="false" />
+
+    <restriction
+        android:key="opus"
+        android:restrictionType="bool"
+        android:title="@string/restriction_opus_title"
+        android:description="@string/restriction_opus_desc"
+        android:defaultValue="true" />
+
+    <restriction
+        android:key="audio_route"
+        android:restrictionType="choice"
+        android:title="@string/restriction_audio_route_title"
+        android:description="@string/restriction_audio_route_desc"
+        android:entries="@array/audio_route_short"
+        android:entryValues="@array/audio_route_values"
+        android:defaultValue="auto" />
+
+</restrictions>

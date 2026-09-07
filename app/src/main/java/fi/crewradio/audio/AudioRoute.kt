@@ -10,6 +10,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import fi.crewradio.R
 
 /**
  * Where the voice goes: a Bluetooth headset over SCO when one is connected, a wired or USB
@@ -40,7 +41,7 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
         set(value) { field = value; if (active) apply(announce = true) }
 
     /** Short description of the route in use, for the Status screen. */
-    @Volatile var current: String = "Speaker"
+    @Volatile var current: String = context.getString(R.string.call_speaker)
 
     /** True while Telecom routes the call; then this class touches no device. */
     @Volatile var passive = false
@@ -173,7 +174,7 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
         }
         scoDevice = null
         audioManager.mode = AudioManager.MODE_NORMAL
-        current = "Speaker"
+        current = context.getString(R.string.call_speaker)
     }
 
     /** Re-evaluates the route, e.g. when Telecom hands it back. */
@@ -194,10 +195,13 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
             val before = current
             val earpiece = headset == null && (policy == Policy.EARPIECE || (policy == Policy.AUTO && atEar))
             current = when {
-                earpiece -> "Earpiece"
-                headset == null -> "Speaker"
-                bluetooth -> "Headset · " + headset.productName.toString().trim().ifEmpty { "Bluetooth" }
-                else -> "Wired headset"
+                earpiece -> context.getString(R.string.call_earpiece)
+                headset == null -> context.getString(R.string.call_speaker)
+                bluetooth -> context.getString(
+                    R.string.call_headset,
+                    headset.productName.toString().trim().ifEmpty { context.getString(R.string.call_bluetooth) }
+                )
+                else -> context.getString(R.string.call_wired_headset)
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -213,7 +217,7 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
                             // Step off the headset only if it is still the device: clearing a route that
                             // is already the speaker fires the device listener, and that is one more heal.
                             if (audioManager.communicationDevice?.type == headset.type) audioManager.clearCommunicationDevice()
-                            current = "Speaker"
+                            current = context.getString(R.string.call_speaker)
                             applied = false
                             retryLater()
                         }
