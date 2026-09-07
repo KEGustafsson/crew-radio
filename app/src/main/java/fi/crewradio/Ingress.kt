@@ -58,6 +58,7 @@ class Ingress(
 
     private class SeenCache(private val capacity: Int) : LinkedHashMap<Long, Boolean>(16, 0.75f, false) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Boolean>?) = size > capacity
+        override fun clone(): Any = SeenCache(capacity).also { it.putAll(this) }   // HashMap is Cloneable; keep the bound
     }
     private val seen = SeenCache(audioCache)          // audio frames; their own sequence space
     private val seenHellos = SeenCache(helloCache)    // hellos: 1 Hz per node, numbered independently
