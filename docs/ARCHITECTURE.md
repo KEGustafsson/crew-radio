@@ -177,7 +177,7 @@ of the transports, so they need a rejoin. The channel key is generated at random
 | `CallService`, `CallBridge` | Opt-in self-managed Telecom call for hang-up-style headset buttons |
 | `Packet`, `Hello`, `SeqTracker` | Wire header, roster heartbeat payload, per-sender sequence admission |
 | `Ingress` | Every admission decision for a received packet, in one testable place |
-| `ChannelCrypto`, `RateLimiter` | AES-GCM sealing under the channel key, the Aware secrets derived from it; ingress budgets |
+| `ChannelCrypto`, `RateLimiter` | AES-GCM sealing under the packet key derived from the channel key, and the Aware secrets derived from that packet key; ingress budgets |
 | `audio/AudioConfig` | 16 kHz, 20 ms, frame sizes |
 | `audio/AudioCapture`, `audio/AudioPlayback` | Mic in, speaker out, each on its own thread |
 | `audio/OpusEncoder`, `audio/OpusDecoder`, `audio/Decimator` | Platform Opus and the 48 → 16 kHz step |
