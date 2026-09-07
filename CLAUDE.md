@@ -22,9 +22,12 @@ flooding relay so multiple transports and multi-hop topologies work.
   `1.<count>`, `BuildConfig.GIT_SHA` on the Status screen. Never edit version numbers by hand.
 - Release pipeline: `.github/workflows/build.yml`. The `build` job (every push/PR; read-only
   token, no secrets, no persisted credentials) runs the unit tests and a debug-signed
-  `assembleRelease`, uploaded as an artifact. The `release` job (push to `main` only) builds again
-  with the `CREWRADIO_*` secrets (keystore base64 + passwords) and publishes a GitHub Release
-  `v<version>` with `CrewRadio-<version>.apk`. Without the keystore `assembleRelease` falls back to
+  `assembleRelease`, uploaded as an artifact. On a push to `main` two more jobs run: `release`
+  builds again with the `CREWRADIO_*` secrets (keystore base64 + passwords), signs, verifies the
+  signer certificate and attests — all under a **read-only** token — and hands the files to
+  `publish`, which holds the only write token in the workflow and does nothing but
+  `gh release create` for `v<version>` with `CrewRadio-<version>.apk`. Splitting them is the point:
+  no checkout, no Gradle and no third-party action ever runs alongside a token that can write here. Without the keystore `assembleRelease` falls back to
   the debug key; with it, a shallow clone is refused (the commit count would be wrong). The
   keystore lives outside the repo (`*.keystore` ignored); the maintainer keeps it in `~/.crewradio/`.
 - Unit tests (JUnit 4, pure Kotlin only, no Android runtime): `./gradlew testDebugUnitTest`.
@@ -250,9 +253,10 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 - CI: actions pinned to commit SHAs (Dependabot bumps them), CodeQL over Kotlin, the plugin's
   JavaScript and the workflows on push/PR/weekly, Android Lint as a gate (`lint.abortOnError`), the
   `release` job attaches an SBOM (`gradlew sbom`, CycloneDX 1.5 from the release runtime classpath,
-  no plugin) plus a SHA-256, with a build-provenance attestation over all three, and creates the
-  Release with `gh` under the workflow token. The signing secrets are scoped to the two steps that
-  need them and the decoded keystore is deleted before anything else runs.
+  no plugin) plus a SHA-256, with a build-provenance attestation over all three; the separate
+  `publish` job creates the Release with `gh` under the workflow token. The signing secrets are
+  scoped to the two steps that need them, the decoded keystore is deleted before anything else
+  runs, and the job that holds them cannot write to the repository.
 - Downloads are verified: `distributionSha256Sum` on the wrapper and `gradle/verification-metadata.xml`
   (sha256) for every dependency. **Any dependency change means regenerating that file** — the recipe
   is in `.github/dependabot.yml`, and a new AGP needs its Windows/macOS `aapt2` sums added by hand.
