@@ -1,6 +1,7 @@
 package fi.crewradio.audio
 
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaFormat
 
 /**
@@ -10,7 +11,13 @@ import android.media.MediaFormat
  * Feed it 20 ms PCM16 frames from the capture thread; every finished Opus
  * packet comes back through [onPacket] on the same thread. The codec is run
  * synchronously with a short input timeout, so a stalled encoder drops a frame
- * instead of blocking the mic.
+ * instead of blocking the mic, and one short wait for output right after each
+ * frame goes in, so the packet leaves on this call rather than the next one.
+ *
+ * Complexity 5 instead of the default 10: the same speech quality at 24 kbit/s
+ * for a fraction of the CPU, which on a phone is battery. Constant bitrate is
+ * asked for too, so a packet's size says nothing about the speech in it; an
+ * encoder that refuses the request is configured without it.
  */
 class OpusEncoder(private val onPacket: (ByteArray) -> Unit) {
 
@@ -21,8 +28,17 @@ class OpusEncoder(private val onPacket: (ByteArray) -> Unit) {
     init {
         val fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, AudioConfig.SAMPLE_RATE, 1)
         fmt.setInteger(MediaFormat.KEY_BIT_RATE, AudioConfig.OPUS_BITRATE)
+        fmt.setInteger(MediaFormat.KEY_COMPLEXITY, COMPLEXITY)
         try {
-            codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            try {
+                fmt.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            } catch (_: Exception) {
+                // The AOSP encoder ignores a mode it does not do; another may refuse it. Same format, no mode.
+                codec.reset()
+                fmt.removeKey(MediaFormat.KEY_BITRATE_MODE)
+                codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }
             codec.start()
         } catch (e: Exception) {
             codec.release()
@@ -43,12 +59,18 @@ class OpusEncoder(private val onPacket: (ByteArray) -> Unit) {
         drain()
     }
 
-    /** Hands every finished packet to [onPacket]; codec-config output is skipped, receivers synthesise their own. */
+    /**
+     * Hands every finished packet to [onPacket]; codec-config output is skipped, receivers
+     * synthesise their own. The first poll waits [OUTPUT_TIMEOUT_US] for the frame just queued,
+     * the rest only take what is ready.
+     */
     private fun drain() {
+        var timeoutUs = OUTPUT_TIMEOUT_US
         while (true) {
-            val idx = codec.dequeueOutputBuffer(info, 0)
+            val idx = codec.dequeueOutputBuffer(info, timeoutUs)
             if (idx == MediaCodec.INFO_TRY_AGAIN_LATER) return
             if (idx < 0) continue                       // format / buffers changed: nothing to read
+            timeoutUs = 0
             val out = codec.getOutputBuffer(idx)
             val isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
             if (out != null && info.size > 0 && !isConfig) {
@@ -69,5 +91,8 @@ class OpusEncoder(private val onPacket: (ByteArray) -> Unit) {
 
     private companion object {
         const val INPUT_TIMEOUT_US = 20_000L
+        /** Half a frame: long enough for the software encoder to finish, short enough never to hold up the mic. */
+        const val OUTPUT_TIMEOUT_US = 10_000L
+        const val COMPLEXITY = 5
     }
 }

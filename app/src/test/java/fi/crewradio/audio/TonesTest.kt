@@ -27,6 +27,16 @@ class TonesTest {
     }
 
     @Test
+    fun cuesLeaveHeadroomForTheSpeechTheySitOn() {
+        // The mixer adds a cue at full level on top of the summed, scaled speech: under 0.3 FS
+        // the beep and a talker at full scale still clip only at the very peaks.
+        var peak = 0
+        for (f in Tones.micOn() + Tones.micOff()) for (i in 0 until AudioConfig.FRAME_SAMPLES) peak = maxOf(peak, abs(sample(f, i)))
+        assertTrue("peak $peak", peak < 0.3 * 32768)
+        assertTrue("peak $peak", peak > 0)
+    }
+
+    @Test
     fun silenceAndPaddingAreZero() {
         val frames = Tones.frames(Tones.beep(440.0, 30))    // 1.5 frames: the second is half padding
         assertEquals(2, frames.size)

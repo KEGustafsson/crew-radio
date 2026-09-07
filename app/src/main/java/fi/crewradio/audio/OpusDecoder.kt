@@ -13,6 +13,11 @@ import java.nio.ByteOrder
  * decoder always outputs 48 kHz, so decoded audio is decimated back to the
  * mixer's 16 kHz and re-framed into exact 20 ms frames.
  *
+ * The header's pre-skip is the encoder's look-ahead, [PRE_SKIP] samples at 48 kHz
+ * (6.5 ms): the decoder drops that much from the start of the stream, so a talker's
+ * first frame is not padded with the encoder's warm-up and later frames are not late by it.
+ * MediaCodec wants the same figure again as csd-1, in nanoseconds.
+ *
  * Not thread-safe: the engine serialises calls per decoder.
  */
 class OpusDecoder {
@@ -34,8 +39,8 @@ class OpusDecoder {
     init {
         val fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, AudioConfig.SAMPLE_RATE, 1)
         fmt.setByteBuffer("csd-0", ByteBuffer.wrap(opusHead(channels = 1, inputRate = AudioConfig.SAMPLE_RATE)))
-        fmt.setByteBuffer("csd-1", ByteBuffer.wrap(ByteArray(8)))   // pre-skip, ns
-        fmt.setByteBuffer("csd-2", ByteBuffer.wrap(ByteArray(8)))   // seek pre-roll, ns
+        fmt.setByteBuffer("csd-1", ByteBuffer.wrap(preSkipNs()))         // pre-skip, ns
+        fmt.setByteBuffer("csd-2", ByteBuffer.wrap(ByteArray(8)))        // seek pre-roll, ns: never seeking
         try {
             codec.configure(fmt, null, null, 0)
             codec.start()
@@ -59,15 +64,21 @@ class OpusDecoder {
         drain(onFrame)
     }
 
-    /** Pulls all decoded output, resamples it to 16 kHz and emits complete frames. */
+    /**
+     * Pulls the decoded output, resamples it to 16 kHz and emits complete frames. The first poll
+     * waits [OUTPUT_TIMEOUT_US] for the packet just queued, so its audio plays in this slot and
+     * not the next; the rest only take what is ready.
+     */
     private fun drain(onFrame: (ByteArray) -> Unit) {
+        var timeoutUs = OUTPUT_TIMEOUT_US
         while (true) {
-            val idx = codec.dequeueOutputBuffer(info, 0)
+            val idx = codec.dequeueOutputBuffer(info, timeoutUs)
             when {
                 idx == MediaCodec.INFO_TRY_AGAIN_LATER -> return
                 idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> onFormat(codec.outputFormat)
                 idx < 0 -> {}
                 else -> {
+                    timeoutUs = 0
                     val out = codec.getOutputBuffer(idx)
                     if (out != null && info.size > 0) {
                         if (outputRate == 0) onFormat(codec.getOutputFormat(idx))
@@ -127,17 +138,29 @@ class OpusDecoder {
 
     companion object {
         private const val INPUT_TIMEOUT_US = 20_000L
+        /** Half a frame: the software decoder is done well within it, and the engine's thread is not held longer. */
+        private const val OUTPUT_TIMEOUT_US = 10_000L
 
-        /** RFC 7845 identification header, mapping family 0, no pre-skip, no gain. */
+        /** Opus's look-ahead, in samples at 48 kHz: 6.5 ms, what libopus reports for every rate and mode. */
+        const val PRE_SKIP = 312
+        private const val OPUS_RATE = 48_000L
+
+        /** RFC 7845 identification header, 19 bytes: mapping family 0, [PRE_SKIP], no gain. */
         fun opusHead(channels: Int, inputRate: Int): ByteArray =
             ByteBuffer.allocate(19).order(ByteOrder.LITTLE_ENDIAN)
                 .put("OpusHead".toByteArray(Charsets.US_ASCII))
                 .put(1)                       // version
                 .put(channels.toByte())
-                .putShort(0)                  // pre-skip (samples at 48 kHz)
+                .putShort(PRE_SKIP.toShort()) // pre-skip (samples at 48 kHz)
                 .putInt(inputRate)
                 .putShort(0)                  // output gain, Q7.8 dB
                 .put(0)                       // channel mapping family
+                .array()
+
+        /** The same pre-skip as MediaCodec's csd-1: a little-endian int64 of nanoseconds. */
+        fun preSkipNs(): ByteArray =
+            ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+                .putLong(PRE_SKIP * 1_000_000_000L / OPUS_RATE)
                 .array()
     }
 }

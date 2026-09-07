@@ -1,0 +1,128 @@
+package fi.crewradio
+
+/**
+ * The receive-side decisions for one packet, in the order the engine must make them, with no
+ * engine, codec or transport around them: pure Kotlin, unit-tested against the claims the
+ * documentation makes about them.
+ *
+ *  1. The global rate budget ([RateLimiter.allowGlobal]), before the packet is opened: the
+ *     sender id it claims is unauthenticated, so nothing is charged to any sender yet.
+ *  2. [open]: the AEAD check. A packet without the crew's key stops here, so a forgery cannot
+ *     occupy a (sender, seq) slot in the seen-cache, cost the real sender its budget, or reach
+ *     the relay, the roster or a decoder. A failure charges the junk budget instead
+ *     ([RateLimiter.allowJunk]); exhausting it is reported as [Why.JUNK_FLOOD].
+ *  3. The timestamp ([Packet.isFresh]): a packet more than [Packet.REPLAY_WINDOW_S] off this
+ *     clock is [Result.Stale] and touches no cache, so a recording cannot be played back later
+ *     than that, and an unauthenticated packet cannot inflate the counter or probe the clock.
+ *  4. A look at the seen-cache: every frame arrives twice on WLAN (multicast and broadcast) and
+ *     again over every other link, so a copy is [Result.Duplicate] before it costs the sender
+ *     anything; charging each copy would spend a 75/s budget in seconds.
+ *  5. The sender's budget ([RateLimiter.allowSender]): a sender over it writes nothing into the
+ *     shared cache, so it cannot churn it either.
+ *  6. The seen-cache write; a copy that slipped in between on another transport's thread is
+ *     caught here and counted as the duplicate it is.
+ *
+ * The caches are sized for the replay window (a talker sends 50 frames a second, a node one
+ * hello) and, like the sequence high-water marks ([SeqTracker]), live for the process, not the
+ * session: leaving and rejoining the channel must not reopen the window.
+ *
+ * An accepted packet also carries the ttl to relay it with ([relayTtl]).
+ */
+class Ingress(
+    private val limiter: RateLimiter = RateLimiter(),
+    audioCache: Int = AUDIO_CACHE,
+    helloCache: Int = HELLO_CACHE,
+    private val seq: SeqTracker = SeqTracker()
+) {
+    sealed class Result {
+        /** New and within budget: [plain] is the payload, [relayTtl] the ttl to forward with, 0 when it is not to be forwarded. */
+        class Accept(val plain: ByteArray, val relayTtl: Int) : Result()
+        /** Authentic, but already heard on another path. */
+        object Duplicate : Result()
+        /** Authentic, but its timestamp is outside the replay window. */
+        object Stale : Result()
+        /** Dropped for the given reason; counts as rejected. */
+        class Rejected(val why: Why) : Result()
+    }
+
+    enum class Why {
+        /** More packets than this phone will look at, whoever they claim to be from. */
+        GLOBAL_BUDGET,
+        /** Not sealed with our key: another crew's phone, or garbage. */
+        UNREADABLE,
+        /** Unreadable, and more of it than a stray phone would send; the engine reports. */
+        JUNK_FLOOD,
+        /** An authentic sender over its own budget. */
+        SENDER_BUDGET
+    }
+
+    private class SeenCache(private val capacity: Int) : LinkedHashMap<Long, Boolean>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Boolean>?) = size > capacity
+    }
+    private val seen = SeenCache(audioCache)          // audio frames; their own sequence space
+    private val seenHellos = SeenCache(helloCache)    // hellos: 1 Hz per node, numbered independently
+
+    /**
+     * Runs the pipeline for a parsed header. [nowMs] is the monotonic clock for the budgets,
+     * [nowS] the wall clock in seconds for the timestamp, [maxHops] this phone's own hop limit;
+     * [open] is called at most once, after the global budget and before anything else.
+     */
+    fun admit(h: Packet.Header, nowMs: Long, nowS: Long, maxHops: Int, open: () -> ByteArray?): Result {
+        if (!limiter.allowGlobal(nowMs)) return Result.Rejected(Why.GLOBAL_BUDGET)
+        val plain = open() ?: return Result.Rejected(if (limiter.allowJunk(nowMs)) Why.UNREADABLE else Why.JUNK_FLOOD)
+        if (!Packet.isFresh(h.time, nowS)) return Result.Stale
+        if (isSeen(h)) return Result.Duplicate
+        if (!limiter.allowSender(h.senderId, nowMs)) return Result.Rejected(Why.SENDER_BUDGET)
+        if (!markSeen(h)) return Result.Duplicate                   // lost the race to its twin
+        return Result.Accept(plain, relayTtl(h, maxHops))
+    }
+
+    /**
+     * Audio frames number themselves consecutively, so a gap is lost audio: admits the frame
+     * and calls [onGap] with the count of frames missing before it, inside the same lock, so the
+     * caller can reserve their slots atomically with the admission (the same sender's frames
+     * arrive on several transport threads at once). False for a late frame: its slot has been
+     * concealed already, and a replay of it is refused the same way.
+     */
+    fun admitAudio(senderId: Int, seq: Int, onGap: (Int) -> Unit): Boolean = synchronized(this.seq) {
+        val gap = this.seq.admit(senderId, seq)
+        if (gap < 0) return false
+        if (gap > 0) onGap(gap)
+        true
+    }
+
+    private fun key(h: Packet.Header) = (h.senderId.toLong() shl 32) or (h.seq.toLong() and 0xFFFF_FFFFL)
+    private fun cacheFor(h: Packet.Header) = if (h.codec == Packet.Codec.HELLO) seenHellos else seen
+
+    private fun isSeen(h: Packet.Header): Boolean {
+        val cache = cacheFor(h)
+        synchronized(cache) { return cache.containsKey(key(h)) }
+    }
+
+    private fun markSeen(h: Packet.Header): Boolean {
+        val cache = cacheFor(h)
+        synchronized(cache) { return cache.put(key(h), true) == null }
+    }
+
+    companion object {
+        /** Audio seen-cache entries: over five minutes of one talker, or the replay window for several. */
+        const val AUDIO_CACHE = 16_384
+        /** Hello seen-cache entries: the replay window for a crew of thirty, or half an hour of one node. */
+        const val HELLO_CACHE = 2_048
+
+        /**
+         * The ttl a relay forwards a packet with, or 0 to keep it. The ttl is first capped at the
+         * budget the sender signed into the packet, so nobody can bump a captured packet's ttl and
+         * ride further, then decremented from what came in, never from a smaller number, so the
+         * relays a packet passed (`hops - ttl`) stay exact on every roster. A phone's own hop
+         * limit means the same for what it forwards as for what it originates: a packet reaches
+         * at most [maxHops] hops from its origin, so a relay that would carry it further keeps
+         * it (a limit of 1 relays nothing).
+         */
+        fun relayTtl(h: Packet.Header, maxHops: Int): Int {
+            val ttl = minOf(h.ttl, h.hops)
+            val relayed = h.hops - ttl                          // relays passed so far; this one would be relayed + 1
+            return if (ttl > 1 && relayed + 1 < maxHops) ttl - 1 else 0
+        }
+    }
+}

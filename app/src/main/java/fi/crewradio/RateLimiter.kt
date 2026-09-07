@@ -3,26 +3,35 @@ package fi.crewradio
 /**
  * Ingress budget for received packets, checked before anything else is spent on them.
  *
- * Two layers. A global token bucket ([globalPerSecond], [globalBurst]) bounds what this phone
- * will look at in total, whatever sender ids the packets claim: sender ids are chosen by the
- * sender, so a flood that rotates them cannot buy itself more. Under that, one bucket per
- * sender ([perSecond], [burst]) so a single noisy or broken peer cannot starve the others. A
- * healthy sender needs 50 audio packets a second plus one hello; the global budget covers
- * several talking at once. The sender table is bounded by [maxSenders]: when it is full an
+ * Three buckets. A global token bucket ([globalPerSecond], [globalBurst]) bounds what this
+ * phone will look at in total, whatever sender ids the packets claim: sender ids are chosen by
+ * the sender, so a flood that rotates them cannot buy itself more. It is sized to the CPU, not
+ * to the traffic: opening a packet costs microseconds, so the ceiling is far above what a crew
+ * sends and a keyless flood on the WLAN has to reach thousands of packets a second before it
+ * costs a real one anything. Under that, one bucket per sender ([perSecond], [burst]) so a
+ * single noisy or broken peer cannot starve the others; a healthy sender needs 50 audio packets
+ * a second plus one hello. The sender table is bounded by [maxSenders]: when it is full an
  * unknown sender is refused rather than allocated, and senders idle for [forgetMs] are swept.
+ * The third bucket ([junkPerSecond], [junkBurst]) is charged only for packets that fail to
+ * open; it drops nothing extra (those packets are gone already) but tells the caller when
+ * unreadable traffic exceeds what a stray phone or two would produce, so the crew can be told
+ * that someone on the network has a different key, or is flooding.
  * Pure Kotlin, unit-tested; the caller supplies the clock.
  */
 class RateLimiter(
     private val perSecond: Double = 75.0,
     private val burst: Double = 150.0,
-    private val globalPerSecond: Double = 400.0,
-    private val globalBurst: Double = 800.0,
+    private val globalPerSecond: Double = 5000.0,
+    private val globalBurst: Double = 2000.0,
+    private val junkPerSecond: Double = 200.0,
+    private val junkBurst: Double = 400.0,
     private val maxSenders: Int = 128,
     private val forgetMs: Long = 10_000
 ) {
     private class Bucket(var tokens: Double, var lastMs: Long)
 
     private val global = Bucket(globalBurst, 0)
+    private val junk = Bucket(junkBurst, 0)
     private val buckets = HashMap<Int, Bucket>()
     private var lastSweepMs = 0L
 
@@ -35,6 +44,13 @@ class RateLimiter(
      */
     @Synchronized
     fun allowGlobal(nowMs: Long): Boolean = take(global, nowMs, globalPerSecond, globalBurst)
+
+    /**
+     * Charges the junk budget for a packet that did not open. False once unreadable packets
+     * come faster than the budget: the caller reports, it does not drop anything more.
+     */
+    @Synchronized
+    fun allowJunk(nowMs: Long): Boolean = take(junk, nowMs, junkPerSecond, junkBurst)
 
     /** The per-sender budget, for a packet whose sender id has been authenticated. */
     @Synchronized
@@ -58,7 +74,4 @@ class RateLimiter(
         b.tokens -= 1.0
         return true
     }
-
-    @Synchronized
-    fun clear() { buckets.clear(); global.tokens = globalBurst; global.lastMs = 0 }
 }
