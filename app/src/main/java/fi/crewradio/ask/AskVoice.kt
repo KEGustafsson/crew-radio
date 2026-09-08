@@ -41,6 +41,7 @@ class AskVoice(context: Context) {
                     override fun onDone(utteranceId: String?) = finished()
                     // Abstract, and deprecated in favour of the two-argument form below; both
                     // exist because which one an engine calls depends on how old it is.
+                    @Deprecated("The platform's own deprecation; an older engine still calls this one.")
                     override fun onError(utteranceId: String?) = finished()
                     override fun onError(utteranceId: String?, errorCode: Int) = finished()
                 })

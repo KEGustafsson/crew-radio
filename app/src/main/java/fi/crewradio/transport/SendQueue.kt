@@ -1,5 +1,8 @@
 package fi.crewradio.transport
 
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
+
 /**
  * Bounded outbound queue of one stream link: drop-oldest, and a "stuck" verdict.
  *
@@ -23,24 +26,25 @@ internal class SendQueue(
     // link open until wall time caught up, or close a healthy one early.
     private val clock: () -> Long = { System.nanoTime() / 1_000_000L }
 ) {
-    private val lock = java.lang.Object()
+    private val lock = ReentrantLock()
+    private val notEmpty = lock.newCondition()
     private val items = ArrayDeque<ByteArray>()
     private var fullSince = -1L                     // when the queue was last found full with nothing taken since
     private var closed = false
 
     /** Packets thrown away because the queue was full. */
     var dropped = 0L
-        get() = synchronized(lock) { field }
+        get() = lock.withLock { field }
         private set
 
-    val size: Int get() = synchronized(lock) { items.size }
-    val isClosed: Boolean get() = synchronized(lock) { closed }
+    val size: Int get() = lock.withLock { items.size }
+    val isClosed: Boolean get() = lock.withLock { closed }
 
     /**
      * Queues [packet], dropping the oldest when full; never blocks. False once the queue has
      * been continuously full for the stuck time, or after [close]: the link is dead, close it.
      */
-    fun offer(packet: ByteArray): Boolean = synchronized(lock) {
+    fun offer(packet: ByteArray): Boolean = lock.withLock {
         if (closed) return false
         if (items.size >= capacity) {
             val now = clock()
@@ -50,15 +54,15 @@ internal class SendQueue(
             dropped++
         }
         items.addLast(packet)
-        lock.notifyAll()
+        notEmpty.signalAll()
         true
     }
 
     /** The next packet to write, waiting while there is none; null once closed (or interrupted). */
-    fun take(): ByteArray? = synchronized(lock) {
+    fun take(): ByteArray? = lock.withLock {
         while (items.isEmpty() && !closed) {
             try {
-                lock.wait()
+                notEmpty.await()
             } catch (_: InterruptedException) {
                 return null
             }
@@ -69,17 +73,17 @@ internal class SendQueue(
     }
 
     /** [take] without waiting: null when empty or closed. */
-    fun poll(): ByteArray? = synchronized(lock) {
+    fun poll(): ByteArray? = lock.withLock {
         if (closed || items.isEmpty()) return null
         fullSince = -1
         items.removeFirst()
     }
 
     /** Ends the queue: everything queued is dropped and a blocked [take] returns null. */
-    fun close() = synchronized(lock) {
+    fun close() = lock.withLock {
         closed = true
         items.clear()
-        lock.notifyAll()
+        notEmpty.signalAll()
     }
 
     companion object {

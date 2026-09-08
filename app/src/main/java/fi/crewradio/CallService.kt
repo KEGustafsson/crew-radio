@@ -210,6 +210,11 @@ object CallBridge {
         val tm = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
         val handle = PhoneAccountHandle(ComponentName(context, CallService::class.java), ACCOUNT_ID)
         return try {
+            // CAPABILITY_SELF_MANAGED is deprecated in favour of the androidx.core:core-telecom
+            // Jetpack library, which this app does not depend on: a whole new dependency (and a
+            // verification-metadata regeneration) for the one self-managed call the headset
+            // setting places. The platform API still works and is what the setting is built on.
+            @Suppress("DEPRECATION")
             tm.registerPhoneAccount(
                 PhoneAccount.builder(handle, context.getString(R.string.app_name))
                     .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
