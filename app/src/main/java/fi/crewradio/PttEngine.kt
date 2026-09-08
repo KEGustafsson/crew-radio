@@ -231,7 +231,7 @@ class PttEngine(
                 // Without the proximity sensor the automatic route has no ear to go by, so only the
                 // earpiece route, chosen on purpose, runs the phone-mic monitor then.
                 val phone = !route.headset && (route.policy == AudioRoute.Policy.EARPIECE || (route.policy == AudioRoute.Policy.AUTO && useProximity))
-                val want = isConnected && !held && (phone || (headsetVox && route.bluetoothHeadset))
+                val want = isConnected && !held && !asking && (phone || (headsetVox && route.bluetoothHeadset))
                 val wantPhoneMic = !route.bluetoothHeadset
                 // A capture tuned for the other mic is as wrong as one that should not run: a headset
                 // that appears or goes away mid-session stops the monitor, and the next pass starts
@@ -318,6 +318,20 @@ class PttEngine(
     /** A hardware talk key that reaches the engine through Telecom (a Bluetooth headset's button). Set by the service. */
     @Volatile var onTalkKey: (() -> Unit)? = null
     @Volatile private var held = false
+
+    /**
+     * True while the ask sheet has the microphone. Two `AudioRecord` clients do not share a
+     * microphone, so the voice-keying monitor has to let go for the duration — and, worse, a live
+     * gate would key the channel with the question the crew member is asking their own phone.
+     * Treated exactly like a call hold for the mic, but the channel is still heard.
+     */
+    @Volatile private var asking = false
+
+    fun setAsking(on: Boolean) {
+        asking = on
+        if (on) stopTalking()
+        syncMonitor()
+    }
 
     /**
      * Telecom's view of the session, only while a Bluetooth headset is the route: [AudioRoute]
@@ -416,7 +430,23 @@ class PttEngine(
      * The level itself is the phone's call volume, set by the main screen's slider ([CallVolume]).
      */
     @Volatile var muted = false
-        set(v) { field = v; mixer.gain = if (v) 0f else 1f }
+        set(v) { field = v; applyGain() }
+
+    /**
+     * Quietens the channel while this phone is being spoken to by [fi.crewradio.ask.AskController],
+     * so an answer in the ear is not buried under somebody else's transmission. Session state, and
+     * never louder than the mute: a muted phone stays muted while it is being answered.
+     */
+    @Volatile private var ducked = false
+
+    fun duck(on: Boolean) {
+        ducked = on
+        applyGain()
+    }
+
+    private fun applyGain() {
+        mixer.gain = if (muted) 0f else if (ducked) DUCK_GAIN else 1f
+    }
 
     /** True while a Bluetooth headset carries the audio; the slider picks its stream by it. */
     val bluetoothHeadsetNow: Boolean get() = route.bluetoothHeadset
@@ -570,7 +600,9 @@ class PttEngine(
         CallBridge.listener = null
         mixer.muted = false
         held = false
+        asking = false
         muted = false
+        ducked = false
     }
 
     fun stats(): Stats = counters.snapshot(mixer.concealedFrames.get(), mixer.underrunFrames.get())
@@ -583,7 +615,7 @@ class PttEngine(
     fun startTalking() {
         val gen: Int
         synchronized(talkLock) {
-            if (talking || transports.isEmpty() || held) return
+            if (talking || transports.isEmpty() || held || asking) return
             talking = true
             armed = false
             pending.clear()
@@ -950,6 +982,11 @@ class PttEngine(
     }
 
     private companion object {
+        /**
+         * How far the channel is turned down while this phone is being answered: quiet enough to
+         * hear the answer over, loud enough that a call for help on the channel still gets through.
+         */
+        const val DUCK_GAIN = 0.25f
         /** Frames kept from before the voice gate opened and sent first: 100 ms. */
         const val PREROLL = 5
         /** Frames held back while the encoder opens (the pre-roll and a few more); older ones are dropped. */

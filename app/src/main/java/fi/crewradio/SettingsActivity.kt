@@ -12,6 +12,10 @@ import androidx.core.view.WindowCompat
 import androidx.preference.EditTextPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
+import fi.crewradio.ask.AskRecognizer
+import fi.crewradio.ask.SignalKClient
+import fi.crewradio.ask.SignalKDiscovery
+import fi.crewradio.ask.SignalKUrl
 
 /**
  * The settings screen: a stock preference list backed by the default SharedPreferences,
@@ -49,6 +53,9 @@ class SettingsActivity : AppCompatActivity() {
         /** A value the rule refused, kept until the dialog re-opens so the typing is not thrown away. */
         private val refused = HashMap<String, String>()
 
+        /** Looks for the boat's server while this screen is open; stopped with the screen. */
+        private var discovery: SignalKDiscovery? = null
+
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
             val prefs = Prefs(requireContext())
@@ -59,7 +66,9 @@ class SettingsActivity : AppCompatActivity() {
             rule(Prefs.KEY_PORT, R.string.why_port, numeric = true) { SettingsRules.validPort(it) }
             rule(Prefs.KEY_HOPS, R.string.why_hops, numeric = true) { SettingsRules.validHops(it) }
             rule(Prefs.KEY_CHANNEL_KEY, R.string.why_channel_key) { SettingsRules.validChannelKey(it) }
+            rule(Prefs.KEY_ASK_SERVER, R.string.why_ask_server) { it.isBlank() || SignalKUrl.valid(it) }
             channelKey(prefs)
+            ask(prefs)
 
             // Managed configuration: the administrator's value is what the app uses, so the row
             // says so and cannot be typed over.
@@ -70,6 +79,153 @@ class SettingsActivity : AppCompatActivity() {
                     summary = getString(R.string.managed_by_org)
                 }
             }
+        }
+
+        /**
+         * The "Ask the boat" rows: what the server is, and pairing with it.
+         *
+         * Pairing runs Signal K's own device flow — this phone asks, somebody with the admin page
+         * open approves — rather than asking the crew to paste a token: nothing secret is ever
+         * shown, typed or read out. The request is made on a worker thread and its state polled
+         * until the server has decided; the summary says what is happening the whole time.
+         */
+        private fun ask(prefs: Prefs) {
+            findPreference<Preference>(Prefs.KEY_ASK_SERVER)?.summaryProvider =
+                Preference.SummaryProvider<Preference> {
+                    val typed = prefs.askServerTyped
+                    if (typed.isNullOrBlank()) getString(R.string.pref_ask_server_none)
+                    else SignalKUrl.describe(typed)
+                }
+
+            // A phone that cannot recognise speech without a network says so instead of the
+            // privacy note, and says it here rather than failing when the button is pressed.
+            findPreference<Preference>(KEY_ASK_NOTE)?.setSummary(
+                if (AskRecognizer.available(requireContext())) R.string.pref_ask_privacy
+                else R.string.pref_ask_unsupported
+            )
+
+            // Nothing set: look for a server on the network and fill it in. The crew can always
+            // type an address instead, and a boat network that blocks multicast still works.
+            if (prefs.askServerTyped.isNullOrBlank() && !prefs.isManaged(Prefs.KEY_ASK_SERVER)) discover()
+
+            val pair = findPreference<Preference>(Prefs.KEY_ASK_PAIR) ?: return
+            pair.summary = pairSummary(prefs)
+            pair.setOnPreferenceClickListener {
+                val base = prefs.askServer
+                if (base == null) {
+                    Toast.makeText(requireContext(), R.string.pref_ask_server_none, Toast.LENGTH_LONG).show()
+                    return@setOnPreferenceClickListener true
+                }
+                pair.summary = getString(R.string.pref_ask_pair_waiting)
+                startPairing(base, prefs, pair)
+                true
+            }
+        }
+
+        /**
+         * mDNS, while this screen is open. The first server found is written into the row — it is
+         * a suggestion the crew can overwrite, not a decision, and it is only made when nothing
+         * was set.
+         */
+        private fun discover() {
+            val finder = SignalKDiscovery(requireContext()).also { discovery = it }
+            finder.start(
+                onFound = { found ->
+                    val row = findPreference<EditTextPreference>(Prefs.KEY_ASK_SERVER) ?: return@start
+                    row.context.mainExecutor.execute {
+                        if (!isAdded) return@execute
+                        val prefs = Prefs(requireContext())
+                        if (!prefs.askServerTyped.isNullOrBlank()) return@execute   // the crew got there first
+                        row.text = found.url
+                        row.summary = getString(R.string.pref_ask_server_found, SignalKUrl.describe(found.url))
+                    }
+                },
+                onDone = { /* no mDNS, or discovery refused: the typed address is the way in */ },
+            )
+        }
+
+        override fun onDestroyView() {
+            discovery?.stop()
+            discovery = null
+            super.onDestroyView()
+        }
+
+        /** What the pairing row says about the token this phone holds. */
+        private fun pairSummary(prefs: Prefs): String = when {
+            prefs.askToken == null -> getString(R.string.pref_ask_pair_none)
+            prefs.askScope == Prefs.ASK_SCOPE_WRITE -> getString(R.string.pref_ask_pair_write)
+            else -> getString(R.string.pref_ask_pair_read)
+        }
+
+        /**
+         * Asks the server for a token and waits for somebody to approve it, on a worker thread.
+         * The fragment may go away while this runs, so every result is dropped unless it is still
+         * added; nothing here touches a view off the main thread.
+         */
+        private fun startPairing(base: String, prefs: Prefs, row: Preference) {
+            val context = requireContext().applicationContext
+            val clientId = prefs.pairingClientId
+            val description = context.getString(R.string.app_name) + " · " + prefs.speakerName
+            Thread({
+                val client = SignalKClient(base, null)
+                var summary = context.getString(R.string.pref_ask_pair_none)
+                var token: String? = null
+                var scope = Prefs.ASK_SCOPE_NONE
+                when (val requested = client.requestAccess(clientId, description)) {
+                    is SignalKClient.Result.Failed ->
+                        summary = context.getString(R.string.pref_ask_pair_failed, requested.detail ?: "")
+
+                    is SignalKClient.Result.Ok -> {
+                        val href = requested.value.href
+                        if (href == null) {
+                            summary = context.getString(R.string.pref_ask_pair_failed, "")
+                        } else {
+                            // Somebody has to walk to the chart table and press approve.
+                            var waited = 0L
+                            while (waited < PAIR_TIMEOUT_MS) {
+                                if (!sleepQuietly(PAIR_POLL_MS)) break
+                                waited += PAIR_POLL_MS
+                                val polled = client.pollAccess(href)
+                                if (polled !is SignalKClient.Result.Ok) continue
+                                val access = polled.value
+                                if (access.state != COMPLETED) continue
+                                val issued = access.token
+                                if (issued == null) {
+                                    summary = context.getString(R.string.pref_ask_pair_denied)
+                                } else {
+                                    token = issued
+                                    scope = if (writeGranted(access.permission)) Prefs.ASK_SCOPE_WRITE
+                                    else Prefs.ASK_SCOPE_READ
+                                    summary = context.getString(
+                                        if (scope == Prefs.ASK_SCOPE_WRITE) R.string.pref_ask_pair_write
+                                        else R.string.pref_ask_pair_read
+                                    )
+                                }
+                                break
+                            }
+                        }
+                    }
+                }
+                token?.let {
+                    val stored = Prefs(context)
+                    stored.put(Prefs.KEY_ASK_TOKEN, it)
+                    stored.put(Prefs.KEY_ASK_SCOPE, scope)
+                }
+                val text = summary
+                context.mainExecutor.execute { if (isAdded) row.summary = text }
+            }, "ptt-ask-pair").start()
+        }
+
+        /** True when the permission the server granted is enough to post an announcement. */
+        private fun writeGranted(permission: String?): Boolean =
+            permission.equals("ADMIN", ignoreCase = true) || permission.equals("READWRITE", ignoreCase = true)
+
+        /** Sleeps between polls; false when the thread is interrupted, which ends the wait. */
+        private fun sleepQuietly(ms: Long): Boolean = try {
+            Thread.sleep(ms)
+            true
+        } catch (_: InterruptedException) {
+            false
         }
 
         /**
@@ -159,8 +315,17 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         private companion object {
+            /** The read-only note under the ask rows; it has no [Prefs] key because nothing is stored. */
+            const val KEY_ASK_NOTE = "ask_note"
+            /** How often the pairing row asks the server whether somebody has approved yet. */
+            const val PAIR_POLL_MS = 2_000L
+            /** How long it waits for that: long enough to walk to the chart table. */
+            const val PAIR_TIMEOUT_MS = 180_000L
+            /** The state a Signal K access request reaches once the server has decided. */
+            const val COMPLETED = "COMPLETED"
             /** The keys an EMM may set; the rest are per phone (see res/xml/app_restrictions.xml). */
             val MANAGED_KEYS = listOf(
+                Prefs.KEY_ASK_ENABLED, Prefs.KEY_ASK_SERVER, Prefs.KEY_ASK_MODE,
                 Prefs.KEY_CREW_NAME, Prefs.KEY_NAME, Prefs.KEY_CHANNEL_KEY, Prefs.KEY_GROUP,
                 Prefs.KEY_PORT, Prefs.KEY_HOPS, Prefs.KEY_RELAY, Prefs.KEY_FULL_DUPLEX,
                 Prefs.KEY_OPUS, Prefs.KEY_AUDIO_ROUTE

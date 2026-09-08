@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A compass rose: the boat's own data, as against the crew (the talk disc) and the three
+     transports. Deliberately not a microphone, which would read as another way to talk. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M12,2.5 A9.5,9.5 0 1 1 12,21.5 A9.5,9.5 0 1 1 12,2.5 Z"
+        android:strokeColor="#FFFFFFFF" android:strokeWidth="1.6" android:fillColor="#00000000" />
+    <path android:pathData="M12,5.5 L14.6,12 L12,18.5 L9.4,12 Z" android:fillColor="#FFFFFFFF" />
+</vector>

@@ -101,6 +101,56 @@
             app:summary="@string/pref_opus_summary" />
     </PreferenceCategory>
 
+    <PreferenceCategory app:key="ask_category" app:title="@string/pref_cat_ask">
+        <SwitchPreferenceCompat
+            app:key="ask_enabled"
+            app:title="@string/pref_ask_enabled_title"
+            app:defaultValue="false"
+            app:summaryOn="@string/pref_ask_enabled_on"
+            app:summaryOff="@string/pref_ask_enabled_off" />
+        <ListPreference
+            app:key="ask_mode"
+            app:title="@string/pref_ask_mode_title"
+            app:entries="@array/ask_mode_entries"
+            app:entryValues="@array/ask_mode_values"
+            app:defaultValue="just_me"
+            app:dialogTitle="@string/pref_ask_mode_dialog"
+            app:useSimpleSummaryProvider="true"
+            app:dependency="ask_enabled" />
+        <EditTextPreference
+            app:key="ask_server"
+            app:title="@string/pref_ask_server_title"
+            app:dialogMessage="@string/pref_ask_server_message"
+            app:dependency="ask_enabled" />
+        <!-- Signal K's own device flow: the summary is set in SettingsActivity, because it
+             reports what actually happened when this phone asked to be let in. -->
+        <Preference
+            app:key="ask_pair"
+            app:title="@string/pref_ask_pair_title"
+            app:dependency="ask_enabled" />
+        <ListPreference
+            app:key="ask_speed_unit"
+            app:title="@string/pref_ask_speed_title"
+            app:entries="@array/ask_speed_entries"
+            app:entryValues="@array/ask_speed_values"
+            app:defaultValue="knots"
+            app:useSimpleSummaryProvider="true"
+            app:dependency="ask_enabled" />
+        <ListPreference
+            app:key="ask_depth_unit"
+            app:title="@string/pref_ask_depth_title"
+            app:entries="@array/ask_depth_entries"
+            app:entryValues="@array/ask_depth_values"
+            app:defaultValue="metres"
+            app:useSimpleSummaryProvider="true"
+            app:dependency="ask_enabled" />
+        <!-- Set in SettingsActivity to the privacy note, or to why this phone cannot ask by voice. -->
+        <Preference
+            app:key="ask_note"
+            app:selectable="false"
+            app:summary="@string/pref_ask_privacy" />
+    </PreferenceCategory>
+
     <PreferenceCategory app:title="@string/pref_cat_wlan">
         <EditTextPreference
             app:key="multicast_group"

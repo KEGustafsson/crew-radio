@@ -235,6 +235,45 @@
             android:textColor="@color/text" />
     </LinearLayout>
 
+    <!-- Ask the boat. Hidden altogether unless a Signal K server is configured and the setting is
+         on, like the Bluetooth peer row above: a crew that does not use Signal K never sees it.
+         Kept well clear of the disc on purpose — reaching for TALK and hitting this instead would
+         lose a transmission the sender believed had gone out. -->
+    <LinearLayout
+        android:id="@+id/askRow"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:layout_marginTop="12dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="14dp"
+        android:paddingEnd="16dp"
+        android:background="@drawable/bg_outline"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+        <ImageView
+            android:id="@+id/askIcon"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:layout_marginEnd="14dp"
+            android:src="@drawable/ic_ask"
+            app:tint="@color/primary"
+            android:contentDescription="@null" />
+        <TextView
+            android:id="@+id/askLabel"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:text="@string/ask_row"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.08"
+            android:textSize="13sp"
+            android:textColor="@color/secondary"
+            android:maxLines="1"
+            android:ellipsize="end" />
+    </LinearLayout>
+
     <!-- The talk disc: as large a circle as the remaining space allows (sized in code to min(w, h)). -->
     <androidx.constraintlayout.widget.ConstraintLayout
         android:id="@+id/talkArea"

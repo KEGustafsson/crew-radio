@@ -259,4 +259,132 @@
     <string name="restriction_opus_desc">Compress the voice with Opus instead of sending raw audio.</string>
     <string name="restriction_audio_route_title">Audio output</string>
     <string name="restriction_audio_route_desc">Where the voice goes: auto, speaker or earpiece.</string>
+    <!-- ================= Ask the boat (Signal K) ================= -->
+    <!-- The row on the main screen. Not "ASK ARABELLA": the header already carries the channel
+         name, and the same word in both places reads as one thing meaning two. -->
+    <string name="ask_row">ASK BOAT DATA</string>
+    <string name="a11y_ask">Ask the boat for heading, speed, depth and wind</string>
+
+    <!-- The sheet. -->
+    <string name="ask_listening">LISTENING</string>
+    <string name="ask_working">ASKING</string>
+    <string name="ask_heard">HEARD</string>
+    <string name="ask_hint">Heading, speed, depth, wind, position…</string>
+    <string name="ask_cancel">Cancel</string>
+    <string name="ask_done">Done</string>
+    <string name="ask_send">Ask</string>
+    <string name="ask_mode_just_me">Just me</string>
+    <string name="ask_mode_crew">Whole crew</string>
+    <!-- Source and age under the answer: "navigation.headingMagnetic · 2 s ago". -->
+    <string name="ask_source">%1$s · %2$d s ago</string>
+
+    <!-- Things that can go wrong, each saying what to do about it. -->
+    <string name="ask_say_again">Say again.</string>
+    <string name="ask_no_server">No Signal K server set. Set one in Settings.</string>
+    <string name="ask_unreachable">Can\'t reach the boat. Check the WLAN and the address in Settings.</string>
+    <string name="ask_unauthorized">The server refused this phone. Pair again in Settings.</string>
+    <string name="ask_bad_response">That address answered, but it is not a Signal K server.</string>
+    <string name="ask_no_recognition">This phone has no on-device speech recognition.</string>
+    <string name="ask_mic_denied">Crew Radio needs the microphone to hear a question.</string>
+    <!-- What the whole crew hears: who asked, what they asked, and the answer, so an
+         announcement out of nowhere makes sense to everyone who did not hear the question. -->
+    <string name="ask_crew_answer">%1$s asked %2$s. %3$s</string>
+    <string name="ask_say_failed">Said here only: the server would not take it for the crew.</string>
+
+    <!-- What each thing is called when it is spoken. -->
+    <string name="ask_q_heading">heading</string>
+    <string name="ask_q_course">course over ground</string>
+    <string name="ask_q_speed">speed</string>
+    <string name="ask_q_speedThroughWater">speed through water</string>
+    <string name="ask_q_depth">depth</string>
+    <string name="ask_q_position">position</string>
+    <string name="ask_q_windSpeed">wind speed</string>
+    <string name="ask_q_windAngle">wind</string>
+    <string name="ask_q_waterTemperature">water temperature</string>
+    <string name="ask_q_airTemperature">air temperature</string>
+    <string name="ask_q_batteryVoltage">battery</string>
+    <string name="ask_q_batteryCharge">battery charge</string>
+    <string name="ask_q_fuel">fuel</string>
+    <string name="ask_q_water">fresh water</string>
+    <string name="ask_q_engineTemperature">engine temperature</string>
+    <string name="ask_q_engineRevolutions">engine</string>
+    <string name="ask_q_waypointDistance">distance to go</string>
+    <string name="ask_q_waypointBearing">bearing to waypoint</string>
+    <string name="ask_q_waypointTime">time to go</string>
+
+    <!-- What the answer calls itself when the usual source was silent and another one answered,
+         so a GPS course is never passed off as a compass heading. -->
+    <string name="ask_p_headingMagnetic">magnetic heading</string>
+    <string name="ask_p_headingTrue">true heading</string>
+    <string name="ask_p_courseOverGroundTrue">course over ground</string>
+    <string name="ask_p_speedOverGround">speed over ground</string>
+    <string name="ask_p_speedThroughWater">speed through water</string>
+    <string name="ask_p_depthBelowKeel">depth below keel</string>
+    <string name="ask_p_depthBelowTransducer">depth below transducer</string>
+    <string name="ask_p_depthBelowSurface">depth below surface</string>
+    <string name="ask_p_windSpeedTrue">true wind speed</string>
+    <string name="ask_p_windAngleTrue">true wind</string>
+
+    <!-- The word after the number. -->
+    <string name="ask_u_degrees">degrees</string>
+    <string name="ask_u_knots">knots</string>
+    <string name="ask_u_ms">metres per second</string>
+    <string name="ask_u_kmh">kilometres per hour</string>
+    <string name="ask_u_metres">metres</string>
+    <string name="ask_u_feet">feet</string>
+    <string name="ask_u_nautical_miles">nautical miles</string>
+    <string name="ask_u_celsius">degrees</string>
+    <string name="ask_u_percent">percent</string>
+    <string name="ask_u_volts">volts</string>
+    <string name="ask_u_litres">litres</string>
+    <string name="ask_u_rpm">revolutions per minute</string>
+
+    <!-- How an answer is put together. The subject comes first on purpose: half an answer heard
+         over an engine is still useful if the half you caught was what it was about. -->
+    <string name="ask_value">%1$s %2$s %3$s</string>
+    <string name="ask_to_port">%1$s %2$s degrees to port</string>
+    <string name="ask_to_starboard">%1$s %2$s degrees to starboard</string>
+    <string name="ask_position_value">%1$s %2$s degrees %3$s minutes north, %4$s degrees %5$s minutes east</string>
+    <string name="ask_hours_minutes">%1$s hours %2$s minutes</string>
+    <string name="ask_minutes_only">%1$s minutes</string>
+    <string name="ask_missing">no %1$s</string>
+    <string name="ask_missing_for">no %1$s, nothing for %2$s</string>
+    <string name="ask_quiet_minutes">%1$s minutes</string>
+    <string name="ask_quiet_seconds">%1$s seconds</string>
+    <!-- Quoted so the trailing space survives aapt. -->
+    <string name="ask_separator">", "</string>
+    <string name="ask_terminator">.</string>
+
+    <string name="why_ask_server">A name or an address, such as arabella.local or 192.168.1.9</string>
+
+    <!-- Settings. -->
+    <string name="pref_cat_ask">Ask the boat</string>
+    <string name="pref_ask_enabled_title">Ask boat data</string>
+    <string name="pref_ask_enabled_on">A button on the main screen asks the boat for heading, speed, depth and wind</string>
+    <string name="pref_ask_enabled_off">The main screen shows no ask button</string>
+    <string name="pref_ask_mode_title">Who hears it</string>
+    <string name="pref_ask_mode_dialog">Who hears the question and the answer</string>
+    <string name="pref_ask_server_title">Signal K server</string>
+    <string name="pref_ask_server_message">The boat\'s Signal K server: a name or an address. Empty looks for one on the network.</string>
+    <string name="pref_ask_server_none">Not set — looking on the network</string>
+    <string name="pref_ask_server_found">%1$s · found on the network</string>
+    <string name="pref_ask_pair_title">Pair with server</string>
+    <string name="pref_ask_pair_none">Not paired. Tap, then approve this phone in the server\'s admin page.</string>
+    <string name="pref_ask_pair_waiting">Waiting for approval in the server\'s admin page…</string>
+    <string name="pref_ask_pair_read">Paired · read only. Whole-crew answers need write access.</string>
+    <string name="pref_ask_pair_write">Paired · read and write</string>
+    <string name="pref_ask_pair_denied">The server refused this phone. Tap to ask again.</string>
+    <string name="pref_ask_pair_failed">Could not reach the server: %1$s</string>
+    <string name="pref_ask_speed_title">Speed unit</string>
+    <string name="pref_ask_depth_title">Depth unit</string>
+    <string name="pref_ask_privacy">Speech is recognised on this phone. Your question is never sent to the internet.</string>
+    <string name="pref_ask_unsupported">This phone has no on-device speech recognition, so it cannot ask by voice. Android 12 or newer is needed.</string>
+
+    <!-- Managed configuration. -->
+    <string name="restriction_ask_enabled_title">Ask boat data</string>
+    <string name="restriction_ask_enabled_desc">Show the ask button and let the crew ask the boat for data.</string>
+    <string name="restriction_ask_server_title">Signal K server</string>
+    <string name="restriction_ask_server_desc">The boat\'s Signal K server, as a name or an address.</string>
+    <string name="restriction_ask_mode_title">Who hears an answer</string>
+    <string name="restriction_ask_mode_desc">just_me or crew.</string>
 </resources>

@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The ask sheet: one layout, four states (listening, asking, answered, failed). It is a sheet
+    rather than a screen so the channel is still visible behind it and one tap anywhere abandons
+    the question.
+
+    The answer is shown as well as spoken. In wind you will mishear "six point two", and a number
+    you can glance at is the difference between an instrument and a party trick.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/askSheet"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:gravity="center_horizontal"
+    android:paddingStart="20dp"
+    android:paddingEnd="20dp"
+    android:paddingTop="12dp"
+    android:paddingBottom="18dp"
+    android:background="@color/surface_card">
+
+    <View
+        android:layout_width="34dp"
+        android:layout_height="4dp"
+        android:background="@drawable/bg_grab"
+        android:contentDescription="@null" />
+
+    <TextView
+        android:id="@+id/askState"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:text="@string/ask_listening"
+        android:fontFamily="monospace"
+        android:letterSpacing="0.18"
+        android:textSize="12sp"
+        android:textColor="@color/text_teal_dim" />
+
+    <!-- Listening: the level the microphone is actually hearing, so a phone that is not picking
+         the speaker up is obvious before the question is wasted. -->
+    <fi.crewradio.ask.LevelBars
+        android:id="@+id/askLevel"
+        android:layout_width="wrap_content"
+        android:layout_height="36dp"
+        android:layout_marginTop="14dp" />
+
+    <ProgressBar
+        android:id="@+id/askSpinner"
+        style="?android:attr/progressBarStyle"
+        android:layout_width="30dp"
+        android:layout_height="30dp"
+        android:layout_marginTop="14dp"
+        android:indeterminateTint="@color/primary"
+        android:visibility="gone" />
+
+    <!-- What the recogniser heard, live while it listens and frozen once it has decided. -->
+    <TextView
+        android:id="@+id/askHeard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:minHeight="46dp"
+        android:gravity="center"
+        android:textSize="17sp"
+        android:textColor="@color/text"
+        android:hint="@string/ask_hint"
+        android:textColorHint="@color/text_dim" />
+
+    <!-- The answer, and then where it came from and how old it was. -->
+    <TextView
+        android:id="@+id/askAnswer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:gravity="center"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:textColor="@color/primary"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/askDetail"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center"
+        android:fontFamily="monospace"
+        android:textSize="12sp"
+        android:textColor="@color/text_dim"
+        android:visibility="gone" />
+
+    <!-- Typing the question: the same path with the microphone left out. It is how the whole
+         feature is tested without speech, and how a question gets asked in a noisy cockpit. -->
+    <EditText
+        android:id="@+id/askTyped"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:hint="@string/ask_hint"
+        android:textColorHint="@color/text_dim"
+        android:textColor="@color/text"
+        android:inputType="text"
+        android:imeOptions="actionSend"
+        android:maxLines="1"
+        android:autofillHints=""
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:orientation="horizontal"
+        android:gravity="center">
+
+        <!-- The mode for this one question: quiet on a night watch, out loud when docking. It
+             overrides the setting for this question only and never writes it back. -->
+        <TextView
+            android:id="@+id/askMode"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingTop="7dp"
+            android:paddingBottom="7dp"
+            android:background="@drawable/bg_pill"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.08"
+            android:textSize="11sp"
+            android:textColor="@color/primary"
+            android:text="@string/ask_mode_just_me"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/askAction"
+            style="@style/Widget.Material3.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:text="@string/ask_cancel"
+            android:textColor="@color/secondary"
+            app:rippleColor="@color/primary_container" />
+    </LinearLayout>
+</LinearLayout>

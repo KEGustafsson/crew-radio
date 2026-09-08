@@ -5,6 +5,8 @@ import android.content.RestrictionsManager
 import android.os.Bundle
 import androidx.core.content.edit
 import androidx.preference.PreferenceManager
+import fi.crewradio.ask.AskUnits
+import fi.crewradio.ask.SignalKUrl
 import fi.crewradio.audio.AudioConfig
 
 /**
@@ -110,7 +112,9 @@ class Prefs(context: Context) {
         KEY_PORT -> managedInt(key)?.let { SettingsRules.validPort(it.toString()) }
         KEY_HOPS -> managedInt(key)?.let { SettingsRules.validHops(it.toString()) }
         KEY_AUDIO_ROUTE -> managedString(key)?.let { it == ROUTE_AUTO || it == ROUTE_SPEAKER || it == ROUTE_EARPIECE }
-        KEY_RELAY, KEY_FULL_DUPLEX, KEY_OPUS -> managedBool(key) != null
+        KEY_RELAY, KEY_FULL_DUPLEX, KEY_OPUS, KEY_ASK_ENABLED -> managedBool(key) != null
+        KEY_ASK_SERVER -> managedString(key)?.let { SignalKUrl.valid(it) }
+        KEY_ASK_MODE -> managedString(key)?.let { it == ASK_MODE_JUST_ME || it == ASK_MODE_CREW }
         else -> false
     } == true
 
@@ -181,6 +185,75 @@ class Prefs(context: Context) {
     val relay: Boolean get() = managedBool(KEY_RELAY) ?: sp.getBoolean(KEY_RELAY, true)
     val opus: Boolean get() = managedBool(KEY_OPUS) ?: sp.getBoolean(KEY_OPUS, true)
 
+    // ---- Ask the boat (Signal K) --------------------------------------------------
+
+    /** Off until the crew turns it on: a boat without Signal K should never see the row. */
+    val askEnabled: Boolean get() = managedBool(KEY_ASK_ENABLED) ?: sp.getBoolean(KEY_ASK_ENABLED, false)
+
+    /** The boat's server as a base URL, or null when nothing usable is set. */
+    val askServer: String?
+        get() = SignalKUrl.normalise(managedString(KEY_ASK_SERVER) ?: sp.getString(KEY_ASK_SERVER, null))
+
+    /** What the crew typed, for the settings row to show back to them. */
+    val askServerTyped: String?
+        get() = (managedString(KEY_ASK_SERVER) ?: sp.getString(KEY_ASK_SERVER, null))?.takeIf { it.isNotBlank() }
+
+    /**
+     * The token the server issued to this phone. Excluded from cloud backup and device transfer
+     * along with the channel key (`res/xml/data_extraction_rules.xml`): it is a credential for
+     * the boat, and it should not follow a phone that is sold or restored somewhere else.
+     */
+    val askToken: String? get() = sp.getString(KEY_ASK_TOKEN, null)?.takeIf { it.isNotBlank() }
+
+    /** What that token is good for: [ASK_SCOPE_NONE], [ASK_SCOPE_READ] or [ASK_SCOPE_WRITE]. */
+    val askScope: String get() = sp.getString(KEY_ASK_SCOPE, ASK_SCOPE_NONE) ?: ASK_SCOPE_NONE
+
+    /**
+     * Who hears an answer. The default is the one that cannot disturb anybody and cannot be
+     * talked into transmitting by a recognition misfire.
+     */
+    val askMode: String
+        get() = (managedString(KEY_ASK_MODE) ?: sp.getString(KEY_ASK_MODE, ASK_MODE_JUST_ME))
+            ?.takeIf { it == ASK_MODE_CREW } ?: ASK_MODE_JUST_ME
+
+    /** Knots or metres, as this crew reads them. */
+    val askUnits: AskUnits.Prefs
+        get() = AskUnits.Prefs(
+            speed = when (sp.getString(KEY_ASK_SPEED_UNIT, null)) {
+                "ms" -> AskUnits.Speed.METRES_PER_SECOND
+                "kmh" -> AskUnits.Speed.KM_PER_HOUR
+                else -> AskUnits.Speed.KNOTS
+            },
+            depth = if (sp.getString(KEY_ASK_DEPTH_UNIT, null) == "feet") AskUnits.Depth.FEET else AskUnits.Depth.METRES,
+        )
+
+    /**
+     * Which instance answers for a branch that has several, as `electrical.batteries=house`
+     * lines. A boat with one of everything never needs this: the tree resolves `*` by itself.
+     */
+    val askInstances: Map<String, String>
+        get() = (sp.getString(KEY_ASK_INSTANCES, null) ?: "")
+            .split('\n', ';')
+            .mapNotNull { line ->
+                val at = line.indexOf('=')
+                if (at <= 0) null else line.substring(0, at).trim() to line.substring(at + 1).trim()
+            }
+            .filter { it.first.isNotEmpty() && it.second.isNotEmpty() }
+            .toMap()
+
+    /** Who is asking, for an answer the whole crew hears. */
+    val speakerName: String get() = name ?: android.os.Build.MODEL
+
+    /**
+     * This install's id in the server's access-request list. Stable, so pairing again replaces
+     * the phone's own entry instead of leaving a row behind every time, and random, so it says
+     * nothing about the phone.
+     */
+    val pairingClientId: String
+        get() = sp.getString(KEY_ASK_CLIENT_ID, null) ?: java.util.UUID.randomUUID().toString().also {
+            sp.edit { putString(KEY_ASK_CLIENT_ID, it) }
+        }
+
     fun bool(key: String, default: Boolean): Boolean = sp.getBoolean(key, default)
     fun string(key: String): String? = sp.getString(key, null)
     fun put(key: String, value: Boolean) = sp.edit { putBoolean(key, value) }
@@ -216,6 +289,23 @@ class Prefs(context: Context) {
         const val KEY_FULL_DUPLEX = "full_duplex"
         const val KEY_RELAY = "relay"
         const val KEY_OPUS = "opus"
+
+        // Ask the boat (see res/xml/preferences.xml and res/xml/app_restrictions.xml).
+        const val KEY_ASK_ENABLED = "ask_enabled"
+        const val KEY_ASK_SERVER = "ask_server"
+        const val KEY_ASK_TOKEN = "ask_token"
+        const val KEY_ASK_SCOPE = "ask_scope"
+        const val KEY_ASK_PAIR = "ask_pair"
+        const val KEY_ASK_MODE = "ask_mode"
+        const val KEY_ASK_SPEED_UNIT = "ask_speed_unit"
+        const val KEY_ASK_DEPTH_UNIT = "ask_depth_unit"
+        const val KEY_ASK_INSTANCES = "ask_instances"
+        const val KEY_ASK_CLIENT_ID = "ask_client_id"
+        const val ASK_MODE_JUST_ME = "just_me"
+        const val ASK_MODE_CREW = "crew"
+        const val ASK_SCOPE_NONE = "none"
+        const val ASK_SCOPE_READ = "read"
+        const val ASK_SCOPE_WRITE = "write"
 
         // Main screen state.
         const val KEY_USE_LAN = "use_lan"

@@ -4,7 +4,9 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
+import androidx.annotation.RequiresApi
 import java.net.Inet4Address
+import java.net.InetAddress
 
 /**
  * Finds the boat's Signal K server on the network, so nobody has to type an address.
@@ -69,36 +71,47 @@ class SignalKDiscovery(context: Context) {
 
     /**
      * A found service carries only a name until it is resolved. `resolveService` was replaced on
-     * API 34 by a callback that also survives the service changing address, so both are used:
-     * the newer one where it exists, the older one below it.
+     * API 34 by a callback that also follows a service changing address, so both paths exist: the
+     * newer one where it is there, the older one below it. Each is its own method so the version
+     * guard covers the whole body, callbacks included.
      */
     private fun resolve(manager: NsdManager, info: NsdServiceInfo, onFound: (Found) -> Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val callback = object : NsdManager.ServiceInfoCallback {
-                override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) = Unit
-                override fun onServiceUpdated(updated: NsdServiceInfo) {
-                    urlOf(updated)?.let { onFound(Found(updated.serviceName, it)) }
-                    // One address is all the settings row needs; keeping the callback registered
-                    // would hold a socket open for a server we have already listed.
-                    try {
-                        manager.unregisterServiceInfoCallback(this)
-                    } catch (_: IllegalArgumentException) {
-                    }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) resolveWithCallback(manager, info, onFound)
+        else resolveLegacy(manager, info, onFound)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    private fun resolveWithCallback(manager: NsdManager, info: NsdServiceInfo, onFound: (Found) -> Unit) {
+        val callback = object : NsdManager.ServiceInfoCallback {
+            override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) = Unit
+            override fun onServiceUpdated(updated: NsdServiceInfo) {
+                urlOf(updated.hostAddresses, updated.port)?.let { onFound(Found(updated.serviceName, it)) }
+                // One address is all the settings row needs; a callback left registered holds a
+                // socket open for a server that has already been listed.
+                try {
+                    manager.unregisterServiceInfoCallback(this)
+                } catch (_: IllegalArgumentException) {
+                    // Already unregistered by the framework.
                 }
-                override fun onServiceLost() = Unit
-                override fun onServiceInfoCallbackUnregistered() = Unit
             }
-            try {
-                manager.registerServiceInfoCallback(info, { it.run() }, callback)
-            } catch (_: IllegalArgumentException) {
-            }
-            return
+            override fun onServiceLost() = Unit
+            override fun onServiceInfoCallbackUnregistered() = Unit
         }
-        @Suppress("DEPRECATION")   // the callback above only exists from API 34; this is the path below it
+        try {
+            manager.registerServiceInfoCallback(info, { it.run() }, callback)
+        } catch (_: IllegalArgumentException) {
+            // The service went away between being found and being resolved.
+        }
+    }
+
+    @Suppress("DEPRECATION")   // the callback above only exists from API 34; this is the path below it
+    private fun resolveLegacy(manager: NsdManager, info: NsdServiceInfo, onFound: (Found) -> Unit) {
         manager.resolveService(info, object : NsdManager.ResolveListener {
             override fun onResolveFailed(failed: NsdServiceInfo, errorCode: Int) = Unit
             override fun onServiceResolved(resolved: NsdServiceInfo) {
-                urlOf(resolved)?.let { onFound(Found(resolved.serviceName, it)) }
+                urlOf(listOfNotNull(resolved.host), resolved.port)?.let {
+                    onFound(Found(resolved.serviceName, it))
+                }
             }
         })
     }
@@ -110,17 +123,10 @@ class SignalKDiscovery(context: Context) {
          * An IPv4 address is what a boat network hands out and what the crew recognises in the
          * settings row, so a service advertising both is listed by its v4 address.
          */
-        fun urlOf(info: NsdServiceInfo): String? {
-            val addresses = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                info.hostAddresses
-            } else {
-                @Suppress("DEPRECATION")   // hostAddresses only exists from API 34
-                listOfNotNull(info.host)
-            }
+        fun urlOf(addresses: List<InetAddress>, port: Int): String? {
             val address = addresses.firstOrNull { it is Inet4Address } ?: addresses.firstOrNull() ?: return null
             val host = address.hostAddress ?: return null
-            val port = info.port.takeIf { it > 0 } ?: SignalKUrl.DEFAULT_PORT
-            return SignalKUrl.normalise("http://$host:$port")
+            return SignalKUrl.normalise("http://$host:${port.takeIf { it > 0 } ?: SignalKUrl.DEFAULT_PORT}")
         }
     }
 }

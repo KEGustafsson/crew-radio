@@ -28,4 +28,57 @@
         <item>volume</item>
         <item>both</item>
     </string-array>
+    <!-- What the crew may say for each thing, as "<id>|<phrase>|<phrase>". The id is a quantity in
+         Quantity.ALL and is not translated; the phrases are, and a crew may add their own. Longer
+         phrases win over shorter ones, so "wind speed" never also answers the boat's speed. -->
+    <string-array name="ask_phrases">
+        <item>heading|heading|our heading|what is our heading|course to steer|compass</item>
+        <item>course|course over ground|ground course|cog</item>
+        <item>speed|speed|boat speed|how fast are we going|how fast|speed over ground|sog</item>
+        <item>speedThroughWater|speed through water|water speed|log speed</item>
+        <item>depth|depth|how deep|how deep is it|water under us|sounder</item>
+        <item>position|position|where are we|our position|coordinates|lat long</item>
+        <item>windSpeed|wind speed|how much wind|how windy</item>
+        <item>windAngle|wind angle|wind direction|where is the wind</item>
+        <item>waterTemperature|water temperature|sea temperature</item>
+        <item>airTemperature|air temperature|outside temperature|how cold is it</item>
+        <item>batteryVoltage|battery|battery voltage|volts</item>
+        <item>batteryCharge|battery charge|state of charge|how full is the battery</item>
+        <item>fuel|fuel|fuel level|how much fuel</item>
+        <item>water|fresh water|water tank|how much water</item>
+        <item>engineTemperature|engine temperature|how hot is the engine</item>
+        <item>engineRevolutions|engine revs|revolutions|rpm|engine speed</item>
+        <item>waypointDistance|distance to go|distance to waypoint|how far to go|how far</item>
+        <item>waypointBearing|bearing to waypoint|waypoint bearing</item>
+        <item>waypointTime|time to go|when do we arrive|how long to go|eta</item>
+    </string-array>
+
+    <string-array name="ask_mode_entries">
+        <item>@string/ask_mode_just_me</item>
+        <item>@string/ask_mode_crew</item>
+    </string-array>
+    <string-array name="ask_mode_values" translatable="false">
+        <item>just_me</item>
+        <item>crew</item>
+    </string-array>
+
+    <string-array name="ask_speed_entries">
+        <item>@string/ask_u_knots</item>
+        <item>@string/ask_u_ms</item>
+        <item>@string/ask_u_kmh</item>
+    </string-array>
+    <string-array name="ask_speed_values" translatable="false">
+        <item>knots</item>
+        <item>ms</item>
+        <item>kmh</item>
+    </string-array>
+
+    <string-array name="ask_depth_entries">
+        <item>@string/ask_u_metres</item>
+        <item>@string/ask_u_feet</item>
+    </string-array>
+    <string-array name="ask_depth_values" translatable="false">
+        <item>metres</item>
+        <item>feet</item>
+    </string-array>
 </resources>
