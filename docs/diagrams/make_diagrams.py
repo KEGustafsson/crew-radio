@@ -6,6 +6,13 @@ with draw.io desktop:
 
 (scale 1 for the screen mock-ups, 1.5 for the flowcharts; the markdown gives each image a display width)
 
+Keep `-b 16` for every phone mock-up. The export crops to the drawing, so the border is the only
+thing that sets the canvas width, and the README shows the phones at one width: a mock-up exported
+with a different border lands on a different canvas and its phone is then drawn a different size.
+screen-settings.png was once exported with a 10-pixel border and came out 3 % larger than the phone
+beside it. Heights may differ - Status and Settings are longer screens than the main one, and
+should look it - but the width must not.
+
 Run:  python docs/diagrams/make_diagrams.py
 
 The screens are drawn, not photographed: they show the app as it looks with example names,
@@ -244,6 +251,18 @@ diagram("screen-main", "Main screen", nodes=main_screen("a", 20, 20, "on"), edge
 diagram("screen-on-air", "On air", nodes=main_screen("a", 20, 20, "air"), edges=[], width=400, height=800)
 diagram("screen-status", "Status screen", nodes=status_screen("s", 20, 20), edges=[], width=400, height=830)
 diagram("screen-settings", "Settings screen", nodes=settings_screen("s", 20, 20), edges=[], width=400, height=980)
+
+# The README shows these two pairs, each as ONE image. Two <img> tags side by side wrap onto
+# separate lines on a phone, which put the screens one after the other exactly where a reader
+# wants to compare them; a single image cannot wrap. PAIR_X puts the second phone one canvas
+# width to the right, so the gutter between them is just their two 16-pixel borders.
+PAIR_X = 416
+diagram("screens-quickstart", "Quick start", nodes=(
+    main_screen("a", 20, 20, "on") + main_screen("b", PAIR_X, 20, "air")
+), edges=[], width=800, height=800)
+diagram("screens-detail", "Status and settings", nodes=(
+    status_screen("s", 20, 20) + settings_screen("t", PAIR_X, 20)
+), edges=[], width=800, height=980)
 
 
 # ================================================================ flowcharts

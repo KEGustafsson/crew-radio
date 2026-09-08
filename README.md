@@ -76,7 +76,7 @@ no account, no internet, no subscription. Connecting people, with what is in the
 6. **Leave.** Tap the switch row again, or *Disconnect* in the notification. Closing the app's
    window does not leave the channel; that is on purpose, so it survives in a pocket.
 
-<img src="docs/images/screen-main.png" alt="Main screen" width="220"> <img src="docs/images/screen-on-air.png" alt="On air" width="220">
+<img src="docs/images/screens-quickstart.png" alt="The main screen, and the same screen while talking" width="440">
 
 ## Talking without touching the screen
 
@@ -126,7 +126,7 @@ this phone's, which is what a wrong clock looks like — and **underruns**, the 
 dry); and the last forty status lines with time stamps. **Check for updates** at the bottom opens
 the Releases page.
 
-<img src="docs/images/screen-status.png" alt="Status screen" width="220"> <img src="docs/images/screen-settings.png" alt="Settings" width="220">
+<img src="docs/images/screens-detail.png" alt="The Status screen, and Settings" width="440">
 
 ## Settings
 
