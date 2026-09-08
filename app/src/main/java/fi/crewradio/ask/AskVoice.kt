@@ -4,38 +4,36 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import fi.crewradio.R
 import java.util.Locale
 
 /**
- * Saying the answer on this phone, in "Just me" mode.
+ * Saying the answer on this phone: "Just me", and "Whole crew" on a phone that has not joined
+ * and so would never hear the boat say it.
  *
- * It goes out as [AudioAttributes.USAGE_VOICE_COMMUNICATION], the same usage the channel's own
- * playback uses, so it follows whatever `AudioRoute` picked: a Bluetooth headset if one is in
- * use, the earpiece at the ear, the loudspeaker otherwise. Given the default usage it would come
- * out of the loudspeaker while the crew member is wearing a headset, which is the one thing this
- * mode exists to avoid.
- *
+ * Which output it uses depends on whether a channel session is up; [applyRoute] explains why.
  * The engine is asked to duck the channel while it speaks, so the answer is not buried under
  * somebody else's transmission.
  */
 class AskVoice(context: Context) {
 
+    private val app = context.applicationContext
     private var tts: TextToSpeech? = null
     private var ready = false
     private var pending: String? = null
     private var onDone: (() -> Unit)? = null
 
+    /** Whether a channel session owns the audio, which decides where the answer comes out. */
+    private var onChannel = false
+
     init {
-        tts = TextToSpeech(context.applicationContext) { status ->
+        tts = TextToSpeech(app) { status ->
             ready = status == TextToSpeech.SUCCESS
             if (ready) {
-                tts?.setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                tts?.setLanguage(Locale.getDefault().takeIf { supported(it) } ?: Locale.UK)
+                // The answer is read in the language the phrases and the wording are written in,
+                // not the phone's: on a Finnish phone a Finnish voice would read English aloud.
+                val wanted = Locale.forLanguageTag(app.getString(R.string.ask_speech_language))
+                tts?.setLanguage(wanted.takeIf { supported(it) } ?: Locale.UK)
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) = Unit
                     override fun onDone(utteranceId: String?) = finished()
@@ -45,7 +43,7 @@ class AskVoice(context: Context) {
                     override fun onError(utteranceId: String?) = finished()
                     override fun onError(utteranceId: String?, errorCode: Int) = finished()
                 })
-                pending?.let { pending = null; speak(it, onDone) }
+                pending?.let { pending = null; speak(it, onChannel, onDone) }
             } else {
                 // No engine at all: the sheet still shows the answer, which is most of the value.
                 pending = null
@@ -61,15 +59,39 @@ class AskVoice(context: Context) {
             result == TextToSpeech.LANG_COUNTRY_VAR_AVAILABLE
     }
 
+    /**
+     * Where the answer comes out.
+     *
+     * On channel it is [AudioAttributes.USAGE_VOICE_COMMUNICATION], the usage the channel's own
+     * playback uses, so it follows whatever `AudioRoute` picked and does not blast the loudspeaker
+     * while somebody is wearing a headset. Off channel there is no route session and no
+     * communication mode, and that usage lands on the voice-call stream, which then sits at its
+     * minimum on the earpiece: the answer is spoken and nobody hears it. So off channel it goes
+     * out as an assistant, on the ordinary media path.
+     */
+    private fun applyRoute() {
+        tts?.setAudioAttributes(
+            AudioAttributes.Builder()
+                .setUsage(
+                    if (onChannel) AudioAttributes.USAGE_VOICE_COMMUNICATION
+                    else AudioAttributes.USAGE_ASSISTANT
+                )
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+        )
+    }
+
     /** Says [text], replacing anything already being said. [whenDone] runs on a engine thread. */
-    fun speak(text: String, whenDone: (() -> Unit)? = null) {
+    fun speak(text: String, onChannel: Boolean, whenDone: (() -> Unit)? = null) {
         onDone = whenDone
+        this.onChannel = onChannel
         val engine = tts
         if (engine == null || !ready) {
             // Still starting up: say it as soon as it is ready, which is well within a second.
             pending = text
             return
         }
+        applyRoute()
         engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE)
     }
 

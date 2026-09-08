@@ -45,8 +45,15 @@ class AskController(
          */
         data class Answered(val heard: String, val sentence: String, val detail: String) : State
 
-        /** Nothing usable. [message] already reads as a sentence. */
-        data class Failed(val heard: String, val message: String) : State
+        /**
+         * Nothing usable. [message] already reads as a sentence.
+         *
+         * [retry] is true when asking again could work — misheard, a server that did not answer,
+         * a speech pack still arriving. It is false only for the two the crew must leave the app
+         * to fix, a phone with no on-device recognition and a refused microphone, where an "Ask
+         * again" button would just fail the same way.
+         */
+        data class Failed(val heard: String, val message: String, val retry: Boolean = true) : State
 
         /** Typing instead of speaking. */
         data object Typing : State
@@ -81,13 +88,21 @@ class AskController(
      * Starts a question. [onState] and [onLevel] are called on the main thread until [finish].
      * With [typed] true the microphone is never opened, which is the path that works on a phone
      * without on-device recognition and in a cockpit too noisy to be heard in.
+     *
+     * [keepMode] carries the mode of the question just asked into this one, which is what a
+     * second question in the same sheet wants: having chosen "Whole crew" for a question,
+     * asking again should not quietly drop back to the setting. A sheet opened afresh from the
+     * row always starts from the setting.
      */
-    fun start(typed: Boolean, onState: (State) -> Unit, onLevel: (Float) -> Unit) {
+    fun start(typed: Boolean, keepMode: Boolean, onState: (State) -> Unit, onLevel: (Float) -> Unit) {
         finish()
         val gen = ++generation
         this.onState = onState
         this.onLevel = onLevel
-        mode = modeOf(prefs.askMode)
+        if (!keepMode) mode = modeOf(prefs.askMode)
+        // Off channel there is nobody to say it to, whatever the setting or the last question
+        // chose, so the question is Just me and the pill is dimmed to say so.
+        if (!crewPossible()) mode = Mode.JUST_ME
         // The channel's own microphone use stops for the duration, whichever way the question comes in:
         // it also stops a half-duplex phone transmitting over its own answer.
         engineOf()?.setAsking(true)
@@ -102,7 +117,8 @@ class AskController(
                 main.post { if (gen == generation) this@AskController.onLevel?.invoke(level) }
             }
             override fun onResults(hypotheses: List<String>) = ask(gen, hypotheses)
-            override fun onFailed(message: String) = deliver(gen, State.Failed("", explain(message)))
+            override fun onFailed(message: String) =
+                deliver(gen, State.Failed("", explain(message), retry = retryable(message)))
         })
     }
 
@@ -112,8 +128,17 @@ class AskController(
         ask(generation, listOf(text))
     }
 
+    /**
+     * Whether "Whole crew" is on offer at all.
+     *
+     * That mode has the boat say the answer over the channel. A phone that has not joined is not
+     * in that conversation, so off channel the question is Just me and the pill does not move.
+     */
+    fun crewPossible(): Boolean = engineOf()?.isConnected == true
+
     /** Flips who hears this one answer. The setting is not touched. */
     fun toggleMode() {
+        if (!crewPossible()) return
         mode = if (mode == Mode.CREW) Mode.JUST_ME else Mode.CREW
     }
 
@@ -134,6 +159,9 @@ class AskController(
     /** Frees everything for good; the controller is not usable afterwards. */
     fun release() {
         finish()
+        // finish() only cancels: this is where the recogniser is unbound, so it survives an
+        // "Ask again" but not the screen closing.
+        recognizer.release()
         work.shutdownNow()
     }
 
@@ -170,8 +198,12 @@ class AskController(
                     if (wanted == Mode.CREW) {
                         val line = context.getString(R.string.ask_crew_answer, prefs.speakerName, match.transcript, sentence)
                         when (val said = client.say(line)) {
-                            is SignalKClient.Result.Ok ->
+                            is SignalKClient.Result.Ok -> {
+                                // The boat says it over the channel. A phone that has not joined
+                                // hears nothing of its own answer, so it says it here as well.
+                                speakHere(gen, sentence, onlyOffChannel = true)
                                 deliver(gen, State.Answered(match.transcript, sentence, detail))
+                            }
                             is SignalKClient.Result.Failed -> {
                                 // The crew did not get it, so at least the person who asked does.
                                 speakHere(gen, sentence)
@@ -193,13 +225,21 @@ class AskController(
         }
     }
 
-    private fun speakHere(gen: Int, sentence: String) {
+    /**
+     * Says the answer on this phone. [onlyOffChannel] holds it back on a phone that is on the
+     * channel, which is what "Whole crew" wants: there the boat says it over the air and saying
+     * it here too would double it. The engine is read on the main thread, never on the worker.
+     */
+    private fun speakHere(gen: Int, sentence: String, onlyOffChannel: Boolean = false) {
         main.post {
             if (gen != generation) return@post
+            val engine = engineOf()
+            val onChannel = engine?.isConnected == true
+            if (onlyOffChannel && onChannel) return@post
             val speaker = voice ?: AskVoice(context).also { voice = it }
             // The channel is ducked so the answer is not buried under somebody else's transmission.
-            engineOf()?.duck(true)
-            speaker.speak(sentence) { main.post { engineOf()?.duck(false) } }
+            engine?.duck(true)
+            speaker.speak(sentence, onChannel) { main.post { engineOf()?.duck(false) } }
         }
     }
 
@@ -223,14 +263,20 @@ class AskController(
         }
     )
 
-    private fun explain(marker: String): String = context.getString(
-        when (marker) {
-            AskRecognizer.UNSUPPORTED -> R.string.ask_no_recognition
-            AskRecognizer.NOTHING_HEARD -> R.string.ask_say_again
-            AskRecognizer.NO_PERMISSION -> R.string.ask_mic_denied
-            else -> R.string.ask_say_again
-        }
-    )
+    /** Whether asking again is worth a button: everything except the two the crew must leave to fix. */
+    private fun retryable(marker: String): Boolean =
+        marker != AskRecognizer.UNSUPPORTED && marker != AskRecognizer.NO_PERMISSION
+
+    private fun explain(marker: String): String = when (marker) {
+        AskRecognizer.UNSUPPORTED -> context.getString(R.string.ask_no_recognition)
+        AskRecognizer.NOTHING_HEARD -> context.getString(R.string.ask_say_again)
+        AskRecognizer.NO_PERMISSION -> context.getString(R.string.ask_mic_denied)
+        AskRecognizer.LANGUAGE_DOWNLOADING -> context.getString(R.string.ask_language_downloading)
+        // Everything else is the recogniser refusing to start rather than failing to hear:
+        // an error code from onError, or the message of whatever createOnDeviceSpeechRecognizer
+        // threw. "Say again." would hide it and the crew would keep asking into a dead microphone.
+        else -> context.getString(R.string.ask_recognition_failed, marker)
+    }
 
     private fun deliver(gen: Int, state: State) {
         main.post { if (gen == generation) onState?.invoke(state) }

@@ -273,6 +273,7 @@
     <string name="ask_cancel">Cancel</string>
     <string name="ask_done">Done</string>
     <string name="ask_send">Ask</string>
+    <string name="ask_again">Ask again</string>
     <string name="ask_mode_just_me">Just me</string>
     <string name="ask_mode_crew">Whole crew</string>
     <!-- Source and age under the answer: "navigation.headingMagnetic · 2 s ago". -->
@@ -286,6 +287,18 @@
     <string name="ask_bad_response">That address answered, but it is not a Signal K server.</string>
     <string name="ask_no_recognition">This phone has no on-device speech recognition.</string>
     <string name="ask_mic_denied">Crew Radio needs the microphone to hear a question.</string>
+    <!-- The recogniser refused to start at all, most often because the phone has no offline
+         speech for its own language. Saying "Say again." here sends the crew round the same
+         loop for ever, so say what happened and carry the detail. -->
+    <string name="ask_recognition_failed">Speech recognition would not start: %1$s</string>
+    <string name="ask_language_downloading">Getting the speech pack for this phone. Ask again in a moment.</string>
+    <!-- The language the Ask feature listens and speaks in: a BCP 47 tag, and the language the
+         phrases in ask_phrases and the answer wording are written in, not the phone's. Without it
+         the recogniser follows the phone, which on a Finnish phone refuses outright
+         (ERROR_LANGUAGE_NOT_SUPPORTED) and would never match these English words anyway, and the
+         voice would read an English sentence with a Finnish mouth. A translator who translates
+         ask_phrases translates this to match. -->
+    <string name="ask_speech_language">en-US</string>
     <!-- What the whole crew hears: who asked, what they asked, and the answer, so an
          announcement out of nowhere makes sense to everyone who did not hear the question. -->
     <string name="ask_crew_answer">%1$s asked %2$s. %3$s</string>

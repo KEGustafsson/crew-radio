@@ -36,14 +36,21 @@ class AskSheet(
     private val typed: EditText = view.findViewById(R.id.askTyped)
     private val mode: TextView = view.findViewById(R.id.askMode)
     private val action: MaterialButton = view.findViewById(R.id.askAction)
+    private val again: MaterialButton = view.findViewById(R.id.askAgain)
 
     /** True once the question is over, so the button reads Done and does not cancel anything. */
     private var settled = false
+
+    /** Whether this sheet was opened without the microphone, so a retry opens the same way. */
+    private var typedOnly = false
 
     init {
         dialog.setContentView(view)
         dialog.setOnDismissListener { controller.finish() }
         action.setOnClickListener { dialog.dismiss() }
+        // A second question in the sheet that is already open. Without it every question, answered
+        // or misheard, ends at Done and the next one means opening the sheet again.
+        again.setOnClickListener { restart() }
         mode.setOnClickListener {
             controller.toggleMode()
             showMode()
@@ -60,10 +67,25 @@ class AskSheet(
 
     /** Opens the sheet and starts a question. [typedOnly] skips the microphone. */
     fun show(typedOnly: Boolean = false) {
-        settled = false
-        showMode()
-        controller.start(typedOnly, ::render) { level.push(it) }
+        this.typedOnly = typedOnly
+        ask(keepMode = false)                  // a sheet opened from the row starts at the setting
         dialog.show()
+    }
+
+    /** Asks again in the sheet that is already open, from the "Ask again" button. */
+    private fun restart() {
+        answer.visibility = View.GONE
+        detail.visibility = View.GONE
+        ask(keepMode = true)                   // whatever the pill says now is what the crew chose
+    }
+
+    private fun ask(keepMode: Boolean) {
+        settled = false
+        again.visibility = View.GONE
+        controller.start(typedOnly, keepMode, ::render) { level.push(it) }
+        // After start(), never before: it may reset the mode from the setting, so a pill drawn
+        // first shows the mode of the *previous* question while this one runs as something else.
+        showMode()
     }
 
     fun dismiss() = dialog.dismiss()
@@ -72,6 +94,12 @@ class AskSheet(
         mode.setText(
             if (controller.mode == AskController.Mode.CREW) R.string.ask_mode_crew else R.string.ask_mode_just_me
         )
+        // "Whole crew" has the boat say the answer over the channel, so off channel it is not on
+        // offer: the pill goes dim and stops taking taps rather than promising something the
+        // question cannot do.
+        val crew = controller.crewPossible()
+        mode.isEnabled = crew
+        mode.alpha = if (crew) 1f else DIMMED
     }
 
     private fun render(next: AskController.State) {
@@ -108,6 +136,7 @@ class AskSheet(
                 answer.setTextColor(activity.getColor(R.color.primary))
                 detail.visibility = if (next.detail.isEmpty()) View.GONE else View.VISIBLE
                 detail.text = next.detail
+                again.visibility = View.VISIBLE
             }
 
             is AskController.State.Failed -> {
@@ -116,6 +145,7 @@ class AskSheet(
                 answer.text = next.message
                 answer.setTextColor(activity.getColor(R.color.error))
                 detail.visibility = View.GONE
+                if (next.retry) again.visibility = View.VISIBLE
             }
         }
     }
@@ -139,6 +169,9 @@ class AskSheet(
     }
 
     companion object {
+        /** The mode pill when the channel is off and "Whole crew" is not on offer. */
+        private const val DIMMED = 0.4f
+
         /**
          * Opens a question from the main screen, or explains why it cannot. The row itself is only
          * shown when [AskController.offered] is true, so the reasons left here are the ones that

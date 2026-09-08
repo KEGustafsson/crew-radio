@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import fi.crewradio.R
 
 /**
  * Hearing the question, on this phone only.
@@ -39,7 +40,15 @@ class AskRecognizer(private val context: Context) {
 
     private var recognizer: SpeechRecognizer? = null
 
-    /** Starts listening. Main thread. */
+    /**
+     * Starts listening. Main thread.
+     *
+     * The recogniser is kept between questions and only cancelled here, never destroyed:
+     * destroying one and creating the next in the same turn races the unbind from the recognition
+     * service, and the new binding goes down with the old. That is what "Ask again" hit straight
+     * after a question that heard nothing, as ERROR_SERVER_DISCONNECTED. [release] is the one
+     * place it is given up, when the screen goes away.
+     */
     fun start(listener: Listener) {
         stop()
         // The SDK check is repeated here, rather than left to available(), so it guards the call
@@ -47,13 +56,25 @@ class AskRecognizer(private val context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || !available(context)) {
             return listener.onFailed(UNSUPPORTED)
         }
-        val speech = try {
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+        val speech = recognizer ?: try {
+            SpeechRecognizer.createOnDeviceSpeechRecognizer(context).also { recognizer = it }
         } catch (e: Exception) {
             // Vendors have shipped stubs that throw here rather than reporting unavailable.
             return listener.onFailed(e.message ?: UNSUPPORTED)
         }
-        recognizer = speech
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            // The phrases are matched in the language they are written in, so ask for that one
+            // rather than letting the recogniser follow the phone: a Finnish phone refuses to
+            // start at all, and would transcribe Finnish that no English phrase could match.
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, context.getString(R.string.ask_speech_language))
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            // The top guess is often the wrong half of a near-homophone pair, and AskIntents
+            // matches every hypothesis, so more of them is free accuracy.
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, MAX_RESULTS)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        }
         speech.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) = Unit
             override fun onBeginningOfSpeech() = Unit
@@ -76,18 +97,18 @@ class AskRecognizer(private val context: Context) {
             }
 
             override fun onError(error: Int) {
+                // The language is one the recogniser knows but has not got on the phone yet.
+                // Ask for it rather than telling the crew to go hunting in the system settings;
+                // it arrives in the background and the next question finds it.
+                if (error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE &&
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                ) {
+                    try { speech.triggerModelDownload(intent) } catch (_: Exception) { /* best effort */ }
+                    return listener.onFailed(LANGUAGE_DOWNLOADING)
+                }
                 listener.onFailed(reason(error))
             }
         })
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            // The top guess is often the wrong half of a near-homophone pair, and AskIntents
-            // matches every hypothesis, so more of them is free accuracy.
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, MAX_RESULTS)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-        }
         try {
             speech.startListening(intent)
         } catch (e: SecurityException) {
@@ -96,8 +117,23 @@ class AskRecognizer(private val context: Context) {
         }
     }
 
-    /** Stops and releases the microphone. Main thread. Safe to call twice. */
+    /**
+     * Stops listening and gives the microphone back, keeping the recogniser for the next
+     * question. Main thread. Safe to call twice.
+     */
     fun stop() {
+        try {
+            recognizer?.cancel()
+        } catch (_: Exception) {
+            // Already gone; nothing holds the microphone either way.
+        }
+    }
+
+    /**
+     * Gives the recogniser up for good. [stop] hands the microphone back between questions;
+     * this is the screen closing, and the only thing that unbinds from the recognition service.
+     */
+    fun release() {
         val speech = recognizer ?: return
         recognizer = null
         try {
@@ -121,6 +157,8 @@ class AskRecognizer(private val context: Context) {
         const val NOTHING_HEARD = "nothing-heard"
         const val NO_PERMISSION = "no-permission"
         const val RECOGNITION_FAILED = "recognition-failed"
+        /** The recogniser knows this language but has not downloaded it; a fetch has been asked for. */
+        const val LANGUAGE_DOWNLOADING = "language-downloading"
 
         const val MAX_RESULTS = 5
         private const val QUIET_DB = -2f
