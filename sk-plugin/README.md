@@ -64,9 +64,9 @@ Until it is on npm, install from a clone of this repository (npm cannot install 
 subdirectory of a Git URL):
 
 ```sh
-git clone https://github.com/KEGustafsson/android-push-to-talk.git
+git clone https://github.com/KEGustafsson/crew-radio.git
 cd ~/.signalk
-npm install /path/to/android-push-to-talk/sk-plugin
+npm install /path/to/crew-radio/sk-plugin
 ```
 
 and restart the server. Then, in the Signal K admin UI, **Server › Plugin Config › Crew Radio**:

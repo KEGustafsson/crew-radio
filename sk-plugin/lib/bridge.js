@@ -8,11 +8,19 @@
  * Emergency (configurable) is said as urgent, which goes to the front of the queue and cuts a
  * normal announcement short. It stops when the state drops back to normal or the notification
  * is cleared.
+ *
+ * A say() that fails (the queue full, the rate limit, the engine down) is tried once more
+ * `retryMs` later by its own timer, whatever the repeat setting: an alarm said once must still
+ * be said. say() truncates an over-long text rather than refusing it, and reports so.
  */
 
 const { EventEmitter } = require("node:events");
 
 const RANK = Object.freeze({ nominal: 0, normal: 0, alert: 1, warn: 2, alarm: 3, emergency: 4 });
+const RETRY_MS = 5000;
+
+/** `table[key]` for the table's own keys only: a state named like an Object.prototype member is unknown. */
+const lookup = (table, key) => (typeof key === "string" && Object.hasOwn(table, key) ? table[key] : undefined);
 
 class NotificationBridge extends EventEmitter {
   /**
@@ -26,6 +34,7 @@ class NotificationBridge extends EventEmitter {
    * @param {string[]} [opts.rules.include=[]]      path globs under notifications., empty = all
    * @param {string[]} [opts.rules.exclude=[]]
    * @param {boolean} [opts.rules.sayPath=true]     say the state and the path before the message
+   * @param {number} [opts.retryMs=5000]            how long after a failed say() it is tried again
    * @param {(msg:string)=>void} [opts.log]
    * @param {() => number} [opts.now]
    */
@@ -33,27 +42,32 @@ class NotificationBridge extends EventEmitter {
     super();
     this.say = opts.say;
     const r = opts.rules ?? {};
-    this.minRank = RANK[r.minState] ?? RANK.alarm;
+    this.minRank = lookup(RANK, r.minState) ?? RANK.alarm;
     this.soundOnly = r.soundOnly ?? true;
     this.repeatMs = Math.max(0, (r.repeatSec ?? 30) * 1000);
     this.urgent = new Set(r.urgentStates ?? ["emergency"]);
     this.include = (r.include ?? []).map(globToRegExp);
     this.exclude = (r.exclude ?? []).map(globToRegExp);
     this.sayPath = r.sayPath ?? true;
+    this.retryMs = opts.retryMs ?? RETRY_MS;
     this.log = opts.log ?? (() => {});
     this.now = opts.now ?? Date.now;
-    this.active = new Map(); // path -> {state, message, lastSaidAt, count}
+    this.active = new Map(); // path -> {state, message, lastSaidAt, count, retry}
     this.timer = null;
+    this.stopped = false;
   }
 
   start() {
+    this.stopped = false;
     this.timer = setInterval(() => this.repeatDue(), 1000);
     if (this.timer.unref) this.timer.unref();
   }
 
   stop() {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    for (const entry of this.active.values()) this.clearRetry(entry);
     this.active.clear();
   }
 
@@ -69,23 +83,37 @@ class NotificationBridge extends EventEmitter {
   /** A notification value for `path`: raised, changed, or cleared. */
   handle(path, value) {
     const state = value && typeof value === "object" ? String(value.state ?? "normal") : "normal";
-    const rank = RANK[state] ?? RANK.normal;
+    const rank = lookup(RANK, state) ?? RANK.normal;
     if (!value || rank === 0) {
-      if (this.active.delete(path)) {
+      if (this.forget(path)) {
         this.log(`cleared: ${path}`);
         this.emit("cleared", path);
       }
       return;
     }
-    if (rank < this.minRank) { this.active.delete(path); return; }
+    if (rank < this.minRank) { this.forget(path); return; }
     if (this.soundOnly && !methodsOf(value).includes("sound")) return;
     if (!this.matches(path)) return;
     const message = typeof value.message === "string" && value.message.trim() ? value.message.trim() : humanise(path);
     const cur = this.active.get(path);
     if (cur && cur.state === state && cur.message === message) return; // unchanged: the repeat timer owns it
-    const entry = { state, message, lastSaidAt: 0, count: 0 };
+    if (cur) this.clearRetry(cur);
+    const entry = { state, message, lastSaidAt: 0, count: 0, retry: null };
     this.active.set(path, entry);
     this.announce(path, entry);
+  }
+
+  /** Drops a path from the active set, with any retry pending for it; true when it was there. */
+  forget(path) {
+    const entry = this.active.get(path);
+    if (!entry) return false;
+    this.clearRetry(entry);
+    this.active.delete(path);
+    return true;
+  }
+
+  clearRetry(entry) {
+    if (entry.retry) { clearTimeout(entry.retry); entry.retry = null; }
   }
 
   matches(path) {
@@ -98,24 +126,32 @@ class NotificationBridge extends EventEmitter {
     if (this.repeatMs === 0) return;
     const now = this.now();
     for (const [path, entry] of this.active) {
-      if (now - entry.lastSaidAt >= this.repeatMs) this.announce(path, entry);
+      if (!entry.retry && now - entry.lastSaidAt >= this.repeatMs) this.announce(path, entry);
     }
   }
 
   announce(path, entry) {
+    this.clearRetry(entry);
     entry.lastSaidAt = this.now();
     entry.count++;
     const priority = this.urgent.has(entry.state) ? "urgent" : "normal";
     const opts = { text: this.sayPath ? spoken(path, entry.state, entry.message) : entry.message, priority };
-    this.emit("announce", { path, ...entry, priority });
+    this.emit("announce", { path, state: entry.state, message: entry.message, count: entry.count, priority });
     Promise.resolve()
       .then(() => this.say(opts))
       .then((result) => {
+        if (result && result.truncated) this.log(`say for ${path}: the text was cut to fit`);
         if (result && result.ok === false) this.log(`say for ${path}: ${JSON.stringify(result)}`);
       })
       .catch((e) => {
         this.log(`say for ${path} failed: ${e.message}`);
-        entry.lastSaidAt = this.now() - this.repeatMs + 5000; // try again in 5 s, not a full repeat later
+        // One more go on its own timer, so an alarm set to be said once is still said.
+        if (this.stopped || this.active.get(path) !== entry) return;
+        entry.retry = setTimeout(() => {
+          entry.retry = null;
+          if (!this.stopped && this.active.get(path) === entry) this.announce(path, entry);
+        }, this.retryMs);
+        if (entry.retry.unref) entry.retry.unref();
       });
   }
 }
@@ -135,7 +171,7 @@ const STATE_WORD = Object.freeze({ alert: "Alert", warn: "Warning", alarm: "Alar
  * seconds"). A notification without a message is the state and the path alone.
  */
 function spoken(path, state, message) {
-  const head = `${STATE_WORD[state] ?? state}, ${humanise(path)}`;
+  const head = `${lookup(STATE_WORD, state) ?? state}, ${humanise(path)}`;
   return message && message !== humanise(path) ? `${head}: ${message}` : head;
 }
 
@@ -148,10 +184,10 @@ function humanise(path) {
     .join(" ");
 }
 
-/** `*` matches within one segment, `**` across segments. */
+/** `*` matches within one segment, `**` across segments; everything else is literal. */
 function globToRegExp(glob) {
-  const esc = String(glob).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "__DOUBLESTAR__").replace(/\*/g, "[^.]*").replace(/__DOUBLESTAR__/g, ".*");
+  const esc = String(glob).replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "__DOUBLESTAR__").replace(/\*/g, "[^.]*").replace(/__DOUBLESTAR__/g, ".*");
   return new RegExp(`^${esc}$`);
 }
 
-module.exports = { NotificationBridge, RANK, humanise, spoken, globToRegExp };
+module.exports = { NotificationBridge, RANK, RETRY_MS, humanise, spoken, globToRegExp };

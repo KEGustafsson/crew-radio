@@ -6,7 +6,7 @@ plugin installed, not drawings. To take them again after a change, on a machine 
 1. A scratch server, apart from any real installation:
    ```sh
    mkdir sk && cd sk && npm init -y && npm install signalk-server@2.31.1   # the version in the checked-in pictures
-   mkdir config && cd config && npm init -y && npm install /path/to/android-push-to-talk/sk-plugin
+   mkdir config && cd config && npm init -y && npm install /path/to/crew-radio/sk-plugin
    ```
    `defaults.json` with the vessel name, `settings.json` with `"security": {"strategy": ""}` (no
    login on a scratch server), and `plugin-config-data/signalk-crewradio.json` with
