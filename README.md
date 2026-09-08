@@ -235,6 +235,12 @@ distance, bearing and time to the next waypoint. Two at once is fine ("depth and
 type the question instead of saying it, which is what happens anyway on a phone that cannot
 recognise speech on its own.
 
+If the boat has two of something, say which one: *"starboard engine revs"*, *"port fuel"*, *"house
+battery"*, *"start battery"*. Ask without naming one and you get whichever the boat lists first,
+said with its name on it — *"port engine 800 rpm"* — so you always know which gauge you heard.
+The same goes for the compass: *"heading"* takes the best source there is, and *"magnetic heading"*
+or *"true heading"* asks for exactly one.
+
 Four things worth knowing:
 
 * **It listens on the phone, never over the internet.** There is no internet at sea, and a crew
@@ -249,7 +255,9 @@ Four things worth knowing:
   answered. A number said with confidence from an instrument that died ten minutes ago is worse
   than no answer.
 * **It says where an odd answer came from.** With no compass talking, *"course over ground 245
-  degrees"* — the GPS number, named as the GPS number.
+  degrees"* — the GPS number, named as the GPS number. And it never answers for the wrong one of
+  a pair: ask for the starboard engine on a boat that only publishes the port one and you hear
+  *"no starboard engine"*, not the port tachometer under a starboard name.
 
 Set it up in Settings: switch on **Ask boat data**, let it find the server (or type the address),
 and press **Pair with server** — then approve this phone once in the Signal K admin page. Approve

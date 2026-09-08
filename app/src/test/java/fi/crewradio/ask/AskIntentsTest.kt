@@ -27,6 +27,13 @@ class AskIntentsTest {
                 "batteryVoltage|battery|battery voltage",
                 "fuel|fuel|fuel level",
                 "waypointDistance|distance to go|distance to waypoint",
+                "headingMagnetic|magnetic heading|compass heading",
+                "headingTrue|true heading",
+                "engineRevolutions|engine revs|engine speed",
+                "engineRevolutionsPort|port engine revs|port revs",
+                "engineRevolutionsStarboard|starboard engine revs|starboard revs",
+                "batteryVoltageHouse|house battery|service battery",
+                "batteryVoltageStart|start battery|starter battery",
             )
         )
     )
@@ -119,4 +126,31 @@ class AskIntentsTest {
     fun matchingWithoutAWakeWordStillWorks() {
         assertEquals(listOf("heading"), ids("heading", wake = null))
     }
+    @Test
+    fun namingAnInstanceAsksForThatOneAndNotTheGenericThing() {
+        // "port engine revs" must not also answer the bare "engine revs": the longer phrase wins
+        // and takes its words with it, or a twin-engine boat reads out the same tachometer twice.
+        assertEquals(listOf("engineRevolutionsPort"), ids("port engine revs"))
+        assertEquals(listOf("engineRevolutionsStarboard"), ids("starboard revs"))
+        assertEquals(listOf("engineRevolutions"), ids("engine revs"))
+        assertEquals(
+            listOf("engineRevolutionsPort", "engineRevolutionsStarboard"),
+            ids("port engine revs and starboard engine revs"),
+        )
+    }
+
+    @Test
+    fun namingABatteryBankAsksForThatBank() {
+        assertEquals(listOf("batteryVoltageHouse"), ids("house battery"))
+        assertEquals(listOf("batteryVoltageStart"), ids("Northstar, starter battery"))
+        assertEquals(listOf("batteryVoltage"), ids("battery"))
+    }
+
+    @Test
+    fun aHeadingSourceCanBeAskedForByName() {
+        assertEquals(listOf("headingMagnetic"), ids("magnetic heading"))
+        assertEquals(listOf("headingTrue"), ids("true heading"))
+        assertEquals(listOf("heading"), ids("what is our heading"))
+    }
+
 }

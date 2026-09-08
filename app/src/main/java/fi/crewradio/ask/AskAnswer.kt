@@ -34,6 +34,13 @@ object AskAnswer {
             /** True when the first-choice source was silent and a fallback answered, so the crew is told. */
             val viaFallback: Boolean,
             val ageSec: Long,
+            /**
+             * The instance that answered a question that did not name one, on a boat that has more
+             * than one: "engine 1 2100 rpm" rather than "engine 2100 rpm", so nobody reads the port
+             * tachometer as the starboard one. Null when the boat has only one, and null when the
+             * question named the instance itself, because then the subject already says which.
+             */
+            val instance: String? = null,
         ) : Item
 
         /** A wind angle: degrees off the bow, and which side. */
@@ -85,7 +92,8 @@ object AskAnswer {
      * Reads each quantity out of [tree] and converts it.
      *
      * @param nowMs this phone's clock, the same one the freshness test uses
-     * @param instances the crew's preferred instance per branch, for the `*` in a path
+     * @param instances the crew's preferred instance per branch, and per branch and role, for the
+     *   `*` in a path
      */
     fun build(
         quantities: List<Quantity>,
@@ -106,7 +114,7 @@ object AskAnswer {
         // though no path was fresh enough to speak.
         var quietest: Long? = null
         for ((index, path) in quantity.paths.withIndex()) {
-            val leaf = tree.read(path, instances) ?: continue
+            val leaf = tree.read(path, instances, quantity.role) ?: continue
             val timestamp = leaf.timestampMs
             if (timestamp == null) {
                 // No timestamp is not "just now": it is an age we cannot check, and the gate exists
@@ -119,7 +127,10 @@ object AskAnswer {
                 if (known == null || ageSec < known) quietest = ageSec
                 continue
             }
-            convert(quantity, leaf, ageSec, index > 0, prefs)?.let { return it }
+            // A question that named its instance ("starboard engine revs") has it in its own name
+            // already; one that did not says which it read, but only where there was a choice.
+            val instance = if (quantity.role == null && leaf.ambiguous) leaf.instance else null
+            convert(quantity, leaf, ageSec, index > 0, prefs, instance)?.let { return it }
         }
         return Item.Missing(quantity.id, quietest)
     }
@@ -131,6 +142,7 @@ object AskAnswer {
         ageSec: Long,
         viaFallback: Boolean,
         prefs: AskUnits.Prefs,
+        instance: String?,
     ): Item? {
         if (quantity.kind == Quantity.Kind.POSITION) {
             val map = leaf.value as? Map<*, *> ?: return null
@@ -145,7 +157,8 @@ object AskAnswer {
             )
         }
         val value = number(leaf.value) ?: return null
-        fun value(number: String, unit: Unit) = Item.Value(quantity.id, number, unit, leaf.path, viaFallback, ageSec)
+        fun value(number: String, unit: Unit) =
+            Item.Value(quantity.id, number, unit, leaf.path, viaFallback, ageSec, instance)
         return when (quantity.kind) {
             Quantity.Kind.HEADING ->
                 value(AskUnits.headingDegrees(value).toString(), Unit.DEGREES)

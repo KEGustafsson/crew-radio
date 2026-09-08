@@ -51,6 +51,20 @@
         <item>waypointDistance|distance to go|distance to waypoint|how far to go|how far</item>
         <item>waypointBearing|bearing to waypoint|waypoint bearing</item>
         <item>waypointTime|time to go|when do we arrive|how long to go|eta</item>
+        <item>headingMagnetic|magnetic heading|heading magnetic|compass heading</item>
+        <item>headingTrue|true heading|heading true</item>
+        <item>engineRevolutionsPort|port engine revs|port engine revolutions|port engine rpm|port engine speed|port revs|port rpm</item>
+        <item>engineRevolutionsStarboard|starboard engine revs|starboard engine revolutions|starboard engine rpm|starboard engine speed|starboard revs|starboard rpm</item>
+        <item>engineTemperaturePort|port engine temperature|port engine temp</item>
+        <item>engineTemperatureStarboard|starboard engine temperature|starboard engine temp</item>
+        <item>batteryVoltageHouse|house battery|house battery voltage|service battery|domestic battery</item>
+        <item>batteryVoltageStart|start battery|starter battery|engine battery|start battery voltage</item>
+        <item>batteryChargeHouse|house battery charge|house state of charge|how full is the house battery</item>
+        <item>batteryChargeStart|start battery charge|starter battery charge</item>
+        <item>fuelPort|port fuel|port fuel tank|port tank</item>
+        <item>fuelStarboard|starboard fuel|starboard fuel tank|starboard tank</item>
+        <item>waterPort|port water|port water tank|port fresh water</item>
+        <item>waterStarboard|starboard water|starboard water tank|starboard fresh water</item>
     </string-array>
 
     <string-array name="ask_mode_entries">

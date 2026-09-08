@@ -214,7 +214,16 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   suspends the voice-keying monitor for the whole question, because two `AudioRecord` clients do not
   share a mic and a live gate would key the channel with the question, released in exactly one place
   (`AskController.finish`); and `AskIntents` matches the longest trigger first and consumes its
-  words, over every n-best hypothesis, so "wind speed" never also answers the boat's speed. Phrases
+  words, over every n-best hypothesis, so "wind speed" never also answers the boat's speed.
+  A boat with two of something is reached by naming it ("starboard engine revs", "house battery"):
+  `Quantity.role` resolves the `*` through the crew's `propulsion:starboard=1` line in
+  `Prefs.askInstances`, then the instance's own name, then a numbered one by the NMEA 2000
+  convention (engine 0 port, 1 starboard; batteries and tanks have no such convention, so those
+  are by name only), and answers nothing rather than the wrong engine when none of it matches.
+  A question that named no instance still takes the first, but `Item.Value.instance` then carries
+  which one and the answer says it out loud. `headingMagnetic`/`headingTrue` are their own
+  single-path quantities, because a fallback chain is right for "heading" and wrong for "true
+  heading". Phrases
   live in `R.array.ask_phrases`, and `R.string.ask_speech_language` beside them is the language the
   recogniser is *asked* for and the voice reads back — never the phone's, which on a Finnish phone
   refuses to start (`ERROR_LANGUAGE_NOT_SUPPORTED`) and would transcribe words no English phrase can

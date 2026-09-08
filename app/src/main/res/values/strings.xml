@@ -324,6 +324,32 @@
     <string name="ask_q_waypointDistance">distance to go</string>
     <string name="ask_q_waypointBearing">bearing to waypoint</string>
     <string name="ask_q_waypointTime">time to go</string>
+    <!-- The same things asked for by name, for a boat with two of something or with more than one
+         heading source. A question that names the instance says so in its own name, which is why
+         these read as whole subjects ("starboard engine") rather than as a quantity plus a word. -->
+    <string name="ask_q_headingMagnetic">magnetic heading</string>
+    <string name="ask_q_headingTrue">true heading</string>
+    <string name="ask_q_engineRevolutionsPort">port engine</string>
+    <string name="ask_q_engineRevolutionsStarboard">starboard engine</string>
+    <string name="ask_q_engineTemperaturePort">port engine temperature</string>
+    <string name="ask_q_engineTemperatureStarboard">starboard engine temperature</string>
+    <string name="ask_q_batteryVoltageHouse">house battery</string>
+    <string name="ask_q_batteryVoltageStart">start battery</string>
+    <string name="ask_q_batteryChargeHouse">house battery charge</string>
+    <string name="ask_q_batteryChargeStart">start battery charge</string>
+    <string name="ask_q_fuelPort">port fuel</string>
+    <string name="ask_q_fuelStarboard">starboard fuel</string>
+    <string name="ask_q_waterPort">port water tank</string>
+    <string name="ask_q_waterStarboard">starboard water tank</string>
+
+    <!-- Which one of a thing answered, when the question did not name it and the boat has more
+         than one: "starboard engine 2100 rpm". An instance the boat names something these do not
+         cover is read out as the boat spells it, rather than guessed at. -->
+    <string name="ask_subject_instance">%2$s %1$s</string>
+    <string name="ask_i_port">port</string>
+    <string name="ask_i_starboard">starboard</string>
+    <string name="ask_i_house">house</string>
+    <string name="ask_i_start">start</string>
 
     <!-- What the answer calls itself when the usual source was silent and another one answered,
          so a GPS course is never passed off as a compass heading. -->

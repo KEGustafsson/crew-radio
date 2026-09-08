@@ -14,6 +14,8 @@ object AskVocabulary {
 
     fun of(context: Context): AskWording.Vocabulary = AskWording.Vocabulary(
         quantity = Quantity.ALL.associate { it.id to context.getString(quantityLabel(it.id)) },
+        instance = INSTANCE_LABELS.mapValues { context.getString(it.value) },
+        subjectInstance = context.getString(R.string.ask_subject_instance),
         path = PATH_LABELS.mapValues { context.getString(it.value) },
         unit = AskAnswer.Unit.entries.associateWith { context.getString(unitLabel(it)) },
         value = context.getString(R.string.ask_value),
@@ -59,6 +61,20 @@ object AskVocabulary {
         "waypointDistance" -> R.string.ask_q_waypointDistance
         "waypointBearing" -> R.string.ask_q_waypointBearing
         "waypointTime" -> R.string.ask_q_waypointTime
+        "headingMagnetic" -> R.string.ask_q_headingMagnetic
+        "headingTrue" -> R.string.ask_q_headingTrue
+        "engineRevolutionsPort" -> R.string.ask_q_engineRevolutionsPort
+        "engineRevolutionsStarboard" -> R.string.ask_q_engineRevolutionsStarboard
+        "engineTemperaturePort" -> R.string.ask_q_engineTemperaturePort
+        "engineTemperatureStarboard" -> R.string.ask_q_engineTemperatureStarboard
+        "batteryVoltageHouse" -> R.string.ask_q_batteryVoltageHouse
+        "batteryVoltageStart" -> R.string.ask_q_batteryVoltageStart
+        "batteryChargeHouse" -> R.string.ask_q_batteryChargeHouse
+        "batteryChargeStart" -> R.string.ask_q_batteryChargeStart
+        "fuelPort" -> R.string.ask_q_fuelPort
+        "fuelStarboard" -> R.string.ask_q_fuelStarboard
+        "waterPort" -> R.string.ask_q_waterPort
+        "waterStarboard" -> R.string.ask_q_waterStarboard
         else -> R.string.ask_q_heading   // unreachable: every id in Quantity.ALL is above
     }
 
@@ -76,6 +92,30 @@ object AskVocabulary {
         AskAnswer.Unit.LITRES -> R.string.ask_u_litres
         AskAnswer.Unit.RPM -> R.string.ask_u_rpm
     }
+
+    /**
+     * What to call an instance the boat named for itself. Only the self-describing names are here:
+     * a bare number is the boat's own business (engine 0 is the port engine by NMEA 2000
+     * convention, but battery 0 is nothing in particular), so it is read out as it stands rather
+     * than dressed up as a side of the boat it may not be on.
+     */
+    private val INSTANCE_LABELS: Map<String, Int> = mapOf(
+        "port" to R.string.ask_i_port,
+        "prt" to R.string.ask_i_port,
+        "portengine" to R.string.ask_i_port,
+        "prtengine" to R.string.ask_i_port,
+        "starboard" to R.string.ask_i_starboard,
+        "stbd" to R.string.ask_i_starboard,
+        "stb" to R.string.ask_i_starboard,
+        "sb" to R.string.ask_i_starboard,
+        "starboardengine" to R.string.ask_i_starboard,
+        "stbengine" to R.string.ask_i_starboard,
+        "house" to R.string.ask_i_house,
+        "domestic" to R.string.ask_i_house,
+        "service" to R.string.ask_i_house,
+        "start" to R.string.ask_i_start,
+        "starter" to R.string.ask_i_start,
+    )
 
     /**
      * Only the sources whose name differs from the quantity's own need a label: they are what the

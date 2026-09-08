@@ -14,7 +14,8 @@ package fi.crewradio.ask
  *    is still useful if the half you caught was the subject.
  *  * **Name an unexpected source.** When the compass is silent and the GPS answered, the crew
  *    hears "course over ground 245 degrees" — the number is not wrong, but it is not the same
- *    thing, and they must be able to tell.
+ *    thing, and they must be able to tell. A boat with two engines gets the same treatment for
+ *    the instance: a bare "engine revs" is answered as "starboard engine 2100 rpm".
  *  * **Say what is missing, and for how long.** "No depth, nothing for four minutes" is an
  *    answer. A silence is not, and a stale number is worse than either.
  */
@@ -27,6 +28,13 @@ object AskWording {
     data class Vocabulary(
         /** Quantity id to its name: `heading` to "heading". Used when nothing could be read. */
         val quantity: Map<String, String>,
+        /**
+         * Instance key to the word for it: `house` to "house", `Port_Engine` to "port". A key
+         * nothing knows ("1", "b2") is spoken as the boat spells it, rather than guessed at.
+         */
+        val instance: Map<String, String> = emptyMap(),
+        /** `%1$s` the thing, `%2$s` which one of it: "starboard engine". */
+        val subjectInstance: String = "%2\$s %1\$s",
         /** Resolved Signal K path to its name: `navigation.courseOverGroundTrue` to "course over ground". */
         val path: Map<String, String>,
         /** Unit to the word after the number: `KNOTS` to "knots". */
@@ -72,7 +80,7 @@ object AskWording {
     private fun part(item: AskAnswer.Item, vocabulary: Vocabulary): String = when (item) {
         is AskAnswer.Item.Value -> format(
             vocabulary.value,
-            subject(item.quantityId, item.path, item.viaFallback, vocabulary),
+            subject(item.quantityId, item.path, item.viaFallback, vocabulary, item.instance),
             item.number,
             vocabulary.unit[item.unit] ?: "",
         )
@@ -117,10 +125,34 @@ object AskWording {
      * a fallback is named by the path it actually came from ("course over ground"), so the crew is
      * never told that a GPS course is a compass heading.
      */
-    private fun subject(quantityId: String, path: String, viaFallback: Boolean, vocabulary: Vocabulary): String {
-        if (viaFallback) vocabulary.path[generalise(path)]?.let { return it }
-        return vocabulary.quantity[quantityId] ?: vocabulary.path[generalise(path)] ?: quantityId
+    private fun subject(
+        quantityId: String,
+        path: String,
+        viaFallback: Boolean,
+        vocabulary: Vocabulary,
+        instance: String? = null,
+    ): String {
+        val name =
+            if (viaFallback) vocabulary.path[generalise(path)] ?: name(quantityId, path, vocabulary)
+            else name(quantityId, path, vocabulary)
+        if (instance == null) return name
+        return format(vocabulary.subjectInstance, name, instanceName(instance, vocabulary))
     }
+
+    /**
+     * What to call the instance. The key is the boat's own spelling, so it is read whole first and
+     * then as its words: `prt_engine` is "port", the same reading [Quantity.Role] does of it. A
+     * key nothing knows ("1", "b2") is spoken as it stands, because "engine 1" tells the crew the
+     * truth and "starboard engine" would be a guess.
+     */
+    private fun instanceName(key: String, vocabulary: Vocabulary): String {
+        vocabulary.instance[key.lowercase().filter { it.isLetterOrDigit() }]?.let { return it }
+        for (word in Quantity.Role.words(key)) vocabulary.instance[word]?.let { return it }
+        return key
+    }
+
+    private fun name(quantityId: String, path: String, vocabulary: Vocabulary): String =
+        vocabulary.quantity[quantityId] ?: vocabulary.path[generalise(path)] ?: quantityId
 
     /**
      * A resolved path back to the shape the labels are keyed by: the instance a boat chose for
