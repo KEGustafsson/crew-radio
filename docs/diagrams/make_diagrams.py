@@ -249,7 +249,7 @@ def ask_sheet(p, x, y, state):
     dim_text, dim_cyan, dim_line = "#48565C", "#2A6068", "#1E262B"
     n = [frame(p + "f", x, y)]
     n.append(txt(p + "h1", "CHANNEL", x + 24, y + 40, 200, 20, 11, dim_text, spacing=2))
-    n.append(txt(p + "h2", "ARABELLA", x + 22, y + 60, 220, 40, 26, dim_cyan, bold=True, mono=False))
+    n.append(txt(p + "h2", "CREW RADIO", x + 22, y + 60, 220, 40, 26, dim_cyan, bold=True, mono=False))
     n.append(rect(p + "hc", x + 232, y + 52, 66, 40, arc=25, label="▮▮ 2", color=dim_text, size=14, stroke=dim_line))
     for i, name in enumerate(("WLAN", "BLUETOOTH", "AWARE")):
         n.append(rect(p + f"t{i}", x + 20 + i * 108, y + 118, 100, 66, fill=BG, stroke=dim_line, arc=18,

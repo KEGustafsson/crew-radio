@@ -30,12 +30,12 @@ class AskIntentsTest {
         )
     )
 
-    private fun ids(vararg hypotheses: String, wake: String? = "Arabella") =
+    private fun ids(vararg hypotheses: String, wake: String? = "Northstar") =
         intents.match(hypotheses.toList(), wake).quantities.map { it.id }
 
     @Test
     fun answersTwoThingsInTheOrderTheyWereAsked() {
-        assertEquals(listOf("heading", "speed"), ids("Arabella, what is heading and speed now?"))
+        assertEquals(listOf("heading", "speed"), ids("Northstar, what is heading and speed now?"))
         assertEquals(listOf("speed", "heading"), ids("speed and heading"))
     }
 
@@ -49,8 +49,8 @@ class AskIntentsTest {
 
     @Test
     fun theWakeWordIsDroppedWhereverItFalls() {
-        assertEquals(listOf("depth"), ids("Arabella depth"))
-        assertEquals(listOf("depth"), ids("depth please Arabella"))
+        assertEquals(listOf("depth"), ids("Northstar depth"))
+        assertEquals(listOf("depth"), ids("depth please Northstar"))
         // Dictation rarely knows a boat's name, so it is matched loosely.
         assertEquals(listOf("depth"), ids("Arabela depth"))
         assertEquals(listOf("depth"), ids("Annabella depth"))
@@ -69,14 +69,14 @@ class AskIntentsTest {
     fun everyHypothesisIsTriedNotJustTheBestOne() {
         // The recogniser's best guess is two edits out, so nothing in it matches; the second
         // hypothesis is the one the crew actually said.
-        val match = intents.match(listOf("speak over ground", "speed over ground"), "Arabella")
+        val match = intents.match(listOf("speak over ground", "speed over ground"), "Northstar")
         assertEquals(listOf("speed"), match.quantities.map { it.id })
         assertEquals("speed over ground", match.transcript)
     }
 
     @Test
     fun nothingRecognisedKeepsTheFirstHypothesisToShow() {
-        val match = intents.match(listOf("did you see the otter", "did you see the water"), "Arabella")
+        val match = intents.match(listOf("did you see the otter", "did you see the water"), "Northstar")
         assertTrue(match.quantities.isEmpty())
         assertEquals("did you see the otter", match.transcript)
     }

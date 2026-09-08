@@ -11,7 +11,7 @@ class SignalKUrlTest {
 
     @Test
     fun aBareHostGetsSignalKsOwnSchemeAndPort() {
-        assertEquals("http://arabella.local:3000", SignalKUrl.normalise("arabella.local"))
+        assertEquals("http://northstar.local:3000", SignalKUrl.normalise("northstar.local"))
         assertEquals("http://192.168.1.9:3000", SignalKUrl.normalise("192.168.1.9"))
     }
 
@@ -28,7 +28,7 @@ class SignalKUrlTest {
             "http://192.168.1.9:3000",
             SignalKUrl.normalise("http://192.168.1.9:3000/admin/#/dashboard"),
         )
-        assertEquals("http://arabella.local:3000", SignalKUrl.normalise("  arabella.local/  "))
+        assertEquals("http://northstar.local:3000", SignalKUrl.normalise("  northstar.local/  "))
     }
 
     @Test
@@ -45,23 +45,23 @@ class SignalKUrlTest {
         assertNull(SignalKUrl.normalise("http://"))
         assertNull(SignalKUrl.normalise("two words"))
         assertFalse(SignalKUrl.valid("ftp://boat"))
-        assertTrue(SignalKUrl.valid("arabella.local"))
+        assertTrue(SignalKUrl.valid("northstar.local"))
     }
 
     @Test
     fun theSettingsRowShowsHostAndPortWithoutTheScheme() {
-        assertEquals("arabella.local:3000", SignalKUrl.describe("arabella.local"))
+        assertEquals("northstar.local:3000", SignalKUrl.describe("northstar.local"))
         assertEquals("", SignalKUrl.describe("nonsense://x"))
     }
 
     @Test
     fun theEndpointsAreBuiltOffTheBase() {
-        val base = SignalKUrl.normalise("arabella.local")!!
+        val base = SignalKUrl.normalise("northstar.local")!!
         assertEquals(
-            "http://arabella.local:3000/signalk/v1/api/vessels/self/navigation",
+            "http://northstar.local:3000/signalk/v1/api/vessels/self/navigation",
             SignalKUrl.selfBranch(base, "navigation"),
         )
-        assertEquals("http://arabella.local:3000/signalk/v1/access/requests", SignalKUrl.accessRequests(base))
-        assertEquals("http://arabella.local:3000/plugins/signalk-crewradio/say", SignalKUrl.pluginSay(base))
+        assertEquals("http://northstar.local:3000/signalk/v1/access/requests", SignalKUrl.accessRequests(base))
+        assertEquals("http://northstar.local:3000/plugins/signalk-crewradio/say", SignalKUrl.pluginSay(base))
     }
 }

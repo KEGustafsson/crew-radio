@@ -40,7 +40,7 @@ class AskIntents(triggers: List<Trigger>) {
     /**
      * The quantities asked for, in the order they were spoken, from the first hypothesis that
      * yields any. [wakeWord] (the boat's name) is dropped wherever it appears, so both
-     * "Arabella, depth" and "depth please Arabella" work.
+     * "Northstar, depth" and "depth please Northstar" work.
      */
     fun match(hypotheses: List<String>, wakeWord: String? = null): Match {
         if (hypotheses.isEmpty()) return Match(emptyList(), "")

@@ -6,7 +6,7 @@ import java.net.URISyntaxException
 /**
  * What the crew may type as the boat's Signal K server, and what it means.
  *
- * They will type `arabella.local`, or `192.168.1.9`, or paste
+ * They will type `northstar.local`, or `192.168.1.9`, or paste
  * `http://192.168.1.9:3000/admin/#/dashboard` out of a browser. All three mean the same server,
  * and none of them is a base URL. Normalising is pure, so the rules are unit-tested and the
  * settings screen can refuse a bad one before it is ever dialled.

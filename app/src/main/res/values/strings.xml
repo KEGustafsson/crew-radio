@@ -260,7 +260,7 @@
     <string name="restriction_audio_route_title">Audio output</string>
     <string name="restriction_audio_route_desc">Where the voice goes: auto, speaker or earpiece.</string>
     <!-- ================= Ask the boat (Signal K) ================= -->
-    <!-- The row on the main screen. Not "ASK ARABELLA": the header already carries the channel
+    <!-- The row on the main screen. Not "ASK NORTHSTAR": the header already carries the channel
          name, and the same word in both places reads as one thing meaning two. -->
     <string name="ask_row">ASK BOAT DATA</string>
     <string name="a11y_ask">Ask the boat for heading, speed, depth and wind</string>
@@ -368,7 +368,7 @@
     <string name="ask_separator">", "</string>
     <string name="ask_terminator">.</string>
 
-    <string name="why_ask_server">A name or an address, such as arabella.local or 192.168.1.9</string>
+    <string name="why_ask_server">A name or an address, such as northstar.local or 192.168.1.9</string>
 
     <!-- Settings. -->
     <string name="pref_cat_ask">Ask the boat</string>
