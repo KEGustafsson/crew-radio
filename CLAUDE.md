@@ -118,7 +118,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   4 s = dropped. `onRoster` fires only when the rendered list changes; the service mirrors the
   head count into the notification title. Display name = Android device name, else `Build.MODEL`.
 - The main screen shows only what matters while talking (head count, one status line, who is
-  talking); `StatusActivity` (menu > Status) polls `engine.rosterNow`, `engine.stats()` and
+  talking): the Bluetooth peer row is hidden while on channel (the peer is a constructor argument
+  of the transport, so it is a before-Connect choice) and the talk disc is dimmed to 0.55 while
+  off it, like the mute glyph. `StatusActivity` (menu > Status) polls `engine.rosterNow`, `engine.stats()` and
   `service.statusLog` once a second for the detail. Keep diagnostics there, not on the main screen.
 - Loss concealment lives in `audio/Mixer` + `audio/Conceal`, not the codec: MediaCodec cannot
   ask the AOSP Opus decoder for PLC (an empty buffer yields empty output). Audio frames and hellos

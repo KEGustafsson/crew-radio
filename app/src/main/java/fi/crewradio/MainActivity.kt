@@ -161,9 +161,15 @@ class MainActivity : AppCompatActivity() {
             syncUi()
         }
 
-        /** Only reached if the service process dies; controls become no-ops until rebound. */
+        /**
+         * Only reached if the service process dies; controls become no-ops until rebound. The
+         * engine goes with it, so the screen is re-rendered rather than left saying ON CHANNEL
+         * with a bright disc and no peer row over a session that is gone.
+         */
         override fun onServiceDisconnected(name: ComponentName) {
             service = null
+            renderRoster(emptyList())
+            syncUi()
         }
     }
 
@@ -458,7 +464,7 @@ class MainActivity : AppCompatActivity() {
         channelState.setTextColor(ContextCompat.getColor(this, if (muted) R.color.error else if (connected) R.color.primary else R.color.text_dim))
         renderVolume()
         for (tile in tiles) tile.root.alpha = if (!tile.available) 0.4f else if (connected) 0.55f else 1f
-        peerButton.alpha = if (connected) 0.55f else 1f
+        refreshPeer()
         // The screen stays on only while on channel, and only if the user wants it to.
         if (connected && prefs.keepScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -478,7 +484,7 @@ class MainActivity : AppCompatActivity() {
         val e = engine
         val live = e?.isTalking == true
         val touch = touchExploration()
-        val (big, small) = when (e?.mode ?: PttEngine.Mode.HALF_DUPLEX) {
+        val (big, hint) = when (e?.mode ?: PttEngine.Mode.HALF_DUPLEX) {
             PttEngine.Mode.HALF_DUPLEX ->
                 if (!live) R.string.ptt_talk to (if (touch) R.string.ptt_talk_touch_hint else R.string.ptt_talk_hint)
                 else if (touch) R.string.ptt_on_air to R.string.ptt_on_air_touch_hint
@@ -486,6 +492,9 @@ class MainActivity : AppCompatActivity() {
                 else R.string.ptt_on_air to R.string.ptt_on_air_latched_hint
             PttEngine.Mode.FULL_DUPLEX -> if (live) R.string.ptt_mic_on to R.string.ptt_mic_on_hint else R.string.ptt_mic_off to R.string.ptt_mic_off_hint
         }
+        // Off channel the disc is inert (startTalking has no transports to send to), so the hint
+        // says why rather than HOLD, which would be a lie, and what to do about it.
+        val small = if (e?.isConnected == true) hint else R.string.ptt_off_channel_hint
         val hintColor = ContextCompat.getColor(this, if (live) R.color.error else R.color.primary_container)
         pttButton.text = SpannableStringBuilder()
             .append(getString(big))
@@ -498,6 +507,8 @@ class MainActivity : AppCompatActivity() {
         pttButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, if (live) R.color.on_air else R.color.primary))
         pttButton.setTextColor(ContextCompat.getColor(this, if (live) R.color.on_air_text else R.color.on_primary))
         pttButton.strokeColor = ColorStateList.valueOf(ContextCompat.getColor(this, if (live) R.color.error else R.color.outline))
+        // Off channel the disc does nothing, so it is dimmed, like the mute glyph on the volume row.
+        pttButton.alpha = if (e?.isConnected == true) 1f else 0.55f
         ViewCompat.replaceAccessibilityAction(
             pttButton, AccessibilityActionCompat.ACTION_CLICK,
             getString(if (live) R.string.a11y_talk_stop else R.string.a11y_talk_start)
@@ -595,8 +606,14 @@ class MainActivity : AppCompatActivity() {
         if (askSheet == null) Toast.makeText(this, R.string.ask_no_server, Toast.LENGTH_SHORT).show()
     }
 
+    /**
+     * The Bluetooth peer row: hidden while Bluetooth is off, and hidden again while on channel.
+     * The peer is a constructor argument of the transport, so it is chosen before Connect and
+     * cannot be changed during a session; on channel it is only a bar that does nothing, and the
+     * screen above the disc is better spent on who is talking.
+     */
     private fun refreshPeer() {
-        if (!tileOn(Prefs.KEY_USE_BT)) {
+        if (!tileOn(Prefs.KEY_USE_BT) || engine?.isConnected == true) {
             peerButton.visibility = View.GONE
             return
         }

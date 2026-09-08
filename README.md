@@ -61,9 +61,10 @@ no account, no internet, no subscription. Connecting people, with what is in the
    services switched on — with them off the app stops before joining and offers a **Location
    settings** button); **BLUETOOTH** for any two phones paired in the phone's Bluetooth settings.
    Tick more than one if you have them.
-2. **Bluetooth only:** on one phone choose *Listen only* in the peer row, on the other pick that
-   phone from the list. Bluetooth links pairs of phones; a phone can be the listening end for
-   several others.
+2. **Bluetooth only:** before joining, on one phone choose *Listen only* in the peer row, on the
+   other pick that phone from the list. Bluetooth links pairs of phones; a phone can be the
+   listening end for several others. The peer is fixed when you join, so the row disappears
+   while you are on channel and comes back when you leave.
 3. **Join the channel.** Tap the switch row. It reads *ON CHANNEL*, the head count at the top
    shows who else is there, and the notification says what the links are doing.
 4. **Talk.** Hold the big disc. It turns red, *ON AIR*, and everyone hears you. Let go to
