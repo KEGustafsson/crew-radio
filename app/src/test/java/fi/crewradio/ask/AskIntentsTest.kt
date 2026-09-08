@@ -1,6 +1,7 @@
 package fi.crewradio.ask
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -51,9 +52,25 @@ class AskIntentsTest {
     fun theWakeWordIsDroppedWhereverItFalls() {
         assertEquals(listOf("depth"), ids("Northstar depth"))
         assertEquals(listOf("depth"), ids("depth please Northstar"))
-        // Dictation rarely knows a boat's name, so it is matched loosely.
-        assertEquals(listOf("depth"), ids("Arabela depth"))
-        assertEquals(listOf("depth"), ids("Annabella depth"))
+    }
+
+    /**
+     * Dictation rarely knows a boat's name, so it is matched loosely.
+     *
+     * Asserted on [AskIntents.isWakeWord] rather than through a whole question on purpose: a
+     * mishearing that is *not* recognised is dropped from the match as an unknown word anyway, so
+     * the question still answers and an end-to-end assertion passes either way. Only this says
+     * whether the name was actually recognised — which is what stops the test quietly meaning
+     * nothing the next time the boat is renamed.
+     */
+    @Test
+    fun theBoatsNameSurvivesBeingMisheard() {
+        assertTrue(AskIntents.isWakeWord("northstar", "Northstar"))
+        assertTrue(AskIntents.isWakeWord("norhstar", "Northstar"))    // a letter dropped
+        assertTrue(AskIntents.isWakeWord("nordstar", "Northstar"))    // two edits, allowed for a long name
+        // Not the name, and not close enough to be taken for it.
+        assertFalse(AskIntents.isWakeWord("north", "Northstar"))
+        assertFalse(AskIntents.isWakeWord("depth", "Northstar"))
     }
 
     @Test
