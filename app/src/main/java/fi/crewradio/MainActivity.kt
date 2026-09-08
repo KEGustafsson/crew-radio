@@ -458,7 +458,7 @@ class MainActivity : AppCompatActivity() {
         channelState.setTextColor(ContextCompat.getColor(this, if (muted) R.color.error else if (connected) R.color.primary else R.color.text_dim))
         renderVolume()
         for (tile in tiles) tile.root.alpha = if (!tile.available) 0.4f else if (connected) 0.55f else 1f
-        peerButton.alpha = if (connected) 0.55f else 1f
+        refreshPeer()
         // The screen stays on only while on channel, and only if the user wants it to.
         if (connected && prefs.keepScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -498,6 +498,8 @@ class MainActivity : AppCompatActivity() {
         pttButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, if (live) R.color.on_air else R.color.primary))
         pttButton.setTextColor(ContextCompat.getColor(this, if (live) R.color.on_air_text else R.color.on_primary))
         pttButton.strokeColor = ColorStateList.valueOf(ContextCompat.getColor(this, if (live) R.color.error else R.color.outline))
+        // Off channel the disc does nothing, so it is dimmed, like the mute glyph on the volume row.
+        pttButton.alpha = if (e?.isConnected == true) 1f else 0.55f
         ViewCompat.replaceAccessibilityAction(
             pttButton, AccessibilityActionCompat.ACTION_CLICK,
             getString(if (live) R.string.a11y_talk_stop else R.string.a11y_talk_start)
@@ -595,8 +597,14 @@ class MainActivity : AppCompatActivity() {
         if (askSheet == null) Toast.makeText(this, R.string.ask_no_server, Toast.LENGTH_SHORT).show()
     }
 
+    /**
+     * The Bluetooth peer row: hidden while Bluetooth is off, and hidden again while on channel.
+     * The peer is a constructor argument of the transport, so it is chosen before Connect and
+     * cannot be changed during a session; on channel it is only a bar that does nothing, and the
+     * screen above the disc is better spent on who is talking.
+     */
     private fun refreshPeer() {
-        if (!tileOn(Prefs.KEY_USE_BT)) {
+        if (!tileOn(Prefs.KEY_USE_BT) || engine?.isConnected == true) {
             peerButton.visibility = View.GONE
             return
         }

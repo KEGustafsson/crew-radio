@@ -129,7 +129,8 @@ def main_screen(p, x, y, state, peers="2", peer_row=True, bt=True):
         n.append(rect(p + f"t{i}", tx, y + 118, 100, 66, fill=(CYAN_DIM if active else BG), stroke=(CYAN if active else OUTLINE), arc=18,
                       label=name, color=(CYAN if active else MUTED), size=11))
     row_y = y + 202
-    if peer_row and bt:
+    # The peer row is a before-Connect choice, so the app hides it while on channel.
+    if peer_row and bt and not on:
         n.append(rect(p + "pr", x + 20, row_y, 320, 44, label="PEER · SKIPPER'S PHONE", color=MUTED, size=12))
         row_y += 58
     n.append(rect(p + "sw", x + 20, row_y, 320, 50))
@@ -152,9 +153,13 @@ def main_screen(p, x, y, state, peers="2", peer_row=True, bt=True):
         n.append(txt(p + "d1", "ON AIR", cx - r, cy - 40, 2 * r, 50, 40, "#FFDAD6", bold=True, align="center", mono=False))
         n.append(txt(p + "d2", "RELEASE TO LISTEN", cx - r, cy + 12, 2 * r, 24, 12, "#FFB4AB", align="center", spacing=2))
     else:
-        n.append((p + "d", "", cx - r, cy - r, 2 * r, 2 * r, f"ellipse;whiteSpace=wrap;html=1;fillColor={CYAN};strokeColor=#2C363C;strokeWidth=10;"))
-        n.append(txt(p + "d1", "TALK", cx - r, cy - 40, 2 * r, 50, 44, "#00343A", bold=True, align="center", mono=False))
-        n.append(txt(p + "d2", "HOLD", cx - r, cy + 12, 2 * r, 24, 13, "#00494F", align="center", spacing=3))
+        # Off channel the disc does nothing, and the app dims it: these are its colours at the
+        # same 55 % over the background.
+        fill, ring = (CYAN, "#2C363C") if on else ("#317B87", "#1F272C")
+        big, small = ("#00343A", "#00494F") if on else ("#07262B", "#073136")
+        n.append((p + "d", "", cx - r, cy - r, 2 * r, 2 * r, f"ellipse;whiteSpace=wrap;html=1;fillColor={fill};strokeColor={ring};strokeWidth=10;"))
+        n.append(txt(p + "d1", "TALK", cx - r, cy - 40, 2 * r, 50, 44, big, bold=True, align="center", mono=False))
+        n.append(txt(p + "d2", "HOLD", cx - r, cy + 12, 2 * r, 24, 13, small, align="center", spacing=3))
     return n
 
 

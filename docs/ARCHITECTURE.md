@@ -8,7 +8,8 @@ the people who change it. Everything here is about the `app` module, package `fi
 <img src="images/architecture.png" alt="What runs where" width="760">
 
 - **`MainActivity`** is the one screen that matters while talking: channel name, head count,
-  transport tiles, the peer row (Bluetooth only), the channel switch and the talk disc. It binds
+  transport tiles, the peer row (Bluetooth only, and only off channel), the channel switch and
+  the talk disc, dimmed until the channel is joined. It binds
   to the service while visible and never leaves the channel on its own lifecycle.
 - **`PttService`** is a foreground service (types microphone | connected device). It owns the
   engine, the partial wake lock and the low-latency Wi‑Fi lock, the notification that mirrors
