@@ -222,6 +222,13 @@ the roster under the vessel's name.
 Switched on, the main screen gets an **ASK BOAT DATA** button under the volume row.
 Press it, say *"heading and speed"*, and the boat answers: **"heading 245 degrees, speed 6.2 knots."**
 
+<img src="docs/images/screens-ask.png" alt="Asking: the sheet listening, and the same sheet with the answer" width="440">
+
+The sheet listens, shows what it heard, and answers in words as well as out loud — in wind you
+will mishear *"six point two"*, and a number you can glance at is the difference between an
+instrument and a party trick. Under the answer it names where the reading came from and how old
+it was.
+
 It understands the things you actually ask under way — heading, course, speed, depth, position,
 wind, water and air temperature, battery, fuel, fresh water, engine temperature and revs, and
 distance, bearing and time to the next waypoint. Two at once is fine ("depth and wind"). You can

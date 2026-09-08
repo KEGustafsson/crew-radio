@@ -238,6 +238,55 @@ def settings_screen(p, x, y):
     return n
 
 
+def ask_sheet(p, x, y, state):
+    """The Ask boat data sheet over the main screen. state: 'listening' | 'answered'.
+
+    The main screen behind it is drawn in dimmed colours rather than with an opacity layer, so the
+    export is the same on every draw.io version. Only the add-on's own sheet is at full strength,
+    which is what these two pictures are about.
+    """
+    answered = state == "answered"
+    dim_text, dim_cyan, dim_line = "#48565C", "#2A6068", "#1E262B"
+    n = [frame(p + "f", x, y)]
+    n.append(txt(p + "h1", "CHANNEL", x + 24, y + 40, 200, 20, 11, dim_text, spacing=2))
+    n.append(txt(p + "h2", "ARABELLA", x + 22, y + 60, 220, 40, 26, dim_cyan, bold=True, mono=False))
+    n.append(rect(p + "hc", x + 232, y + 52, 66, 40, arc=25, label="▮▮ 2", color=dim_text, size=14, stroke=dim_line))
+    for i, name in enumerate(("WLAN", "BLUETOOTH", "AWARE")):
+        n.append(rect(p + f"t{i}", x + 20 + i * 108, y + 118, 100, 66, fill=BG, stroke=dim_line, arc=18,
+                      label=name, color=dim_text, size=11))
+    # The rows the sheet does not cover, in the order the main screen has them.
+    n.append(rect(p + "sw", x + 20, y + 202, 320, 50, fill=BG, stroke=dim_line, label="ON CHANNEL", color=dim_cyan, size=13))
+    n.append(rect(p + "vr", x + 20, y + 266, 320, 50, fill=BG, stroke=dim_line))
+    n.append(rect(p + "vt", x + 68, y + 288, 210, 6, fill=dim_line, stroke=dim_line, arc=50))
+    n.append(rect(p + "ar", x + 20, y + 330, 320, 50, fill=BG, stroke=dim_line, label="ASK BOAT DATA", color=dim_cyan, size=13))
+
+    sy = y + 456
+    n.append(rect(p + "sh", x + 2, sy, 356, 300, fill=CARD, stroke=CARD, arc=6))
+    n.append(rect(p + "gr", x + 165, sy + 14, 34, 4, fill="#3A444A", stroke="#3A444A", arc=50))
+    if answered:
+        n.append(txt(p + "st", "HEARD", x + 2, sy + 28, 356, 20, 12, MUTED, align="center", spacing=3))
+        n.append(txt(p + "hd", "Heading", x + 22, sy + 58, 316, 30, 17, TEXT, align="center"))
+        n.append(txt(p + "an", "heading 245 degrees.", x + 22, sy + 110, 316, 34, 20, CYAN, bold=True, align="center", mono=False))
+        n.append(txt(p + "dt", "navigation.headingMagnetic · 2 s ago", x + 22, sy + 160, 316, 20, 11, MUTED, align="center"))
+    else:
+        n.append(txt(p + "st", "LISTENING", x + 2, sy + 28, 356, 20, 12, CYAN, align="center", spacing=3))
+        # The level meter, so a phone that is not picking the speaker up is obvious before the
+        # question is wasted.
+        for i, h in enumerate((10, 18, 26, 34, 22, 30, 36, 24, 14, 28, 20, 12, 8)):
+            n.append(rect(p + f"lb{i}", x + 105 + i * 12, sy + 64 + (36 - h), 6, h, fill=CYAN, stroke=CYAN, arc=50))
+        n.append(txt(p + "hd", "Heading, speed, depth, wind, position…", x + 22, sy + 116, 316, 30, 13, MUTED, align="center"))
+
+    ry = sy + 230
+    if answered:
+        n.append(rect(p + "pill", x + 25, ry, 130, 36, fill=BG, stroke=CYAN, arc=50, label="Whole crew", color=CYAN, size=12))
+        n.append(txt(p + "b1", "Ask again", x + 165, ry, 110, 36, 14, CYAN, align="center", mono=False))
+        n.append(txt(p + "b2", "Done", x + 281, ry, 60, 36, 14, MUTED, align="center", mono=False))
+    else:
+        n.append(rect(p + "pill", x + 78, ry, 130, 36, fill=BG, stroke=CYAN, arc=50, label="Whole crew", color=CYAN, size=12))
+        n.append(txt(p + "b1", "Cancel", x + 218, ry, 90, 36, 14, MUTED, align="center", mono=False))
+    return n
+
+
 diagram("screens", "The screens", nodes=(
     [txt("t0", "Off the channel", 40, 20, 360, 30, 14, "#000000", bold=True, align="center", mono=False)]
     + main_screen("a", 40, 60, "off", bt=True)
@@ -263,6 +312,10 @@ diagram("screens-quickstart", "Quick start", nodes=(
 diagram("screens-detail", "Status and settings", nodes=(
     status_screen("s", 20, 20) + settings_screen("t", PAIR_X, 20)
 ), edges=[], width=800, height=980)
+# The add-on, so the pair reads left to right: the question going in, the answer coming back.
+diagram("screens-ask", "Ask boat data", nodes=(
+    ask_sheet("a", 20, 20, "listening") + ask_sheet("b", PAIR_X, 20, "answered")
+), edges=[], width=800, height=800)
 
 
 # ================================================================ flowcharts
