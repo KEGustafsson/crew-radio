@@ -27,6 +27,7 @@ class LanLink extends EventEmitter {
     this.ifaceName = opts.iface && opts.iface !== "auto" ? opts.iface : null;
     this.sock = null;
     this.address = null;
+    this.netmask = null;
     this.broadcast = null;
     this.iface = null;
   }
@@ -67,6 +68,7 @@ class LanLink extends EventEmitter {
           this.sock = sock;
           this.iface = pick.name;
           this.address = pick.address;
+          this.netmask = pick.netmask;
           this.broadcast = pick.broadcast;
           this.emit("listening", { iface: pick.name, address: pick.address, broadcast: pick.broadcast });
           resolve({ iface: pick.name, address: pick.address, broadcast: pick.broadcast });
@@ -83,14 +85,35 @@ class LanLink extends EventEmitter {
    * so phones lose a few percent of them even in the same cabin, whereas unicast is retried
    * and rate-adapted. The phones drop the copies they get twice by (sender, seq). Transient
    * failures are ignored, as in the app.
+   *
+   * A unicast address off this interface's subnet is skipped: see [onSubnet].
    */
   send(buf, unicast = []) {
     const s = this.sock;
     if (!s) return false;
     s.send(buf, this.port, this.group, () => {});
     if (this.broadcast) s.send(buf, this.port, this.broadcast, () => {});
-    for (const a of unicast) s.send(buf, this.port, a, () => {});
+    for (const a of unicast) if (this.onSubnet(a)) s.send(buf, this.port, a, () => {});
     return true;
+  }
+
+  /**
+   * True when `addr` is on the same IPv4 subnet as the bound interface.
+   *
+   * The address a packet was heard from is not authenticated: the AEAD covers the header and the
+   * payload, not the IP source, so anyone on the path can rewrite the source of a genuine packet
+   * and have the copies sent wherever they like. Keeping them on our own subnet costs nothing
+   * real - the channel is a LAN one, and the group and the broadcast go out either way - and
+   * leaves nothing to reflect off the plugin with.
+   */
+  onSubnet(addr) {
+    if (!this.address || !this.netmask || typeof addr !== "string") return false;
+    const a = addr.split(".").map(Number);
+    const me = this.address.split(".").map(Number);
+    const m = this.netmask.split(".").map(Number);
+    if (a.length !== 4 || m.length !== 4) return false;
+    if (a.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) return false;
+    return a.every((o, i) => (o & m[i]) === (me[i] & m[i]));
   }
 
   close() {
@@ -110,7 +133,7 @@ function chooseInterface(name) {
     for (const a of addrs ?? []) {
       if (a.family !== "IPv4" && a.family !== 4) continue;
       if (a.internal) continue;
-      candidates.push({ name: ifName, address: a.address, broadcast: broadcastOf(a.address, a.netmask) });
+      candidates.push({ name: ifName, address: a.address, netmask: a.netmask || "255.255.255.0", broadcast: broadcastOf(a.address, a.netmask) });
     }
   }
   if (name) return candidates.find((c) => c.name === name) ?? null;

@@ -24,7 +24,7 @@
     "intercom"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "signalk": {
     "displayName": "Crew Radio",

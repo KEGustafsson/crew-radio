@@ -239,7 +239,9 @@ class ChannelNode extends EventEmitter {
     // Where a unicast copy reaches this node: only from packets that came straight from it (a
     // relayed packet arrives from the relaying node's address, which would get the copies
     // instead) and, by the guard above, only from a packet that advanced its sequence, so a
-    // replayed one cannot re-point the copies.
+    // replayed one cannot re-point the copies. The address itself is not authenticated - the AEAD
+    // covers the header and the payload, not the IP source - so the link drops any copy that
+    // would leave our own subnet (LanLink.onSubnet); the group and the broadcast go out anyway.
     if (rinfo && rinfo.address && h.hops - h.ttl === 0) n.address = rinfo.address;
     if (h.codec === P.Codec.HELLO) {
       const hello = P.decodeHello(plain);

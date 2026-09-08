@@ -95,3 +95,27 @@ test("a failing play does not stop the queue", async () => {
   assert.equal(q.max, 20);
   assert.equal(q.maxUrgent, 5);
 });
+
+test("a reservation holds the slot across the work of making the item, and gives it back on failure", async () => {
+  const { q } = harness(40);
+  q.enqueue("n1");                                 // plays; three more may wait
+  const a = q.reserve();
+  const b = q.reserve();
+  const c = q.reserve();
+  assert.ok(a && b && c);
+  assert.equal(q.hasRoom(), false, "three slots are spoken for, though nothing is queued yet");
+  assert.equal(q.reserve(), null);
+  b();                                             // that caller's synthesis failed
+  b();                                             // releasing twice is not a second slot
+  assert.equal(q.hasRoom(), true);
+  assert.equal(q.waiting("normal"), 0);
+  a(); q.enqueue("n2");
+  c(); q.enqueue("n3");
+  assert.equal(q.waiting("normal"), 2);
+  assert.equal(q.hasRoom(), true);
+  assert.equal(q.reserve("urgent") !== null, true, "urgent keeps its own count");
+  q.stop();
+  assert.equal(q.reserve(), null);
+  assert.equal(q.reserved.normal, 0);
+  assert.equal(q.reserved.urgent, 0);
+});

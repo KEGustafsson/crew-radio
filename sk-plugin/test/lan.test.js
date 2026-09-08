@@ -45,16 +45,53 @@ test("opening a link on the machine's interface binds, joins the group and can s
   assert.equal(link.send(Buffer.from("x")), false, "closed links do not send");
 });
 
-test("send() goes to the group, the broadcast address and each unicast target", () => {
+/** A link that is not bound to a socket, so send() can be watched without one. */
+function fakeLink(sent) {
   const link = new LanLink({ group: "239.255.42.1", port: 47474 });
-  const sent = [];
   link.sock = { send: (buf, port, addr) => sent.push(`${addr}:${port}`) };
+  link.address = "192.168.0.10";
+  link.netmask = "255.255.255.0";
   link.broadcast = "192.168.0.255";
+  return link;
+}
+
+test("send() goes to the group, the broadcast address and each unicast target", () => {
+  const sent = [];
+  const link = fakeLink(sent);
   assert.equal(link.send(Buffer.from("x"), ["192.168.0.30", "192.168.0.35"]), true);
   assert.deepEqual(sent, ["239.255.42.1:47474", "192.168.0.255:47474", "192.168.0.30:47474", "192.168.0.35:47474"]);
   sent.length = 0;
   link.send(Buffer.from("x"));
   assert.deepEqual(sent, ["239.255.42.1:47474", "192.168.0.255:47474"]);
+});
+
+test("a unicast target off our subnet is skipped: the source address of a packet is not authenticated", () => {
+  const sent = [];
+  const link = fakeLink(sent);
+  // What a node would have learnt from a genuine packet whose IP source was rewritten on the path.
+  link.send(Buffer.from("x"), ["192.168.0.30", "203.0.113.7", "192.168.1.30", "not-an-address", "8.8.8.8"]);
+  assert.deepEqual(sent, ["239.255.42.1:47474", "192.168.0.255:47474", "192.168.0.30:47474"],
+    "the group and the broadcast still go out; only the off-subnet copies are dropped");
+});
+
+test("onSubnet: the netmask decides, and an unbound link trusts nothing", () => {
+  const link = new LanLink({ group: "239.255.42.1", port: 47474 });
+  assert.equal(link.onSubnet("192.168.0.30"), false, "not bound yet");
+  link.address = "10.1.2.3";
+  link.netmask = "255.255.0.0";
+  assert.equal(link.onSubnet("10.1.250.9"), true);
+  assert.equal(link.onSubnet("10.2.0.9"), false);
+  link.netmask = "255.255.255.240";
+  assert.equal(link.onSubnet("10.1.2.14"), true);
+  assert.equal(link.onSubnet("10.1.2.17"), false);
+  assert.equal(link.onSubnet("10.1.2"), false);
+  assert.equal(link.onSubnet("10.1.2.999"), false);
+  assert.equal(link.onSubnet(undefined), false);
+});
+
+test("chooseInterface reports the netmask, so a bound link can tell its own subnet", () => {
+  const pick = chooseInterface(null);
+  if (pick) assert.match(pick.netmask, /^\d+\.\d+\.\d+\.\d+$/);
 });
 
 /** Watches the sockets lan.js creates, so a test can see whether a failed one was closed. */

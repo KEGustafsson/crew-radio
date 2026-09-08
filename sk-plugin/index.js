@@ -265,7 +265,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
    * seconds, truncated}. A text over MAX_TEXT characters is cut, not refused (an alarm's text
    * is still an alarm), and `truncated` says so. Rejects for an empty text, when the plugin is
    * not running, when `source` is over its rate budget, or when the queue is full for the
-   * priority; the room is checked before any speech is made.
+   * priority; the room is taken before any speech is made, and given back if the speech fails.
    */
   async function say(opts, source = "api") {
     if (!running || !tts || !queue) throw new Error("signalk-crewradio is not running");
@@ -275,14 +275,23 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     if (text.length > MAX_TEXT) { text = text.slice(0, MAX_TEXT); truncated = true; }
     const priority = opts.priority === "urgent" ? "urgent" : "normal";
     if (!limiter.allow(source)) throw new Error(`say: over the rate limit (${limiter.rateOf(source)} a minute for ${source})`);
-    if (!queue.hasRoom(priority)) throw new Error(`say: queue full (${priority === "urgent" ? `${queue.maxUrgent} urgent` : queue.max} waiting)`);
     const q = queue;
-    const speech = await tts.synthesize(text);
-    if (!running || queue !== q) throw new Error("signalk-crewradio is not running");
-    const parts = [];
-    if (cfg.chime) parts.push(priority === "urgent" ? tones.urgentChime() : tones.chime());
-    parts.push(bytesToSamples(speech), tones.silence(150));
-    const pcm = samplesToBytes(tones.concat(parts));
+    // The slot is held across the synthesis, not merely checked before it: see AnnouncementQueue.reserve.
+    const release = q.reserve(priority);
+    if (!release) throw new Error(`say: queue full (${priority === "urgent" ? `${queue.maxUrgent} urgent` : queue.max} waiting)`);
+    let pcm;
+    try {
+      const speech = await tts.synthesize(text);
+      if (!running || queue !== q) throw new Error("signalk-crewradio is not running");
+      const parts = [];
+      if (cfg.chime) parts.push(priority === "urgent" ? tones.urgentChime() : tones.chime());
+      parts.push(bytesToSamples(speech), tones.silence(150));
+      pcm = samplesToBytes(tones.concat(parts));
+    } catch (e) {
+      release();
+      throw e;
+    }
+    release();                                     // and enqueue in the same step: nothing runs between them
     const position = q.enqueue(pcm, priority);
     app.debug(`say (${source}, ${priority}, position ${position}${truncated ? ", truncated" : ""}): ${text}`);
     return { ok: true, queued: position, priority, seconds: Math.round(pcm.length / 32) / 1000, truncated };

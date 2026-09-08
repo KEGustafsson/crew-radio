@@ -345,6 +345,44 @@ test("each door has its own rate budget, and the queue's room is checked before 
   p.stop();
 });
 
+test("concurrent says do not spend speech on announcements the queue will refuse", async () => {
+  FakeLink.last = undefined;
+  const app = fakeApp();
+  const p = plugin(app, deps);
+  p.start({ channelKey: KEY, waitForSilenceMs: 0, chime: false });
+  await until(() => FakeLink.last);
+  const api = app.props["signalk-crewradio.api"];
+  // Eight at once, over the five urgent slots. Each checks the room before it makes its speech,
+  // so without a reservation all eight would synthesise and only the losers would find out.
+  const settled = await Promise.allSettled(
+    Array.from({ length: 8 }, (_, i) => api.say({ text: `urgent ${i}`, priority: "urgent" })),
+  );
+  const ok = settled.filter((r) => r.status === "fulfilled");
+  const refused = settled.filter((r) => r.status === "rejected");
+  assert.equal(ok.length + refused.length, 8);
+  assert.ok(ok.length >= 5, `at least the five slots were taken, got ${ok.length}`);
+  assert.ok(refused.every((r) => /queue full/.test(r.reason.message)), "the rest were refused as full");
+  assert.equal(FakeTts.last.texts.length, ok.length, "nothing was synthesised for a refused one");
+  p.stop();
+});
+
+test("a failed synthesis gives its slot back, so a run of them does not shrink the queue", async () => {
+  FakeLink.last = undefined;
+  const app = fakeApp();
+  const p = plugin(app, deps);
+  p.start({ channelKey: KEY, waitForSilenceMs: 0, chime: false });
+  await until(() => FakeLink.last);
+  const api = app.props["signalk-crewradio.api"];
+  const tts = FakeTts.last;
+  const good = tts.synthesize.bind(tts);
+  tts.synthesize = (text) => { tts.texts.push(text); return Promise.reject(new Error("flite fell over")); };
+  for (let i = 0; i < 6; i++) await assert.rejects(api.say({ text: `broken ${i}`, priority: "urgent" }), /flite fell over/);
+  tts.synthesize = good;
+  // Six reservations were taken and none returned would leave no urgent room at all.
+  assert.equal((await api.say({ text: "after the failures", priority: "urgent" })).ok, true);
+  p.stop();
+});
+
 test("the notification bridge speaks through say(): urgent for an emergency, nothing below the threshold", async () => {
   FakeLink.last = undefined;
   const app = fakeApp();

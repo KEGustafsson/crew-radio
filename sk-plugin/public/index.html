@@ -125,12 +125,18 @@
     var res = $("result"); res.className = ""; res.textContent = "Sending...";
     $("send").disabled = true;
     fetch(BASE + "/say", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: $("text").value, priority: $("priority").value }) })
-      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      // A refusal may answer with no JSON at all, so the status is what the message is built from.
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; }, function () { return { ok: r.ok, status: r.status, j: {} }; }); })
       .then(function (x) {
         if (x.ok && x.j.ok) { res.className = "ok"; res.textContent = (x.j.queued === 0 ? "Going out now" : "Queued at position " + x.j.queued) + ", " + x.j.seconds + " s of speech" + (x.j.priority === "urgent" ? ", urgent" : "") + (x.j.truncated ? " (the text was cut to 500 characters)" : ""); }
-        else { res.className = "bad"; res.textContent = x.j.error || x.j.message || ("The server answered " + x.j.statusCode); }
+        else {
+          res.className = "bad";
+          var why = x.j.error || x.j.message || ("The server answered " + (x.j.statusCode || x.status));
+          // Only a refusal is a login problem; a plain failure said what it was.
+          res.textContent = why + (x.status === 401 || x.status === 403 ? " (a read-write login is needed to say something)" : "");
+        }
       })
-      .catch(function (e) { res.className = "bad"; res.textContent = e.message + " (a read-write login is needed to say something)"; })
+      .catch(function (e) { res.className = "bad"; res.textContent = e.message; })
       .then(function () { $("send").disabled = false; poll(); });
   });
   poll(); setInterval(poll, 1000);

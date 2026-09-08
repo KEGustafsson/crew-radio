@@ -31,6 +31,7 @@ class AnnouncementQueue extends EventEmitter {
     this.maxUrgent = opts.maxUrgent ?? 5;
     this.log = opts.log ?? (() => {});
     this.items = [];
+    this.reserved = { normal: 0, urgent: 0 };
     this.current = null;
     this.pumping = false;
     this.stopped = false;
@@ -44,10 +45,34 @@ class AnnouncementQueue extends EventEmitter {
     return this.items.reduce((n, e) => n + (e.priority === p ? 1 : 0), 0);
   }
 
-  /** True when an item of `priority` would be accepted right now. */
+  /** True when an item of `priority` would be accepted right now, reservations counted. */
   hasRoom(priority = "normal") {
     if (this.stopped) return false;
-    return priority === "urgent" ? this.waiting("urgent") < this.maxUrgent : this.waiting("normal") < this.max;
+    const p = priority === "urgent" ? "urgent" : "normal";
+    return this.waiting(p) + this.reserved[p] < (p === "urgent" ? this.maxUrgent : this.max);
+  }
+
+  /**
+   * Takes a slot for `priority` and returns the function that gives it back, or null when the
+   * queue is full.
+   *
+   * hasRoom() alone is not enough for a caller that makes its item before queueing it: the speech
+   * is synthesised across an await, and another caller can take the last slot in between, so the
+   * first one would find the queue full only after spending the work. The reservation holds the
+   * slot across that await. Release it and enqueue in the same synchronous step, so nothing can
+   * slip in between; releasing twice, or after the queue has stopped, does nothing.
+   */
+  reserve(priority = "normal") {
+    if (this.stopped) return null;
+    const p = priority === "urgent" ? "urgent" : "normal";
+    if (!this.hasRoom(p)) return null;
+    this.reserved[p]++;
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      this.reserved[p] = Math.max(0, this.reserved[p] - 1);
+    };
   }
 
   /**
@@ -84,6 +109,8 @@ class AnnouncementQueue extends EventEmitter {
 
   stop() {
     this.stopped = true;
+    this.reserved.normal = 0;
+    this.reserved.urgent = 0;                      // the syntheses still in flight will not queue
     this.clear();
   }
 
