@@ -230,6 +230,11 @@ class Prefs(context: Context) {
     /**
      * Which instance answers for a branch that has several, as `electrical.batteries=house`
      * lines. A boat with one of everything never needs this: the tree resolves `*` by itself.
+     *
+     * A line may also name a role, `propulsion:starboard=1`, which is how a boat whose instances
+     * are numbered says which number is which side. Without it a role still finds an instance the
+     * boat has named for what it is (`propulsion.starboard`), or a numbered one where the number
+     * is the NMEA 2000 convention; see [fi.crewradio.ask.Quantity.Role].
      */
     val askInstances: Map<String, String>
         get() = (sp.getString(KEY_ASK_INSTANCES, null) ?: "")

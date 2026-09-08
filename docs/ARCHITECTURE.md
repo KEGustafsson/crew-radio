@@ -253,6 +253,21 @@ Six rules worth keeping:
   wrong half of a near-homophone pair; a word of five letters or more matches within one edit,
   shorter ones exactly, since at four letters one edit turns "wind" into "mind".
 
+* **A boat with two of something.** A `*` in a path is an instance the boat names itself, and
+  which one it resolves to is not a detail the crew can be left to guess. A question that names no
+  instance still takes the first, but the answer carries it — "port engine 800 rpm" — whenever the
+  branch held more than one that could have answered. A question that does name one
+  (`Quantity.role`: "starboard engine revs", "house battery") matches the crew's own line in
+  Settings first (`propulsion:starboard=1`), then an instance the boat named for what it is, then
+  a purely numbered one against the NMEA 2000 convention, where engine 0 is port and 1 is
+  starboard; batteries and tanks carry no such convention, so those roles match by name only. When
+  none of that finds it the answer is "no starboard engine", never the port engine under a
+  starboard name — the same rule as the staleness gate, for the same reason.
+* **One source, when the question asked for one.** `Quantity.paths` is a fallback chain, which is
+  right for "heading" and wrong for "true heading": `headingMagnetic` and `headingTrue` are their
+  own quantities with a single path each, so asking for the true heading on a boat that publishes
+  only a magnetic one is answered with nothing rather than with a bearing off by the variation.
+
 The phrase table is `R.array.ask_phrases`, so a translator reaches it with everything else and a
 crew can add their own wording; the catalogue it points at is `Quantity.ALL`.
 

@@ -15,7 +15,14 @@ class AskWordingTest {
             "windAngle" to "wind",
             "waypointTime" to "time to go",
             "batteryVoltage" to "battery",
+            "engineRevolutions" to "engine",
         ),
+        instance = mapOf(
+            "port" to "port", "prt" to "port",
+            "starboard" to "starboard", "stb" to "starboard",
+            "house" to "house",
+        ),
+        subjectInstance = "%2\$s %1\$s",
         path = mapOf(
             "navigation.courseOverGroundTrue" to "course over ground",
             "navigation.headingTrue" to "true heading",
@@ -27,6 +34,7 @@ class AskWordingTest {
             AskAnswer.Unit.KNOTS to "knots",
             AskAnswer.Unit.METRES to "metres",
             AskAnswer.Unit.VOLTS to "volts",
+            AskAnswer.Unit.RPM to "rpm",
         ),
         value = "%1\$s %2\$s %3\$s",
         toPort = "%1\$s %2\$s degrees to port",
@@ -179,4 +187,57 @@ class AskWordingTest {
         // No label for "fuel" and no word for percent: the number still gets out.
         assertEquals("fuel 62.", say(value("fuel", "62", AskAnswer.Unit.PERCENT, path = "tanks.fuel.0.currentLevel")))
     }
+    @Test
+    fun theInstanceIsNamedWhenTheBoatHasMoreThanOne() {
+        assertEquals(
+            "starboard engine 2100 rpm.",
+            say(
+                AskAnswer.Item.Value(
+                    "engineRevolutions", "2100", AskAnswer.Unit.RPM,
+                    "propulsion.starboard.revolutions", false, 2, "starboard",
+                )
+            ),
+        )
+    }
+
+    @Test
+    fun anInstanceKeyIsReadAsItsWordsSoTheSideIsSpokenNotSpelled() {
+        assertEquals(
+            "port engine 800 rpm.",
+            say(
+                AskAnswer.Item.Value(
+                    "engineRevolutions", "800", AskAnswer.Unit.RPM,
+                    "propulsion.prt_engine.revolutions", false, 2, "prt_engine",
+                )
+            ),
+        )
+    }
+
+    @Test
+    fun anUnknownInstanceIsSpokenAsWordsRatherThanAsPunctuation() {
+        assertEquals(
+            "engine 2 engine 2100 rpm.",
+            say(
+                AskAnswer.Item.Value(
+                    "engineRevolutions", "2100", AskAnswer.Unit.RPM,
+                    "propulsion.engine_2.revolutions", false, 2, "engine_2",
+                )
+            ),
+        )
+    }
+
+    @Test
+    fun anInstanceTheBoatSpellsItsOwnWayIsSpokenAsItStands() {
+        // "engine 1" is the truth; calling it the starboard engine would be a guess.
+        assertEquals(
+            "1 engine 2100 rpm.",
+            say(
+                AskAnswer.Item.Value(
+                    "engineRevolutions", "2100", AskAnswer.Unit.RPM,
+                    "propulsion.1.revolutions", false, 2, "1",
+                )
+            ),
+        )
+    }
+
 }

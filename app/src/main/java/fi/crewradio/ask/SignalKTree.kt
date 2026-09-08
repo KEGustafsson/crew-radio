@@ -18,6 +18,12 @@ package fi.crewradio.ask
  * `tanks.fuel.0`, `propulsion.port`. The crew should not have to know which, so `*` resolves to
  * the preferred instance for that branch when there is one, and otherwise to the first child that
  * can satisfy the rest of the path — a boat with one engine never has to configure anything.
+ *
+ * A boat with two of something is why [read] also takes a [Quantity.Role]. Without one the rule
+ * above still holds and [Leaf.ambiguous] tells the answer there was a choice, so it can say which
+ * instance it read. With one, only that instance will do: a role that matches nothing reads as
+ * absent rather than as its sister, because "starboard engine 2100 rpm" spoken off the port
+ * tachometer is exactly the kind of confident wrong answer this file is careful about.
  */
 class SignalKTree(private val root: Map<String, Any?>) {
 
@@ -29,22 +35,32 @@ class SignalKTree(private val root: Map<String, Any?>) {
         val source: String?,
         /** The path actually read, with `*` replaced by the instance that resolved it. */
         val path: String,
+        /** The instance `*` resolved to (`house`, `1`), or null when the path had no `*`. */
+        val instance: String? = null,
+        /** True when the branch held more than one instance that could have answered. */
+        val ambiguous: Boolean = false,
     )
 
     /**
      * The leaf at [path], or null when the boat does not publish it.
      *
-     * [instances] names the preferred instance per branch (`"electrical.batteries"` to `"house"`),
-     * as the crew set it in Settings; a branch with no entry resolves by itself.
+     * [instances] names the preferred instance per branch (`"electrical.batteries"` to `"house"`)
+     * and per branch and role (`"propulsion:starboard"` to `"1"`), as the crew set it in Settings;
+     * a branch with no entry resolves by itself. [role] is the instance the question asked for by
+     * name, and when there is one nothing else may answer for it.
      */
-    fun read(path: String, instances: Map<String, String> = emptyMap()): Leaf? =
-        walk(root, path.split('.'), emptyList(), instances)
+    fun read(
+        path: String,
+        instances: Map<String, String> = emptyMap(),
+        role: Quantity.Role? = null,
+    ): Leaf? = walk(root, path.split('.'), emptyList(), instances, role)
 
     private fun walk(
         node: Any?,
         remaining: List<String>,
         consumed: List<String>,
         instances: Map<String, String>,
+        role: Quantity.Role?,
     ): Leaf? {
         if (node !is Map<*, *>) return null
         if (remaining.isEmpty()) return leafOf(node, consumed)
@@ -52,19 +68,43 @@ class SignalKTree(private val root: Map<String, Any?>) {
         val rest = remaining.drop(1)
         if (segment != "*") {
             val child = node[segment] ?: return null
-            return walk(child, rest, consumed + segment, instances)
+            return walk(child, rest, consumed + segment, instances, role)
         }
-        // An instance segment. Try the crew's choice for this branch first, then every child in a
-        // stable order, and take the first that can satisfy what is left of the path: a boat with
-        // one battery bank answers without anyone having named it.
-        val keys = node.keys.filterIsInstance<String>().filterNot { it.startsWith("$") }
-        val preferred = instances[consumed.joinToString(".")]
-        val order = (listOfNotNull(preferred).filter { it in keys } + keys.sorted()).distinct()
-        for (key in order) {
-            walk(node[key], rest, consumed + key, instances)?.let { return it }
+        // An instance segment. Only the children that can satisfy what is left of the path count
+        // — a tank that publishes a capacity but no level is not an answer — and how many of those
+        // there are is what tells the answer whether there was a choice worth naming out loud.
+        val branch = consumed.joinToString(".")
+        val keys = node.keys.filterIsInstance<String>().filterNot { it.startsWith("$") }.sorted()
+        val found = keys.mapNotNull { key ->
+            walk(node[key], rest, consumed + key, instances, role)?.let { key to it }
         }
-        return null
+        if (found.isEmpty()) return null
+        val chosen = choose(found.map { it.first }, branch, instances, role) ?: return null
+        val leaf = found.first { it.first == chosen }.second
+        // Two `*` in one path is not a shape any quantity has, and if it ever were, the outer one
+        // is the instance the crew names, so one already stamped is left alone.
+        return if (leaf.instance != null) leaf else leaf.copy(instance = chosen, ambiguous = found.size > 1)
     }
+
+    /**
+     * Which of [candidates] answers. Without a [role] that is the crew's choice for the branch and
+     * otherwise the first, as it has always been. With one it is the crew's line for that role,
+     * else a candidate the role knows by name, else a candidate that is nothing but the role's
+     * instance number — and if none of those, nothing at all.
+     */
+    private fun choose(
+        candidates: List<String>,
+        branch: String,
+        instances: Map<String, String>,
+        role: Quantity.Role?,
+    ): String? {
+        if (role == null) return instances[branch]?.takeIf { it in candidates } ?: candidates.first()
+        instances["$branch:${role.key}"]?.takeIf { it in candidates }?.let { return it }
+        candidates.firstOrNull { role.matches(it) }?.let { return it }
+        val number = role.instanceNumber ?: return null
+        return candidates.firstOrNull { it.toIntOrNull() == number }
+    }
+
 
     /**
      * A node is a leaf when it carries a `value`. A branch that happens to hold a child called

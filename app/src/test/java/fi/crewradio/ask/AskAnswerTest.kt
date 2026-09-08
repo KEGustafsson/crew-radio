@@ -29,7 +29,7 @@ class AskAnswerTest {
         val tree = SignalKTree(
             mapOf(
                 "navigation" to mapOf(
-                    "headingMagnetic" to leaf(4.2771, ageSec = 2),
+                    "headingTrue" to leaf(4.2771, ageSec = 2),
                     "speedOverGround" to leaf(3.19, ageSec = 2),
                 ),
             )
@@ -38,13 +38,39 @@ class AskAnswerTest {
         val heading = items[0] as AskAnswer.Item.Value
         assertEquals("245", heading.number)
         assertEquals(AskAnswer.Unit.DEGREES, heading.unit)
-        assertEquals("navigation.headingMagnetic", heading.path)
+        assertEquals("navigation.headingTrue", heading.path)
         assertFalse(heading.viaFallback)
         assertEquals(2L, heading.ageSec)
 
         val speed = items[1] as AskAnswer.Item.Value
         assertEquals("6.2", speed.number)
         assertEquals(AskAnswer.Unit.KNOTS, speed.unit)
+    }
+
+    @Test
+    fun theBareHeadingQuestionPrefersTrueAndNamesWhatItSettledFor() {
+        // The order in Quantity.ALL is the boat's preference and this pins it: true heading is
+        // what the chart wants, so it answers when there is one.
+        val both = SignalKTree(
+            mapOf(
+                "navigation" to mapOf(
+                    "headingTrue" to leaf(4.2771, ageSec = 2),
+                    "headingMagnetic" to leaf(4.1, ageSec = 2),
+                ),
+            )
+        )
+        val chosen = answer(both, "heading").items[0] as AskAnswer.Item.Value
+        assertEquals("navigation.headingTrue", chosen.path)
+        assertFalse(chosen.viaFallback)
+
+        // With no true heading the compass still answers, but as the fallback it is, so the crew
+        // hears "magnetic heading 245 degrees" and knows which one it got.
+        val compassOnly = SignalKTree(
+            mapOf("navigation" to mapOf("headingMagnetic" to leaf(4.2771, ageSec = 2)))
+        )
+        val fallback = answer(compassOnly, "heading").items[0] as AskAnswer.Item.Value
+        assertEquals("navigation.headingMagnetic", fallback.path)
+        assertTrue(fallback.viaFallback)
     }
 
     @Test
@@ -185,5 +211,78 @@ class AskAnswerTest {
         val volts = answer(tree, "batteryVoltage").items.single() as AskAnswer.Item.Value
         assertEquals("12.6", volts.number)
         assertEquals("electrical.batteries.house.voltage", volts.path)
+    }
+    @Test
+    fun aQuestionThatNamedNoInstanceSaysWhichOneAnswered() {
+        val twin = SignalKTree(
+            mapOf(
+                "propulsion" to mapOf(
+                    "port" to mapOf("revolutions" to leaf(13.333, ageSec = 2)),
+                    "starboard" to mapOf("revolutions" to leaf(35.0, ageSec = 2)),
+                ),
+            )
+        )
+        val revs = answer(twin, "engineRevolutions").items[0] as AskAnswer.Item.Value
+        assertEquals("800", revs.number)
+        assertEquals("port", revs.instance)
+    }
+
+    @Test
+    fun aBoatWithOneOfSomethingNamesNoInstance() {
+        val single = SignalKTree(
+            mapOf("propulsion" to mapOf("0" to mapOf("revolutions" to leaf(13.333, ageSec = 2))))
+        )
+        assertNull((answer(single, "engineRevolutions").items[0] as AskAnswer.Item.Value).instance)
+    }
+
+    @Test
+    fun oneEngineAnswersTheBareQuestionWhateverTheBoatCallsIt() {
+        // "engine revs" has to work on a boat that never names a side, and the name it does use is
+        // its own business: an instance is a key, not a convention.
+        for (key in listOf("0", "1", "port", "prt_engine", "mainEngine", "Volvo_D2")) {
+            val single = SignalKTree(
+                mapOf("propulsion" to mapOf(key to mapOf("revolutions" to leaf(13.333, ageSec = 2))))
+            )
+            val revs = answer(single, "engineRevolutions").items[0] as AskAnswer.Item.Value
+            assertEquals("800", revs.number)
+            // Nothing else could have answered, so there is no instance to name.
+            assertNull(revs.instance)
+        }
+    }
+
+    @Test
+    fun eachEngineCanBeAskedForByName() {
+        val twin = SignalKTree(
+            mapOf(
+                "propulsion" to mapOf(
+                    "0" to mapOf("revolutions" to leaf(13.333, ageSec = 2)),
+                    "1" to mapOf("revolutions" to leaf(35.0, ageSec = 2)),
+                ),
+            )
+        )
+        val items = answer(twin, "engineRevolutionsPort", "engineRevolutionsStarboard").items
+        assertEquals("800", (items[0] as AskAnswer.Item.Value).number)
+        assertEquals("2100", (items[1] as AskAnswer.Item.Value).number)
+        // The subject already says which engine, so the instance is not repeated after it.
+        assertNull((items[0] as AskAnswer.Item.Value).instance)
+    }
+
+    @Test
+    fun theStarboardEngineIsNeverAnsweredOffThePortOne() {
+        val single = SignalKTree(
+            mapOf("propulsion" to mapOf("port" to mapOf("revolutions" to leaf(13.333, ageSec = 2))))
+        )
+        val missing = answer(single, "engineRevolutionsStarboard").items[0] as AskAnswer.Item.Missing
+        // Nothing was read at all, so there is no "quiet for" to report either.
+        assertNull(missing.quietSec)
+    }
+
+    @Test
+    fun theTrueHeadingIsAskedForOnItsOwnAndNeverAnsweredFromTheCompass() {
+        val tree = SignalKTree(
+            mapOf("navigation" to mapOf("headingMagnetic" to leaf(4.2771, ageSec = 2)))
+        )
+        assertEquals("245", (answer(tree, "headingMagnetic").items[0] as AskAnswer.Item.Value).number)
+        assertTrue(answer(tree, "headingTrue").items[0] is AskAnswer.Item.Missing)
     }
 }
