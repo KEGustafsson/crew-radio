@@ -18,6 +18,10 @@ flooding relay so multiple transports and multi-hop topologies work.
   or raw PCM16. The AOSP Opus decoder always outputs 48 kHz, hence `audio/Decimator`.
 - Build: `./gradlew assembleDebug` (wrapper is committed; needs an Android SDK with
   platform 37 via `ANDROID_HOME` or `local.properties`). Install: `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
+  A missing JDK 17 fails as "Cannot find a Java installation ... {languageVersion=17}"; install it
+  (`winget install EclipseAdoptium.Temurin.17.JDK`, `brew install --cask temurin@17`,
+  `sudo apt install temurin-17-jdk`) and leave `JAVA_HOME` alone — Gradle auto-detects the standard
+  location, and a newer JDK there still runs Gradle itself.
 - Versions come from git in `app/build.gradle.kts`: `versionCode` = commit count, `versionName` =
   `1.<count>`, `BuildConfig.GIT_SHA` on the Status screen. Never edit version numbers by hand.
 - Release pipeline: `.github/workflows/build.yml`. The `build` job (every push/PR; read-only

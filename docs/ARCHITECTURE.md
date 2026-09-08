@@ -239,8 +239,12 @@ crew can add their own wording; the catalogue it points at is `Quantity.ALL`.
 
 `./gradlew assembleDebug testDebugUnitTest` with an Android SDK (platform 37; Gradle 9.7 via the
 wrapper, AGP 9.4 with its built-in Kotlin, Kotlin 2.4 from the build classpath). The build needs a
-JDK 17 on the machine and will not download one; the Gradle distribution and every dependency are
-checked against the checksums in `gradle/wrapper/gradle-wrapper.properties` and
+JDK 17 on the machine and will not download one — `winget install EclipseAdoptium.Temurin.17.JDK`,
+`brew install --cask temurin@17` or `sudo apt install temurin-17-jdk` puts one where Gradle's
+auto-detection finds it, and `JAVA_HOME` may stay on a newer JDK, which is what runs Gradle itself;
+`-Porg.gradle.java.installations.paths=<dir>` names one installed somewhere unusual. The Gradle
+distribution and every dependency are checked against the checksums in
+`gradle/wrapper/gradle-wrapper.properties` and
 `gradle/verification-metadata.xml`, so a dependency change means regenerating that file (the recipe
 is in `.github/dependabot.yml`). Release builds are shrunk by R8 with class and method names kept,
 so a crash trace from a phone reads without a mapping file.

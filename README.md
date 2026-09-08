@@ -244,14 +244,28 @@ flips it for one question without changing the setting.
 
 Open the folder in Android Studio (a release that supports Android Gradle Plugin 9.4) and build, or
 run `./gradlew assembleDebug` with an Android SDK (platform 37). The build needs a **JDK 17** on the
-machine and will not download one. Everything it downloads is checked against a checksum: the
-Gradle distribution in `gradle/wrapper/gradle-wrapper.properties`, every dependency in
+machine and will not download one: without it Gradle stops with *Cannot find a Java installation on
+your machine matching: {languageVersion=17…}*. Install one —
+
+```
+winget install EclipseAdoptium.Temurin.17.JDK     # Windows
+brew install --cask temurin@17                    # macOS
+sudo apt install temurin-17-jdk                   # Linux, Adoptium's apt repository
+```
+
+— and Gradle finds it in the standard install location by itself. `JAVA_HOME` can stay on a newer
+JDK; that one runs Gradle, the 17 only compiles the app. A JDK somewhere unusual is named with
+`-Porg.gradle.java.installations.paths=<dir>`. Everything the build downloads is checked against a
+checksum: the Gradle distribution in `gradle/wrapper/gradle-wrapper.properties`, every dependency in
 `gradle/verification-metadata.xml` — so after changing a dependency version (a Dependabot pull
 request included) regenerate that file, as `.github/dependabot.yml` describes, and commit it with
 the change. Release builds are shrunk by R8 with names kept, so a crash report from a phone reads
 without a mapping file. Pure-Kotlin unit tests: `./gradlew testDebugUnitTest`; Android Lint
 (`./gradlew lintRelease`) must pass without errors, as it does in CI; warnings are reported, not fatal.
-Real testing needs two or more phones; the emulator has neither Bluetooth nor Wi‑Fi Aware.
+The APK lands in `app/build/outputs/apk/debug/app-debug.apk`, and
+`adb install -r app/build/outputs/apk/debug/app-debug.apk` puts it on a phone plugged in with USB
+debugging switched on. Real testing needs two or more phones; the emulator has neither Bluetooth
+nor Wi‑Fi Aware.
 
 The version is `1.<number of commits on main>`, set by the build from git; every merge to `main`
 builds a signed APK and publishes it on the Releases page. Pull requests get the same APK as a
