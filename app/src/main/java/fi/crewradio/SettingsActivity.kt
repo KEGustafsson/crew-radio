@@ -56,6 +56,15 @@ class SettingsActivity : AppCompatActivity() {
         /** Looks for the boat's server while this screen is open; stopped with the screen. */
         private var discovery: SignalKDiscovery? = null
 
+        /**
+         * The address mDNS filled in, so the server row can say where it came from.
+         *
+         * The row's summary belongs to its SummaryProvider and to nothing else: androidx throws
+         * "Preference already has a SummaryProvider set" the moment anything assigns `summary`
+         * directly, which is what a discovery landing on an open Settings screen used to do.
+         */
+        private var discovered: String? = null
+
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
             val prefs = Prefs(requireContext())
@@ -93,8 +102,11 @@ class SettingsActivity : AppCompatActivity() {
             findPreference<Preference>(Prefs.KEY_ASK_SERVER)?.summaryProvider =
                 Preference.SummaryProvider<Preference> {
                     val typed = prefs.askServerTyped
-                    if (typed.isNullOrBlank()) getString(R.string.pref_ask_server_none)
-                    else SignalKUrl.describe(typed)
+                    when {
+                        typed.isNullOrBlank() -> getString(R.string.pref_ask_server_none)
+                        typed == discovered -> getString(R.string.pref_ask_server_found, SignalKUrl.describe(typed))
+                        else -> SignalKUrl.describe(typed)
+                    }
                 }
 
             // A phone that cannot recognise speech without a network says so instead of the
@@ -138,8 +150,10 @@ class SettingsActivity : AppCompatActivity() {
                         if (!isAdded) return@execute
                         val prefs = Prefs(requireContext())
                         if (!prefs.askServerTyped.isNullOrBlank()) return@execute   // the crew got there first
+                        // Before setText, which persists the address and asks the row to redraw:
+                        // the SummaryProvider reads this to say the address was found, not typed.
+                        discovered = found.url
                         row.text = found.url
-                        row.summary = getString(R.string.pref_ask_server_found, SignalKUrl.describe(found.url))
                     }
                 },
                 onDone = { /* no mDNS, or discovery refused: the typed address is the way in */ },
