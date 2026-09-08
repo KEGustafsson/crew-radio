@@ -238,8 +238,9 @@ recognise speech on its own.
 If the boat has two of something, say which one: *"starboard engine revs"*, *"port fuel"*, *"house
 battery"*, *"start battery"*. Ask without naming one and you get whichever the boat lists first,
 said with its name on it — *"port engine 800 rpm"* — so you always know which gauge you heard.
-The same goes for the compass: *"heading"* takes the best source there is, and *"magnetic heading"*
-or *"true heading"* asks for exactly one.
+The same goes for the compass: *"heading"* takes the true heading when the boat has one and falls
+back to the magnetic compass when it does not, naming which it used — and *"magnetic heading"* or
+*"true heading"* asks for exactly one, answering nothing rather than the other.
 
 Four things worth knowing:
 

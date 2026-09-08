@@ -29,7 +29,7 @@ class AskAnswerTest {
         val tree = SignalKTree(
             mapOf(
                 "navigation" to mapOf(
-                    "headingMagnetic" to leaf(4.2771, ageSec = 2),
+                    "headingTrue" to leaf(4.2771, ageSec = 2),
                     "speedOverGround" to leaf(3.19, ageSec = 2),
                 ),
             )
@@ -38,13 +38,39 @@ class AskAnswerTest {
         val heading = items[0] as AskAnswer.Item.Value
         assertEquals("245", heading.number)
         assertEquals(AskAnswer.Unit.DEGREES, heading.unit)
-        assertEquals("navigation.headingMagnetic", heading.path)
+        assertEquals("navigation.headingTrue", heading.path)
         assertFalse(heading.viaFallback)
         assertEquals(2L, heading.ageSec)
 
         val speed = items[1] as AskAnswer.Item.Value
         assertEquals("6.2", speed.number)
         assertEquals(AskAnswer.Unit.KNOTS, speed.unit)
+    }
+
+    @Test
+    fun theBareHeadingQuestionPrefersTrueAndNamesWhatItSettledFor() {
+        // The order in Quantity.ALL is the boat's preference and this pins it: true heading is
+        // what the chart wants, so it answers when there is one.
+        val both = SignalKTree(
+            mapOf(
+                "navigation" to mapOf(
+                    "headingTrue" to leaf(4.2771, ageSec = 2),
+                    "headingMagnetic" to leaf(4.1, ageSec = 2),
+                ),
+            )
+        )
+        val chosen = answer(both, "heading").items[0] as AskAnswer.Item.Value
+        assertEquals("navigation.headingTrue", chosen.path)
+        assertFalse(chosen.viaFallback)
+
+        // With no true heading the compass still answers, but as the fallback it is, so the crew
+        // hears "magnetic heading 245 degrees" and knows which one it got.
+        val compassOnly = SignalKTree(
+            mapOf("navigation" to mapOf("headingMagnetic" to leaf(4.2771, ageSec = 2)))
+        )
+        val fallback = answer(compassOnly, "heading").items[0] as AskAnswer.Item.Value
+        assertEquals("navigation.headingMagnetic", fallback.path)
+        assertTrue(fallback.viaFallback)
     }
 
     @Test
