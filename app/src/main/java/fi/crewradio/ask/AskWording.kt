@@ -152,6 +152,11 @@ object AskWording {
         return words.joinToString(" ").ifEmpty { key }
     }
 
+    /**
+     * What the thing is called with no instance and no fallback in it: the quantity's own name,
+     * the path's name for the quantities that have none of their own, and the bare id if a
+     * translation is missing, which is wrong on the screen but still says which reading it is.
+     */
     private fun name(quantityId: String, path: String, vocabulary: Vocabulary): String =
         vocabulary.quantity[quantityId] ?: vocabulary.path[generalise(path)] ?: quantityId
 
