@@ -30,26 +30,36 @@ no account, no internet, no subscription. Connecting people, with what is in the
 1. On each phone open the [Releases](../../releases) page, download the newest
    `CrewRadio-<version>.apk` and allow the install (Android asks once to allow installs from
    the browser).
-2. Give the app the permissions it asks for: microphone, and nearby devices / Bluetooth for the
-   links you plan to use.
+2. The app asks for what it needs when it needs it: the microphone the first time you join,
+   Bluetooth or nearby devices only if you switch those tiles on, notifications on the first
+   join. Grant them and it carries on by itself — you do not press again. If you turned one off
+   for good, a line at the bottom of the screen offers **App settings**, which takes you to the
+   switch. A crew member who only uses the boat's WLAN never has to grant Bluetooth anything.
 3. **Share the channel key.** Each phone makes its own random key on first start (Settings ›
-   Channel › Channel key, like `q7wk-m3xv-pd2h`). Pick one phone's key and type it into the
-   others. Everything on the air is encrypted with it, and only phones that have it can join.
-4. Every phone on the crew must run the **same version**. The Status screen (menu ⋮ › Status)
-   shows the version at the bottom of *This phone*.
+   Channel › Channel key). Pick one phone's and get it onto the others: **Share the key** sends
+   it, **Show the key** puts it on screen to read out. Everything on the air is encrypted with
+   it, and only phones that have it can join.
+4. Every phone on the crew must run the **same version**; the wire format has no legacy mode.
+   The app says when one does not: a phone on another build is tagged **OLD BUILD** or
+   **NEWER BUILD** in the Status screen's crew list, named once in the log, and the main
+   screen's top line reads *ANOTHER BUILD ABOARD* when nobody is talking. Menu ⋮ › Status ›
+   **Check for updates** opens the Releases page.
 5. **Verifying a download** (optional): each Release also carries the APK's SHA‑256
    (`CrewRadio-<version>.apk.sha256`), a software bill of materials
    (`CrewRadio-<version>.sbom.cdx.json`, CycloneDX) and a signed build provenance attestation.
    On a computer, `sha256sum -c CrewRadio-<version>.apk.sha256` checks the file, and
-   `gh attestation verify CrewRadio-<version>.apk --repo KEGustafsson/android-push-to-talk`
-   proves it was built by this repository's workflow from the commit named in the release.
+   `gh attestation verify CrewRadio-<version>.apk --repo KEGustafsson/crew-radio`
+   proves it was built by this repository's workflow from the commit named in the release. The
+   checksum file and the bill of materials carry the same proof.
 
 ## Quick start
 
 1. **Pick your links.** Tap the tiles at the top: **WLAN** if all phones share a network (the
    boat's router, or one phone's hotspot); **AWARE** for phone-to-phone over Wi‑Fi with no
-   router (most recent Samsung and Pixel phones have it; the tile is greyed out on phones that
-   don't); **BLUETOOTH** for any two phones that are paired in the phone's Bluetooth settings.
+   router (most recent Samsung and Pixel phones have it; the tile is greyed out and says so on a
+   phone without the radio, and on Android 12 and older it also needs the phone's location
+   services switched on — with them off the app stops before joining and offers a **Location
+   settings** button); **BLUETOOTH** for any two phones paired in the phone's Bluetooth settings.
    Tick more than one if you have them.
 2. **Bluetooth only:** on one phone choose *Listen only* in the peer row, on the other pick that
    phone from the list. Bluetooth links pairs of phones; a phone can be the listening end for
@@ -111,7 +121,10 @@ with the link they arrive on, how many hops away they are, what they are connect
 they were last heard; this phone's name, mode, codec, where the audio goes, the call volume and
 the app version;
 the phone's addresses; packet counters (received, sent, relayed, duplicates dropped, concealed,
-hellos); and the last forty status lines with time stamps.
+hellos, plus **clock** — packets thrown away because the sender's time was more than a minute off
+this phone's, which is what a wrong clock looks like — and **underruns**, the times playback ran
+dry); and the last forty status lines with time stamps. **Check for updates** at the bottom opens
+the Releases page.
 
 <img src="docs/images/screen-status.png" alt="Status screen" width="220"> <img src="docs/images/screen-settings.png" alt="Settings" width="220">
 
@@ -121,7 +134,7 @@ hellos); and the last forty status lines with time stamps.
 | --- | --- |
 | **My name** | What the others see in their crew list. Empty: the phone's own name. |
 | **Channel name** | The big word at the top: the boat, the crew, the site. |
-| **Channel key** | The crew's shared secret: encrypts every packet and is the Wi‑Fi Aware passphrase. Generated on first start; every phone must have the same one. Changing it affects only this phone: to rotate the key, set the new one on every phone that should stay and rejoin; phones left with the old key remain on the old channel, on their own. |
+| **Channel key** | The crew's shared secret: everything on the air is encrypted with it, and the Wi‑Fi Aware link's own password is derived from it. Generated on first start; every phone must have the same one. The row shows only the last four characters — **Show the key** puts it on screen, **Share the key** sends it to another phone, **New random key** makes a fresh one (which every other phone then has to be given). A key you type must be 12 to 64 plain characters; a shorter one from an older install still works, and the row says so. It takes effect the next time you join. Changing it affects only this phone: to rotate the key, set the new one on every phone that should stay and rejoin; phones left with the old key remain on the old channel, on their own. |
 | **Full duplex** | Off (default): hold to talk, others muted while you hold. On: the disc toggles the mic and everyone is heard at once. |
 | **Talk button** | Which hardware keys key the mic: headset button, volume keys, both, or off. |
 | **Audio output** | Headset when connected, else earpiece at the ear and loudspeaker otherwise (default); always the loudspeaker; or the earpiece. |
@@ -167,6 +180,18 @@ repeat of the previous one rather than a click. The developer notes in
   microphone open. Expect it to use noticeably more than an idle phone.
 - **Notifications.** On Android 13 and newer allow notifications, or the channel runs without a
   visible notification (it still runs).
+- **Clocks.** A packet whose time is more than a minute from the receiving phone's is dropped;
+  that is what stops someone replaying a recording of the crew later. Phones normally get the
+  time from the network, so this only bites a phone whose clock has been set by hand and is wrong
+  — the Status screen's **clock** counter shows it happening.
+- **With TalkBack.** The talk disc is a latch rather than a hold: double tap to go on air, double
+  tap again to stop. It announces *On air* and *Listening*, the tiles say whether they are on, and
+  the head count reads "N aboard".
+- **For a fleet.** The app publishes managed configuration, so an administrator can set the
+  channel key, channel name, announced name, WLAN group and port, hop limit, relay, full duplex,
+  Opus and the audio output centrally. A setting your organisation has set wins, and its row in
+  Settings is greyed out and reads *Set by your organisation*; everything else stays with whoever
+  carries the phone.
 - **Privacy and security.** Nothing leaves the phones and there is no server. Every packet is
   encrypted and authenticated with the crew's channel key (AES‑256‑GCM), so someone on the same
   WLAN without the key can neither listen nor inject; a flooding sender is rate-limited. The
@@ -185,18 +210,28 @@ the roster under the vessel's name.
 ## Build it yourself
 
 Open the folder in Android Studio (a release that supports Android Gradle Plugin 9.4) and build, or
-run `./gradlew assembleDebug` with an Android SDK (platform 37). Pure-Kotlin unit tests:
-`./gradlew testDebugUnitTest`.
+run `./gradlew assembleDebug` with an Android SDK (platform 37). The build needs a **JDK 17** on the
+machine and will not download one. Everything it downloads is checked against a checksum: the
+Gradle distribution in `gradle/wrapper/gradle-wrapper.properties`, every dependency in
+`gradle/verification-metadata.xml` — so after changing a dependency version (a Dependabot pull
+request included) regenerate that file, as `.github/dependabot.yml` describes, and commit it with
+the change. Release builds are shrunk by R8 with names kept, so a crash report from a phone reads
+without a mapping file. Pure-Kotlin unit tests: `./gradlew testDebugUnitTest`; Android Lint
+(`./gradlew lintRelease`) must pass without errors, as it does in CI; warnings are reported, not fatal.
 Real testing needs two or more phones; the emulator has neither Bluetooth nor Wi‑Fi Aware.
 
 The version is `1.<number of commits on main>`, set by the build from git; every merge to `main`
 builds a signed APK and publishes it on the Releases page. Pull requests get the same APK as a
 workflow artifact, signed with the debug key (the release key is only used on `main`).
-`assembleRelease` signs with the crew's release key when the `CREWRADIO_KEYSTORE`,
-`CREWRADIO_KEYSTORE_PASSWORD`, `CREWRADIO_KEY_ALIAS` and `CREWRADIO_KEY_PASSWORD` variables are
-set and with the debug key otherwise. Android will not upgrade a debug-signed install with a
-release-signed one in place, or the reverse: uninstall first when switching (the app keeps no
-data worth losing).
+`assembleRelease` signs with the crew's release key when it can find one: the keystore named by
+`CREWRADIO_KEYSTORE`, or `app/release.keystore` when that variable is unset, together with
+`CREWRADIO_KEYSTORE_PASSWORD`. `CREWRADIO_KEY_ALIAS` defaults to `crewradio` and
+`CREWRADIO_KEY_PASSWORD` to the store password. With no keystore it signs with the debug key; but
+if `CREWRADIO_KEYSTORE` is set and the file or the password is missing, the build stops rather
+than quietly falling back. Android will not upgrade a
+debug-signed install with a release-signed one in place, or the reverse: uninstall first when
+switching — and note the channel key down before you do, because it is the one thing on the phone
+worth keeping and it is deliberately left out of cloud backup and of device-to-device transfer.
 
 ## Licence and credits
 
