@@ -214,8 +214,22 @@ Everything from `AskIntents` to `AskWording` is pure Kotlin with no Android in i
 the interesting half is unit-tested without a phone or a server. The wording is assembled from a
 `Vocabulary` handed in rather than written in code, so the strings stay in `strings.xml`.
 
-Three rules worth keeping:
+Six rules worth keeping:
 
+* **The recogniser is asked for a language, and it is the phrases' language.** Left to itself it
+  follows the phone, and a phone whose language has no on-device model refuses to start at all
+  (`ERROR_LANGUAGE_NOT_SUPPORTED`) rather than listening badly — which is exactly what a Finnish
+  S25 did. `R.string.ask_speech_language` sits beside `ask_phrases` so a translation moves the
+  words and the recognition together, and `AskVoice` reads the answer in it too. A language the
+  recogniser knows but has not downloaded (`ERROR_LANGUAGE_UNAVAILABLE`) is asked for with
+  `triggerModelDownload` instead of sending the crew into the system settings.
+* **One recogniser per screen, cancelled between questions.** Destroying a `SpeechRecognizer` and
+  creating the next in the same turn races the unbind from the recognition service and the new
+  binding dies with the old (`ERROR_SERVER_DISCONNECTED`), which is what "Ask again" hit. `stop()`
+  cancels, `release()` destroys, and only the activity going away calls the second.
+* **A failure the crew cannot act on is a bug.** Every unrecognised recogniser error used to
+  become "Say again.", with the error number computed and thrown away, so a missing language pack
+  and a mumbled question looked identical. Unknown failures carry their detail to the sheet.
 * **The staleness gate.** A dead instrument keeps its last value in the Signal K tree for ever, so
   a reading older than its `Quantity.staleSec` never becomes a number — it becomes "no heading,
   nothing for three minutes", and the rest of the question is still answered. A leaf with no
@@ -226,6 +240,13 @@ Three rules worth keeping:
   it is what stops a live gate keying the channel with the question. It is released in exactly one
   place, `AskController.finish()`, whatever happened in between. The channel is ducked, not muted,
   while an answer is spoken here.
+* **Where the answer comes out depends on the session.** `AskVoice` speaks as
+  `USAGE_VOICE_COMMUNICATION` on channel, so it follows `AudioRoute` onto a headset rather than
+  the loudspeaker. Off channel there is no route session and that usage lands on the voice-call
+  stream, which then sits at its minimum on the earpiece: spoken and inaudible. Off channel it
+  goes out as `USAGE_ASSISTANT` instead. "Whole crew" is not offered without the channel at all,
+  since the boat says those answers over the air; the mode is forced in `AskController.start` as
+  well as dimmed in the sheet, so the label and the behaviour cannot drift apart.
 * **Longest phrase first, then consumed.** `AskIntents` matches the longest trigger it can and
   takes those words out of play, so "wind speed" never also answers the boat's speed. It matches
   every n-best hypothesis, not only the top one, because the recogniser's best guess is often the

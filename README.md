@@ -212,9 +212,14 @@ it reaches every phone on the channel as speech, and Signal K alarms (anchor dra
 overboard, a hot engine) are announced by voice, urgently when they are emergencies, until they clear. The phones need the WLAN link ticked for it; the server shows on
 the roster under the vessel's name.
 
-## Asking the boat
+## Add-on: Ask boat data
 
-If the boat runs Signal K, the main screen gets an **ASK BOAT DATA** button under the volume row.
+> An optional extra, off until you switch it on, and not needed to talk on the channel. It wants
+> a Signal K server on board: reading the instruments needs only the server, and answers for the
+> whole crew also need the [signalk-crewradio](sk-plugin/README.md) plugin on it, since it is the
+> plugin that says them out loud. Everything above this point works without any of it.
+
+Switched on, the main screen gets an **ASK BOAT DATA** button under the volume row.
 Press it, say *"heading and speed"*, and the boat answers: **"heading 245 degrees, speed 6.2 knots."**
 
 It understands the things you actually ask under way — heading, course, speed, depth, position,
@@ -223,11 +228,15 @@ distance, bearing and time to the next waypoint. Two at once is fine ("depth and
 type the question instead of saying it, which is what happens anyway on a phone that cannot
 recognise speech on its own.
 
-Three things worth knowing:
+Four things worth knowing:
 
 * **It listens on the phone, never over the internet.** There is no internet at sea, and a crew
   channel is nobody else's business. A phone that cannot recognise speech on its own says so and
   offers the typed question instead; it never falls back to sending your voice somewhere.
+* **The questions are English, whatever language the phone is set to.** The words it listens for
+  are English, so it asks the phone to listen in English rather than in the phone's own language,
+  and reads the answer back in English too. The first time, the phone may offer to download an
+  English speech pack; let it, and ask again once it has arrived.
 * **A stopped instrument is not answered with a number.** If the compass has been quiet for three
   minutes you hear *"no heading, nothing for 3 minutes"* — and the rest of the question is still
   answered. A number said with confidence from an instrument that died ten minutes ago is worse
@@ -236,9 +245,15 @@ Three things worth knowing:
   degrees"* — the GPS number, named as the GPS number.
 
 Set it up in Settings: switch on **Ask boat data**, let it find the server (or type the address),
-and press **Pair with server** — then approve this phone once in the Signal K admin page. Choose
-**Who hears it**: quiet on a night watch, out loud when you are docking. The chip on the sheet
-flips it for one question without changing the setting.
+and press **Pair with server** — then approve this phone once in the Signal K admin page. Approve
+it as **read and write** if you want whole-crew answers; read-only is enough to ask for yourself,
+and the pairing row says which you got.
+
+Choose **Who hears it**: quiet on a night watch, out loud when you are docking. The chip on the
+sheet flips it for the question in front of you, and for any repeat of it, without ever changing
+the setting. **Ask again** asks the next question without closing the sheet. **Whole crew** needs
+you to be on the channel, because that answer is said by the boat over the air: off the channel
+the chip is greyed out and the answer is spoken on your own phone instead.
 
 ## Build it yourself
 

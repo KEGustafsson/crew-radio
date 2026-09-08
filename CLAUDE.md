@@ -212,7 +212,19 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   share a mic and a live gate would key the channel with the question, released in exactly one place
   (`AskController.finish`); and `AskIntents` matches the longest trigger first and consumes its
   words, over every n-best hypothesis, so "wind speed" never also answers the boat's speed. Phrases
-  live in `R.array.ask_phrases`. The Signal K token sits in the same SharedPreferences file as the
+  live in `R.array.ask_phrases`, and `R.string.ask_speech_language` beside them is the language the
+  recogniser is *asked* for and the voice reads back — never the phone's, which on a Finnish phone
+  refuses to start (`ERROR_LANGUAGE_NOT_SUPPORTED`) and would transcribe words no English phrase can
+  match; a language known but not downloaded (`ERROR_LANGUAGE_UNAVAILABLE`) is fetched with
+  `triggerModelDownload`. One `SpeechRecognizer` per screen: `stop()` cancels between questions and
+  only `release()` destroys, because destroying and recreating in one turn races the service unbind
+  and the new binding dies with the old (`ERROR_SERVER_DISCONNECTED`, which "Ask again" hit). Every
+  unknown recogniser error carries its code to the sheet rather than becoming "Say again.", or a
+  missing speech pack is indistinguishable from a mumble. `AskVoice` speaks as
+  `USAGE_VOICE_COMMUNICATION` on channel and `USAGE_ASSISTANT` off it (off channel that first usage
+  lands on the voice-call stream, at its minimum on the earpiece: spoken and unheard), and "Whole
+  crew" is not offered off channel at all, forced in `AskController.start` as well as dimmed in the
+  sheet. The Signal K token sits in the same SharedPreferences file as the
   channel key and under the same backup exclusion; cleartext HTTP is permitted
   (`network_security_config.xml`) because a boat server has no certificate for `192.168.1.9`, and it
   is the app's only HTTP traffic.
