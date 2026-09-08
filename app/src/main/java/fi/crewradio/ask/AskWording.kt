@@ -142,13 +142,14 @@ object AskWording {
     /**
      * What to call the instance. The key is the boat's own spelling, so it is read whole first and
      * then as its words: `prt_engine` is "port", the same reading [Quantity.Role] does of it. A
-     * key nothing knows ("1", "b2") is spoken as it stands, because "engine 1" tells the crew the
-     * truth and "starboard engine" would be a guess.
+     * key nothing knows is spoken as its own words ("engine 2", not "engine_2"), because that
+     * tells the crew the truth and is sayable, where "starboard engine" would be a guess.
      */
     private fun instanceName(key: String, vocabulary: Vocabulary): String {
         vocabulary.instance[key.lowercase().filter { it.isLetterOrDigit() }]?.let { return it }
-        for (word in Quantity.Role.words(key)) vocabulary.instance[word]?.let { return it }
-        return key
+        val words = Quantity.Role.words(key)
+        for (word in words) vocabulary.instance[word]?.let { return it }
+        return words.joinToString(" ").ifEmpty { key }
     }
 
     private fun name(quantityId: String, path: String, vocabulary: Vocabulary): String =

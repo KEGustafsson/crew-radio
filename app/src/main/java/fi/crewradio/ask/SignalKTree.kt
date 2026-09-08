@@ -75,13 +75,15 @@ class SignalKTree(private val root: Map<String, Any?>) {
         // there are is what tells the answer whether there was a choice worth naming out loud.
         val branch = consumed.joinToString(".")
         val keys = node.keys.filterIsInstance<String>().filterNot { it.startsWith("$") }.sorted()
-        val candidates = keys.filter { walk(node[it], rest, consumed + it, instances, role) != null }
-        if (candidates.isEmpty()) return null
-        val chosen = choose(candidates, branch, instances, role) ?: return null
-        val leaf = walk(node[chosen], rest, consumed + chosen, instances, role) ?: return null
+        val found = keys.mapNotNull { key ->
+            walk(node[key], rest, consumed + key, instances, role)?.let { key to it }
+        }
+        if (found.isEmpty()) return null
+        val chosen = choose(found.map { it.first }, branch, instances, role) ?: return null
+        val leaf = found.first { it.first == chosen }.second
         // Two `*` in one path is not a shape any quantity has, and if it ever were, the outer one
         // is the instance the crew names, so one already stamped is left alone.
-        return if (leaf.instance != null) leaf else leaf.copy(instance = chosen, ambiguous = candidates.size > 1)
+        return if (leaf.instance != null) leaf else leaf.copy(instance = chosen, ambiguous = found.size > 1)
     }
 
     /**

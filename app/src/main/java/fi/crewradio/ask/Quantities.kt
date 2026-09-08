@@ -89,9 +89,10 @@ data class Quantity(
         /** How a Settings line names this role: the `starboard` of `propulsion:starboard=1`. */
         val key: String get() = name.lowercase()
 
-        /** True when [key] is this role, whole (`starboard`) or as one of its words (`stb_engine`). */
-        fun matches(key: String): Boolean =
-            key.lowercase().filter { it.isLetterOrDigit() } in names || words(key).any { it in names }
+        /** True when [instance] is this role, whole (`starboard`) or as one word of it (`stb_engine`). */
+        fun matches(instance: String): Boolean =
+            instance.lowercase().filter { it.isLetterOrDigit() } in names ||
+                words(instance).any { it in names }
 
         companion object {
             /**
@@ -119,7 +120,7 @@ data class Quantity(
         val ALL: List<Quantity> = listOf(
             Quantity(
                 "heading",
-                listOf("navigation.headingMagnetic", "navigation.headingTrue", "navigation.courseOverGroundTrue"),
+                listOf("navigation.headingTrue", "navigation.headingMagnetic", "navigation.courseOverGroundTrue"),
                 Kind.HEADING, staleSec = 30,
             ),
             Quantity(

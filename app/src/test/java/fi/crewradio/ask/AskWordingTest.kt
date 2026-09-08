@@ -214,6 +214,19 @@ class AskWordingTest {
     }
 
     @Test
+    fun anUnknownInstanceIsSpokenAsWordsRatherThanAsPunctuation() {
+        assertEquals(
+            "engine 2 engine 2100 rpm.",
+            say(
+                AskAnswer.Item.Value(
+                    "engineRevolutions", "2100", AskAnswer.Unit.RPM,
+                    "propulsion.engine_2.revolutions", false, 2, "engine_2",
+                )
+            ),
+        )
+    }
+
+    @Test
     fun anInstanceTheBoatSpellsItsOwnWayIsSpokenAsItStands() {
         // "engine 1" is the truth; calling it the starboard engine would be a guess.
         assertEquals(
