@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Android 12 and later. The only thing this app stores is the default SharedPreferences,
-  and that file holds the channel key: the one secret that lets a phone hear the crew.
-  It must not ride along to a cloud backup or to a new phone during a device transfer,
-  where it would leave the crew's key in a place nobody chose. The crew types it in.
+  and that file holds the channel key — the one secret that lets a phone hear the crew —
+  and the token the boat's Signal K server issued to this phone. Neither must ride along
+  to a cloud backup or to a new phone during a device transfer, where it would leave a
+  credential for the boat in a place nobody chose. The crew types the key in; the token is
+  issued again by pairing.
   See docs/SECURITY.md.
 -->
 <data-extraction-rules>

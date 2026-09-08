@@ -28,6 +28,24 @@ recordings. The assets are the crew's conversation (confidentiality), the crew's
 | A malicious update | Supply chain | Releases are built by GitHub Actions from `main`, signed with the crew's release key held only as a repository secret (scoped to the two steps that need it and deleted from the runner afterwards), with a signed build-provenance attestation over the APK, its SBOM and its checksum. Gradle resolves only verified dependencies (`gradle/verification-metadata.xml`) from a checksum-pinned Gradle distribution. Dependencies are AndroidX and Material only, updated by Dependabot; CodeQL scans the Kotlin, the plugin's JavaScript and the workflows. |
 | Weak default configuration | First use | There is no default key: each phone generates a random one (~59 bits) on first start and the crew shares it. A key typed by hand must be at least 12 characters. Relay, Opus and the rate limits need no configuration. |
 
+### Asking the boat (Signal K)
+
+A new outward path, and the app's only HTTP traffic. It is worth stating plainly what it does and
+does not touch:
+
+| | |
+| --- | --- |
+| What leaves the phone | A read of the boat's own Signal K tree, an optional announcement, and the bearer token that authorises them — to an address the crew configured, on the boat's LAN. |
+| What never leaves the phone | The crew's speech. Recognition is on-device only (`SpeechRecognizer.createOnDeviceSpeechRecognizer`, Android 12+); where a phone cannot do it locally the feature is disabled and says so, rather than falling back to a network recogniser. |
+| What the channel does not do | Nothing about the channel changes. Every packet between phones is still AES-256-GCM under the channel key over UDP, RFCOMM or Wi-Fi Aware, and none of it goes through the HTTP stack. |
+| Cleartext | Permitted by `res/xml/network_security_config.xml`, because a boat server has no certificate anybody can issue for `192.168.1.9` and the host cannot be listed in advance. The token and the readings therefore cross the boat's own network in the clear; anyone already on that network can read them, and can read Signal K directly anyway. |
+| The token | Issued by Signal K's own access-request flow — the phone asks, somebody approves once in the admin page — so no credential is typed, shown or read aloud. It is stored in the same SharedPreferences file as the channel key and is covered by the same cloud-backup and device-transfer exclusion, so it does not follow a phone that is sold or restored elsewhere. |
+| Blast radius | Read-only by construction on the phone's side: the app only ever GETs vessel data and POSTs one announcement. It never PUTs to Signal K and never acts on an answer. |
+
+Two things this deliberately does not do: it does not send anything to a cloud service, and it does
+not let an answer trigger an action. The input is a voice on an open channel, which is not an
+authenticated instruction.
+
 ## What it does not do
 
 - It does not hide *that* phones are talking: packet timing and sizes are visible on the WLAN.

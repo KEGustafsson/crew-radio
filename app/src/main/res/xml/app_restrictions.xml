@@ -84,4 +84,20 @@
         android:entryValues="@array/audio_route_values"
         android:defaultValue="auto" />
 
+    <restriction
+        android:key="ask_enabled"
+        android:title="@string/restriction_ask_enabled_title"
+        android:description="@string/restriction_ask_enabled_desc"
+        android:restrictionType="bool"
+        android:defaultValue="false" />
+    <restriction
+        android:key="ask_server"
+        android:title="@string/restriction_ask_server_title"
+        android:description="@string/restriction_ask_server_desc"
+        android:restrictionType="string" />
+    <restriction
+        android:key="ask_mode"
+        android:title="@string/restriction_ask_mode_title"
+        android:description="@string/restriction_ask_mode_desc"
+        android:restrictionType="string" />
 </restrictions>

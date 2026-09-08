@@ -18,6 +18,10 @@ flooding relay so multiple transports and multi-hop topologies work.
   or raw PCM16. The AOSP Opus decoder always outputs 48 kHz, hence `audio/Decimator`.
 - Build: `./gradlew assembleDebug` (wrapper is committed; needs an Android SDK with
   platform 37 via `ANDROID_HOME` or `local.properties`). Install: `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
+  A missing JDK 17 fails as "Cannot find a Java installation ... {languageVersion=17}"; install it
+  (`winget install EclipseAdoptium.Temurin.17.JDK`, `brew install --cask temurin@17`,
+  `sudo apt install openjdk-17-jdk`) and leave `JAVA_HOME` alone — Gradle auto-detects the standard
+  location, and a newer JDK there still runs Gradle itself.
 - Versions come from git in `app/build.gradle.kts`: `versionCode` = commit count, `versionName` =
   `1.<count>`, `BuildConfig.GIT_SHA` on the Status screen. Never edit version numbers by hand.
 - Release pipeline: `.github/workflows/build.yml`. The `build` job (every push/PR; read-only
@@ -26,7 +30,10 @@ flooding relay so multiple transports and multi-hop topologies work.
   builds again with the `CREWRADIO_*` secrets (keystore base64 + passwords), signs, verifies the
   signer certificate and attests — all under a **read-only** token — and hands the files to
   `publish`, which holds the only write token in the workflow and does nothing but
-  `gh release create` for `v<version>` with `CrewRadio-<version>.apk`. Splitting them is the point:
+  `gh release create` for `v<version>` with `CrewRadio-<version>.apk` and the plugin tarball
+  (`npm pack --ignore-scripts` in `sk-plugin/`, packed in `release` after the keystore is deleted so
+  npm never runs beside the signing key, attested with the rest; its name carries the plugin's own
+  semantic version, which is not the app's `1.<commits>`). Splitting them is the point:
   no checkout, no Gradle and no third-party action ever runs alongside a token that can write here. Without the keystore `assembleRelease` falls back to
   the debug key; with it, a shallow clone is refused (the commit count would be wrong). The
   keystore lives outside the repo (`*.keystore` ignored); the maintainer keeps it in `~/.crewradio/`.
@@ -192,6 +199,38 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 - Wire format has no legacy mode: every phone must run the same build (README says so).
 - Wi-Fi Aware: every node publishes and subscribes; lower senderId initiates the
   data path (one link per pair). Publisher uses accept-any on API 31+.
+
+- Asking the boat (`ask/`): the main screen's `ASK BOAT DATA` row opens `AskSheet`, and
+  `AskController` runs one question — on-device `SpeechRecognizer` (Android 12+; below that, and
+  where the phone has no local recogniser, the sheet opens straight into a typed question and never
+  falls back to a network recogniser), `AskIntents` (transcript → `Quantity` list), `SignalKClient`
+  (one GET per top-level branch of `vessels/self`), `SignalKTree` (path + `*` instance → value and
+  age), `AskAnswer` (SI → crew units, and the staleness gate), `AskWording` (+ `AskVocabulary` from
+  `strings.xml`) → `AskVoice` here or the plugin's existing `POST /say` for the whole crew. Nothing
+  new on the wire and no plugin change: the channel knows nothing about this.
+  Everything from `AskIntents` to `AskWording` is pure and unit-tested. Three rules: a reading older
+  than its `Quantity.staleSec` never becomes a number (a dead instrument keeps its last value for
+  ever, and a leaf with no timestamp is an age nobody can check, so it is stale too); `setAsking`
+  suspends the voice-keying monitor for the whole question, because two `AudioRecord` clients do not
+  share a mic and a live gate would key the channel with the question, released in exactly one place
+  (`AskController.finish`); and `AskIntents` matches the longest trigger first and consumes its
+  words, over every n-best hypothesis, so "wind speed" never also answers the boat's speed. Phrases
+  live in `R.array.ask_phrases`, and `R.string.ask_speech_language` beside them is the language the
+  recogniser is *asked* for and the voice reads back — never the phone's, which on a Finnish phone
+  refuses to start (`ERROR_LANGUAGE_NOT_SUPPORTED`) and would transcribe words no English phrase can
+  match; a language known but not downloaded (`ERROR_LANGUAGE_UNAVAILABLE`) is fetched with
+  `triggerModelDownload`. One `SpeechRecognizer` per screen: `stop()` cancels between questions and
+  only `release()` destroys, because destroying and recreating in one turn races the service unbind
+  and the new binding dies with the old (`ERROR_SERVER_DISCONNECTED`, which "Ask again" hit). Every
+  unknown recogniser error carries its code to the sheet rather than becoming "Say again.", or a
+  missing speech pack is indistinguishable from a mumble. `AskVoice` speaks as
+  `USAGE_VOICE_COMMUNICATION` on channel and `USAGE_ASSISTANT` off it (off channel that first usage
+  lands on the voice-call stream, at its minimum on the earpiece: spoken and unheard), and "Whole
+  crew" is not offered off channel at all, forced in `AskController.start` as well as dimmed in the
+  sheet. The Signal K token sits in the same SharedPreferences file as the
+  channel key and under the same backup exclusion; cleartext HTTP is permitted
+  (`network_security_config.xml`) because a boat server has no certificate for `192.168.1.9`, and it
+  is the app's only HTTP traffic.
 
 ## Signal K plugin (`sk-plugin/`)
 - `signalk-crewradio`: the boat's Signal K server as a node on the channel, with text-to-speech

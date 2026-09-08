@@ -88,6 +88,10 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
         } else null
 
     private val scoReceiver = object : BroadcastReceiver() {
+        // The SCO broadcast is deprecated in favour of OnCommunicationDeviceChangedListener, which
+        // is API 31+; this receiver is the fallback for 29 and 30, where the replacement does not
+        // exist. It is registered only on those levels (see [start]).
+        @Suppress("DEPRECATION")
         override fun onReceive(c: Context, i: Intent) {
             val st = i.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1)
             if (active && !passive && bluetoothWanted && st == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) heal()

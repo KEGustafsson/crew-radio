@@ -405,7 +405,9 @@ class PttService : Service() {
     }
 
     private fun buzz(pattern: LongArray) {
-        val v = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return
+        // The class overload, not Context.VIBRATOR_SERVICE: that name is deprecated, and this
+        // returns the same default vibrator on every API level the app runs on.
+        val v = getSystemService(Vibrator::class.java) ?: return
         try { v.vibrate(VibrationEffect.createWaveform(pattern, -1)) } catch (_: Exception) {}
     }
 

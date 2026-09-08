@@ -192,9 +192,9 @@ class StatusActivity : AppCompatActivity() {
         set(R.string.kv_mode, getString(if (prefs.fullDuplex) R.string.value_full_duplex else R.string.value_half_duplex))
         set(R.string.kv_relay, getString(if (prefs.relay) R.string.value_on else R.string.value_off))
         set(R.string.kv_codec, getString(if (prefs.opus) R.string.value_opus else R.string.value_pcm))
-        set(R.string.kv_audio, if (on) e?.audioRouteNow ?: getString(R.string.value_dash) else routeLabel())
+        set(R.string.kv_audio, if (on) e.audioRouteNow else routeLabel())      // `on` implies a non-null engine
         val stream = callVolume.stream(e?.bluetoothHeadsetNow == true)
-        val muted = on && e?.muted == true
+        val muted = on && e.muted
         set(R.string.kv_call_volume, getString(
             if (muted) R.string.value_volume_muted else R.string.value_volume,
             callVolume.get(stream), callVolume.max(stream)

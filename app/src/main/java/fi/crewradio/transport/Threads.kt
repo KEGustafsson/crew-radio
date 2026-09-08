@@ -1,6 +1,9 @@
 package fi.crewradio.transport
 
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
+import kotlin.concurrent.withLock
 
 /**
  * A named `ptt-*` transport thread whose uncaught exceptions are reported instead of
@@ -54,23 +57,29 @@ internal fun hex(id: Int): String = id.toUInt().toString(16)
  * still sat out the full first backoff; this remembers one pending wake instead.
  */
 internal class Waiter {
-    private val lock = java.lang.Object()
+    private val lock = ReentrantLock()
+    private val wakeSignal = lock.newCondition()
     private var pending = false
 
     /** Cuts the current wait short, or the next one if none is in progress. */
-    fun wake() = synchronized(lock) {
+    fun wake() = lock.withLock {
         pending = true
-        lock.notifyAll()
+        wakeSignal.signalAll()
     }
 
     /** Waits up to [ms] unless a wake is pending or arrives; true if woken (or interrupted), false on timeout. */
-    fun await(ms: Long): Boolean = synchronized(lock) {
+    fun await(ms: Long): Boolean = lock.withLock {
         val end = System.nanoTime() + ms * 1_000_000
         while (!pending) {
             val left = (end - System.nanoTime()) / 1_000_000
-            if (left <= 0) break
+            if (left <= 0) break                       // so await() is never handed a non-positive timeout
             try {
-                lock.wait(left)
+                // await() reports whether it returned before the deadline. False means the wait
+                // ran out, and there is nothing more to wait for — unless a wake arrived at the
+                // same moment, which is what the second half of the test is for. Reading the
+                // answer here rather than going round again saves a clock read and, more to the
+                // point, says which of the two happened instead of leaving it to be inferred.
+                if (!wakeSignal.await(left, TimeUnit.MILLISECONDS) && !pending) break
             } catch (_: InterruptedException) {
                 pending = false
                 return true

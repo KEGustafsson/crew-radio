@@ -101,6 +101,7 @@ jobs:
       attestations: write
     outputs:
       version: ${{ steps.build.outputs.version }}
+      plugin: ${{ steps.plugin.outputs.tarball }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -148,6 +149,23 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/release.keystore"
 
+      # The Signal K plugin, packed so it can be installed straight from the Release page on a
+      # boat that would rather not go through the App Store. Deliberately after the keystore has
+      # gone, so npm never runs while the signing key is on disk; `--ignore-scripts` because
+      # nothing in this package needs to run to pack it (its scripts are `test` and `coverage`),
+      # and no `npm install` because `files` in package.json is the whole tarball and the one
+      # dependency is not bundled. The plugin carries its own semantic version, which is not the
+      # app's `1.<commits>`: the tarball name says which, and the notes below say so.
+      - name: Signal K plugin tarball
+        id: plugin
+        working-directory: sk-plugin
+        run: |
+          TARBALL=$(npm pack --ignore-scripts | tail -1)
+          [ -f "$TARBALL" ] || { echo "::error::npm pack produced no tarball"; exit 1; }
+          mv "$TARBALL" "$GITHUB_WORKSPACE/$TARBALL"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "PLUGIN_TARBALL=$TARBALL" >> "$GITHUB_ENV"
+
       - name: Verify the APK is signed with the release certificate
         env:
           EXPECTED_CERT_SHA256: ${{ vars.CREWRADIO_CERT_SHA256 }}
@@ -171,6 +189,7 @@ jobs:
             CrewRadio-${{ env.VERSION }}.apk
             CrewRadio-${{ env.VERSION }}.apk.sha256
             CrewRadio-${{ env.VERSION }}.sbom.cdx.json
+            ${{ env.PLUGIN_TARBALL }}
 
       - name: Hand the release files to the publish job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -180,6 +199,7 @@ jobs:
             CrewRadio-${{ env.VERSION }}.apk
             CrewRadio-${{ env.VERSION }}.apk.sha256
             CrewRadio-${{ env.VERSION }}.sbom.cdx.json
+            ${{ env.PLUGIN_TARBALL }}
           if-no-files-found: error
           retention-days: 1
 
@@ -194,6 +214,7 @@ jobs:
       contents: write        # the Release and its tag (gh, below)
     env:
       VERSION: ${{ needs.release.outputs.version }}
+      PLUGIN: ${{ needs.release.outputs.plugin }}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -208,9 +229,14 @@ jobs:
           Built from $COMMIT. Every phone on the crew must run the same version.
           Install: open this page on the phone, download the APK, allow the install.
           The .sha256 file is the APK's checksum, the .sbom.cdx.json its software bill of
-          materials (CycloneDX), and all three files carry a signed provenance attestation
+          materials (CycloneDX), and every file here carries a signed provenance attestation
           (\`gh attestation verify CrewRadio-<version>.apk --repo KEGustafsson/crew-radio\`).
+
+          $PLUGIN is the boat's optional Signal K plugin, for a server that would rather install
+          from a file than from the App Store: \`npm install /path/to/$PLUGIN\` in the server's
+          node_modules directory. It carries its own version, which is not the app's.
           EOF
+          [ -n "$PLUGIN" ] || { echo "::error::the release job reported no plugin tarball"; exit 1; }
           gh release create "v$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$COMMIT" \
@@ -218,4 +244,5 @@ jobs:
             --notes-file release-notes.md \
             "CrewRadio-$VERSION.apk" \
             "CrewRadio-$VERSION.apk.sha256" \
-            "CrewRadio-$VERSION.sbom.cdx.json"
+            "CrewRadio-$VERSION.sbom.cdx.json" \
+            "$PLUGIN"

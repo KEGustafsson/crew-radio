@@ -44,6 +44,8 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.slider.Slider
 import com.google.android.material.snackbar.Snackbar
+import fi.crewradio.ask.AskController
+import fi.crewradio.ask.AskSheet
 import fi.crewradio.audio.CallVolume
 import fi.crewradio.transport.BluetoothTransport
 import fi.crewradio.transport.LanTransport
@@ -112,6 +114,11 @@ class MainActivity : AppCompatActivity() {
     private var syncingSwitch = false                  // true while syncUi() moves the switch itself
     private lateinit var peerButton: TextView
     private lateinit var menuButton: ImageButton
+    private lateinit var askRow: View
+
+    /** The ask feature's own state; built on bind, because it needs the engine to hold the mic off. */
+    private var askController: AskController? = null
+    private var askSheet: AskSheet? = null
     private lateinit var tiles: List<Tile>
     private var pairedDevices: List<BluetoothDevice> = emptyList()
     private var btPeerIndex = 0                        // 0 = listen only, else pairedDevices[index - 1]
@@ -210,6 +217,9 @@ class MainActivity : AppCompatActivity() {
         channelSwitch = findViewById(R.id.channelSwitch)
         peerButton = findViewById(R.id.peerButton)
         menuButton = findViewById(R.id.menuButton)
+        askRow = findViewById(R.id.askRow)
+        askRow.contentDescription = getString(R.string.a11y_ask)
+        askRow.setOnClickListener { openAsk() }
         hasAware = packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
         tiles = listOf(
             Tile(Prefs.KEY_USE_LAN, findViewById(R.id.tileLan), findViewById(R.id.tileLanIcon), findViewById(R.id.tileLanLabel), R.string.a11y_tile_lan),
@@ -353,10 +363,17 @@ class MainActivity : AppCompatActivity() {
         crewName.text = prefs.crewName.uppercase(Locale.getDefault())
         engine?.let { applySettings(it) }
         refreshPttLabel()
+        refreshAsk()
     }
 
     /** Unbinds without touching the session: a connected service keeps running as a started foreground service. */
     override fun onStop() {
+        // The sheet holds the microphone and keeps the engine's voice keying suspended, so a
+        // question does not outlive the screen it was asked from.
+        askSheet?.dismiss()
+        askSheet = null
+        askController?.release()
+        askController = null
         service?.statusListener = null
         service?.rosterListener = null
         service = null
@@ -560,6 +577,24 @@ class MainActivity : AppCompatActivity() {
     // ---- Bluetooth peer -----------------------------------------------------------
 
     /** The peer strip: which peer Bluetooth will dial; hidden altogether while Bluetooth is off. */
+    /**
+     * The ask row: hidden altogether unless the setting is on and a Signal K server is set, the
+     * same way the Bluetooth peer row is hidden while Bluetooth is off. A crew that does not use
+     * Signal K never sees it.
+     */
+    private fun refreshAsk() {
+        val controller = askController ?: AskController(this, prefs) { engine }.also { askController = it }
+        askRow.visibility = if (controller.offered()) View.VISIBLE else View.GONE
+    }
+
+    /** Opens the ask sheet, or says why it will not open. */
+    private fun openAsk() {
+        val controller = askController ?: return
+        askSheet?.dismiss()
+        askSheet = AskSheet.open(this, prefs, controller)
+        if (askSheet == null) Toast.makeText(this, R.string.ask_no_server, Toast.LENGTH_SHORT).show()
+    }
+
     private fun refreshPeer() {
         if (!tileOn(Prefs.KEY_USE_BT)) {
             peerButton.visibility = View.GONE

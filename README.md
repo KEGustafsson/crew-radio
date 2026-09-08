@@ -145,6 +145,11 @@ the Releases page.
 | **Keep screen on** | While on the channel. Turn off when a headset or the volume keys do the talking. |
 | **Relay** | Forward what this phone hears to its other links. Leave on. |
 | **Opus compression** | On (default): about a tenth of the bandwidth of raw audio. |
+| **Ask boat data** | Adds the **ASK BOAT DATA** button to the main screen: ask the boat for heading, speed, depth, wind and the rest, out loud. Off until you set it up. |
+| **Who hears it** | **Just me** (default): nobody hears the question and the answer plays in your ear only. **Whole crew**: the question and the answer are announced on the channel by the boat, so everyone hears the exchange. |
+| **Signal K server** | The boat's server, as a name or an address. Left empty the app looks for one on the network. |
+| **Pair with server** | Asks the server to let this phone in; somebody approves it once in the server's admin page. Nothing secret is typed or read out. Whole-crew answers need write access — the row says which you have. |
+| **Speed / depth unit** | Knots or metres per second; metres or feet. |
 | **WLAN group and port** | The multicast group every phone listens to. Change only if it clashes with something on your network, and change it on every phone. |
 | **Hop limit** | How many phones a packet may be relayed through (4). |
 
@@ -207,18 +212,82 @@ it reaches every phone on the channel as speech, and Signal K alarms (anchor dra
 overboard, a hot engine) are announced by voice, urgently when they are emergencies, until they clear. The phones need the WLAN link ticked for it; the server shows on
 the roster under the vessel's name.
 
+## Add-on: Ask boat data
+
+> An optional extra, off until you switch it on, and not needed to talk on the channel. It wants
+> a Signal K server on board: reading the instruments needs only the server, and answers for the
+> whole crew also need the [signalk-crewradio](sk-plugin/README.md) plugin on it, since it is the
+> plugin that says them out loud. Everything above this point works without any of it.
+
+Switched on, the main screen gets an **ASK BOAT DATA** button under the volume row.
+Press it, say *"heading and speed"*, and the boat answers: **"heading 245 degrees, speed 6.2 knots."**
+
+<img src="docs/images/screens-ask.png" alt="Asking: the sheet listening, and the same sheet with the answer" width="440">
+
+The sheet listens, shows what it heard, and answers in words as well as out loud — in wind you
+will mishear *"six point two"*, and a number you can glance at is the difference between an
+instrument and a party trick. Under the answer it names where the reading came from and how old
+it was.
+
+It understands the things you actually ask under way — heading, course, speed, depth, position,
+wind, water and air temperature, battery, fuel, fresh water, engine temperature and revs, and
+distance, bearing and time to the next waypoint. Two at once is fine ("depth and wind"). You can
+type the question instead of saying it, which is what happens anyway on a phone that cannot
+recognise speech on its own.
+
+Four things worth knowing:
+
+* **It listens on the phone, never over the internet.** There is no internet at sea, and a crew
+  channel is nobody else's business. A phone that cannot recognise speech on its own says so and
+  offers the typed question instead; it never falls back to sending your voice somewhere.
+* **The questions are English, whatever language the phone is set to.** The words it listens for
+  are English, so it asks the phone to listen in English rather than in the phone's own language,
+  and reads the answer back in English too. The first time, the phone may offer to download an
+  English speech pack; let it, and ask again once it has arrived.
+* **A stopped instrument is not answered with a number.** If the compass has been quiet for three
+  minutes you hear *"no heading, nothing for 3 minutes"* — and the rest of the question is still
+  answered. A number said with confidence from an instrument that died ten minutes ago is worse
+  than no answer.
+* **It says where an odd answer came from.** With no compass talking, *"course over ground 245
+  degrees"* — the GPS number, named as the GPS number.
+
+Set it up in Settings: switch on **Ask boat data**, let it find the server (or type the address),
+and press **Pair with server** — then approve this phone once in the Signal K admin page. Approve
+it as **read and write** if you want whole-crew answers; read-only is enough to ask for yourself,
+and the pairing row says which you got.
+
+Choose **Who hears it**: quiet on a night watch, out loud when you are docking. The chip on the
+sheet flips it for the question in front of you, and for any repeat of it, without ever changing
+the setting. **Ask again** asks the next question without closing the sheet. **Whole crew** needs
+you to be on the channel, because that answer is said by the boat over the air: off the channel
+the chip is greyed out and the answer is spoken on your own phone instead.
+
 ## Build it yourself
 
 Open the folder in Android Studio (a release that supports Android Gradle Plugin 9.4) and build, or
 run `./gradlew assembleDebug` with an Android SDK (platform 37). The build needs a **JDK 17** on the
-machine and will not download one. Everything it downloads is checked against a checksum: the
-Gradle distribution in `gradle/wrapper/gradle-wrapper.properties`, every dependency in
+machine and will not download one: without it Gradle stops with *Cannot find a Java installation on
+your machine matching: {languageVersion=17…}*. Install one —
+
+```
+winget install EclipseAdoptium.Temurin.17.JDK     # Windows
+brew install --cask temurin@17                    # macOS
+sudo apt install openjdk-17-jdk                    # Linux (Debian, Ubuntu)
+```
+
+— and Gradle finds it in the standard install location by itself. `JAVA_HOME` can stay on a newer
+JDK; that one runs Gradle, the 17 only compiles the app. A JDK somewhere unusual is named with
+`-Porg.gradle.java.installations.paths=<dir>`. Everything the build downloads is checked against a
+checksum: the Gradle distribution in `gradle/wrapper/gradle-wrapper.properties`, every dependency in
 `gradle/verification-metadata.xml` — so after changing a dependency version (a Dependabot pull
 request included) regenerate that file, as `.github/dependabot.yml` describes, and commit it with
 the change. Release builds are shrunk by R8 with names kept, so a crash report from a phone reads
 without a mapping file. Pure-Kotlin unit tests: `./gradlew testDebugUnitTest`; Android Lint
 (`./gradlew lintRelease`) must pass without errors, as it does in CI; warnings are reported, not fatal.
-Real testing needs two or more phones; the emulator has neither Bluetooth nor Wi‑Fi Aware.
+The APK lands in `app/build/outputs/apk/debug/app-debug.apk`, and
+`adb install -r app/build/outputs/apk/debug/app-debug.apk` puts it on a phone plugged in with USB
+debugging switched on. Real testing needs two or more phones; the emulator has neither Bluetooth
+nor Wi‑Fi Aware.
 
 The version is `1.<number of commits on main>`, set by the build from git; every merge to `main`
 builds a signed APK and publishes it on the Releases page. Pull requests get the same APK as a
