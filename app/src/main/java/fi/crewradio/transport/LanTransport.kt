@@ -23,11 +23,12 @@ import java.net.SocketAddress
  *
  * Multicast alone is unreliable on consumer gear: access points rate-limit or drop
  * traffic to groups nobody has an IGMP querier for, and some routers filter it outright.
- * So every frame also goes to the interface's IPv4 broadcast address, which survives far
- * more networks, and unicast to every address heard from in the last [PEER_TTL_MS] — an
+ * So every frame goes unicast to each address heard from in the last [PEER_TTL_MS] — an
  * access point delivers multicast and broadcast at its lowest rate, unacknowledged, and a
  * phone in the same cabin still loses a few percent, audible as voids; unicast is
- * acknowledged. The socket is bound to the wildcard address, so it picks up every copy;
+ * acknowledged. The group and the interface's IPv4 broadcast address, which survives far more
+ * networks, carry a frame only while no peer is known, or when it is a hello; [send] says why.
+ * The socket is bound to the wildcard address, so it picks up every copy;
  * the engine's seen-cache drops whichever arrives second. Client isolation ("AP isolation",
  * most guest Wi-Fi) blocks all of it, and then nothing but Bluetooth or Wi-Fi Aware will do.
  *

@@ -98,9 +98,14 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   and re-attaches the whole session when Aware goes away; LAN's receive thread owns the
   socket and re-opens it when it breaks or Wi-Fi changes interface/address. All of them
   wait with `transport/Backoff` (1 s doubling to 15 s). The side that dialled restores.
-- `LanTransport` sends every frame twice — to the multicast group and to the interface's
-  IPv4 broadcast address — because plenty of APs filter multicast. One wildcard-bound
-  socket receives both; the seen-cache drops the duplicate.
+- `LanTransport` sends unicast to every address heard from in the last `PEER_TTL_MS` (5 s, at
+  most `MAX_PEERS`), and adds the multicast group and the interface's IPv4 broadcast address
+  only while no peer is known or the packet is a hello. APs deliver multicast and broadcast at
+  their lowest rate without acknowledgement, so unicast is what carries audio; sending all
+  three left every frame leaving the phone 2 + N times, which is why audio drops the group
+  copies once a peer is known. Hellos keep them whatever the table holds — one packet a second,
+  and the only way a phone nobody has heard yet is found or a stale table repopulated. One
+  wildcard-bound socket receives them all; the seen-cache drops the duplicates.
 - Roster: while connected a `ptt-heartbeat` thread sends a hello every second; every hello or
   audio packet refreshes the sender's `Node` (name, transports, via, hops, talking). Silent for
   4 s = dropped. `onRoster` fires only when the rendered list changes; the service mirrors the

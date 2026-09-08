@@ -96,11 +96,14 @@ copies that arrive by two paths, and the ttl stops circulation. A relay decremen
 was given and refuses a packet already that many hops from its origin, so the hop count the
 roster shows is exact even when phones disagree about the limit. A packet is forwarded to every
 *other* transport, and, on transports with several links (Bluetooth, Aware), to the other links
-of the same transport. `LanTransport` sends every frame twice, to the multicast group and to the
-interface's broadcast address, because plenty of access points filter multicast, and also
-unicast to the peers it has heard from directly, because an access point sends multicast and
-broadcast at its lowest rate without acknowledgement; the seen-cache drops the duplicates on the
-receiving side.
+of the same transport. `LanTransport` sends each frame unicast to the peers it has heard
+from directly in the last five seconds, because an access point sends multicast and broadcast at
+its lowest rate without acknowledgement and a phone in the same cabin still loses a few percent.
+The multicast group and the interface's broadcast address are added only while no peer is known,
+or when the packet is a hello: with both on top of the unicast copies every frame left the phone
+2 + N times, which the air cannot afford, while hellos are one packet a second and are how a
+phone nobody has heard yet is found at all. The seen-cache drops the duplicates on the receiving
+side.
 
 Sending never blocks the sender. Each stream link (Bluetooth, Aware) owns a bounded queue drained
 by its own thread, so a peer that walks out of range with its socket still open cannot hold up the
