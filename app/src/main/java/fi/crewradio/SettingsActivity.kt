@@ -85,10 +85,12 @@ class SettingsActivity : AppCompatActivity() {
                 if (!prefs.isManaged(key)) continue
                 findPreference<Preference>(key)?.apply {
                     isEnabled = false
-                    // Preference.setSummary throws once a SummaryProvider is set, and the server
-                    // row has one. Its provider says "set by your organisation" itself, so the
-                    // row is only disabled here — assigning the summary would crash the screen.
-                    if (key != Prefs.KEY_ASK_SERVER) summary = getString(R.string.managed_by_org)
+                    // Preference.setSummary throws once a SummaryProvider is set, so a row that
+                    // has one keeps it and says who set it from inside the provider. Asking the
+                    // row rather than naming the keys: the server address and the channel key
+                    // both have providers today, and a third would otherwise crash the screen
+                    // the first time a fleet set it.
+                    if (summaryProvider == null) summary = getString(R.string.managed_by_org)
                 }
             }
         }
@@ -288,14 +290,19 @@ class SettingsActivity : AppCompatActivity() {
             val key = prefs.channelKey
             // Never write a managed key into the phone's own store; that row is read-only anyway.
             if (!prefs.isManaged(Prefs.KEY_CHANNEL_KEY)) pref.text = key
+            val managedKey = prefs.isManaged(Prefs.KEY_CHANNEL_KEY)
             pref.summaryProvider = Preference.SummaryProvider<EditTextPreference> { p ->
-                val shown = p.text.orEmpty()
+                // A managed row is greyed out and has to say who set it, and this provider is the
+                // only thing allowed to write this row's summary (androidx refuses any other
+                // writer once a provider exists), so the note belongs here.
+                val shown = if (managedKey) prefs.channelKey else p.text.orEmpty()
                 val mask = SettingsRules.maskChannelKey(shown)
-                when (SettingsRules.channelKeyState(shown)) {
+                val text = when (SettingsRules.channelKeyState(shown)) {
                     SettingsRules.KeyState.MISSING -> getString(R.string.key_not_set)
                     SettingsRules.KeyState.SHORT -> getString(R.string.key_masked_short, mask, getString(R.string.key_short))
                     SettingsRules.KeyState.OK -> mask
                 }
+                if (managedKey) getString(R.string.managed_by_org) + " · " + text else text
             }
 
             findPreference<Preference>(Prefs.KEY_CHANNEL_KEY_SHOW)?.setOnPreferenceClickListener {
