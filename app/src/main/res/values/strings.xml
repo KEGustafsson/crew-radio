@@ -36,6 +36,8 @@
     <string name="head_count">%1$d</string>
     <string name="ptt_talk">TALK</string>
     <string name="ptt_talk_hint">HOLD</string>
+    <!-- The disc's hint line while off the channel, where it does nothing at all. -->
+    <string name="ptt_off_channel_hint">JOIN THE CHANNEL FIRST</string>
     <string name="ptt_on_air">ON AIR</string>
     <string name="ptt_on_air_hint">RELEASE TO LISTEN</string>
     <string name="ptt_on_air_latched_hint">TAP OR KEY TO STOP</string>

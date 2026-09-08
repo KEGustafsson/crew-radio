@@ -161,9 +161,15 @@ class MainActivity : AppCompatActivity() {
             syncUi()
         }
 
-        /** Only reached if the service process dies; controls become no-ops until rebound. */
+        /**
+         * Only reached if the service process dies; controls become no-ops until rebound. The
+         * engine goes with it, so the screen is re-rendered rather than left saying ON CHANNEL
+         * with a bright disc and no peer row over a session that is gone.
+         */
         override fun onServiceDisconnected(name: ComponentName) {
             service = null
+            renderRoster(emptyList())
+            syncUi()
         }
     }
 
@@ -478,7 +484,7 @@ class MainActivity : AppCompatActivity() {
         val e = engine
         val live = e?.isTalking == true
         val touch = touchExploration()
-        val (big, small) = when (e?.mode ?: PttEngine.Mode.HALF_DUPLEX) {
+        val (big, hint) = when (e?.mode ?: PttEngine.Mode.HALF_DUPLEX) {
             PttEngine.Mode.HALF_DUPLEX ->
                 if (!live) R.string.ptt_talk to (if (touch) R.string.ptt_talk_touch_hint else R.string.ptt_talk_hint)
                 else if (touch) R.string.ptt_on_air to R.string.ptt_on_air_touch_hint
@@ -486,6 +492,9 @@ class MainActivity : AppCompatActivity() {
                 else R.string.ptt_on_air to R.string.ptt_on_air_latched_hint
             PttEngine.Mode.FULL_DUPLEX -> if (live) R.string.ptt_mic_on to R.string.ptt_mic_on_hint else R.string.ptt_mic_off to R.string.ptt_mic_off_hint
         }
+        // Off channel the disc is inert (startTalking has no transports to send to), so the hint
+        // says why rather than HOLD, which would be a lie, and what to do about it.
+        val small = if (e?.isConnected == true) hint else R.string.ptt_off_channel_hint
         val hintColor = ContextCompat.getColor(this, if (live) R.color.error else R.color.primary_container)
         pttButton.text = SpannableStringBuilder()
             .append(getString(big))

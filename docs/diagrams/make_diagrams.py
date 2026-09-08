@@ -159,7 +159,7 @@ def main_screen(p, x, y, state, peers="2", peer_row=True, bt=True):
         big, small = ("#00343A", "#00494F") if on else ("#07262B", "#073136")
         n.append((p + "d", "", cx - r, cy - r, 2 * r, 2 * r, f"ellipse;whiteSpace=wrap;html=1;fillColor={fill};strokeColor={ring};strokeWidth=10;"))
         n.append(txt(p + "d1", "TALK", cx - r, cy - 40, 2 * r, 50, 44, big, bold=True, align="center", mono=False))
-        n.append(txt(p + "d2", "HOLD", cx - r, cy + 12, 2 * r, 24, 13, small, align="center", spacing=3))
+        n.append(txt(p + "d2", "HOLD" if on else "JOIN THE CHANNEL FIRST", cx - r, cy + 12, 2 * r, 24, 13, small, align="center", spacing=3 if on else 1))
     return n
 
 
