@@ -36,8 +36,13 @@ object AskWording {
         /** `%1$s` subject, `%2$s` degrees: "%1$s %2$s degrees to port". */
         val toPort: String,
         val toStarboard: String,
-        /** `%1$s` subject, then degrees, minutes and a compass letter for each half. */
+        /** `%1$s` subject, then degrees, minutes and a hemisphere for each half. */
         val position: String,
+        /** The hemispheres themselves, chosen by the sign of each coordinate. */
+        val north: String,
+        val south: String,
+        val east: String,
+        val west: String,
         /** `%1$s` hours, `%2$s` minutes. */
         val hoursMinutes: String,
         /** `%1$s` minutes, for under an hour. */
@@ -78,13 +83,18 @@ object AskWording {
             item.degrees.toString(),
         )
 
+        // The sign of each coordinate picks its hemisphere. AskUnits.coordinate() keeps the
+        // degrees positive and puts the direction in `positive`, so it has to be read back here
+        // or every position south or west of zero is announced as north and east.
         is AskAnswer.Item.Position -> format(
             vocabulary.position,
             subject(item.quantityId, item.path, false, vocabulary),
             item.latitude.degrees.toString(),
             item.latitude.minutes,
+            if (item.latitude.positive) vocabulary.north else vocabulary.south,
             item.longitude.degrees.toString(),
             item.longitude.minutes,
+            if (item.longitude.positive) vocabulary.east else vocabulary.west,
         )
 
         is AskAnswer.Item.Duration -> {

@@ -115,35 +115,30 @@
             app:entryValues="@array/ask_mode_values"
             app:defaultValue="just_me"
             app:dialogTitle="@string/pref_ask_mode_dialog"
-            app:useSimpleSummaryProvider="true"
-            app:dependency="ask_enabled" />
+            app:useSimpleSummaryProvider="true" />
         <EditTextPreference
             app:key="ask_server"
             app:title="@string/pref_ask_server_title"
-            app:dialogMessage="@string/pref_ask_server_message"
-            app:dependency="ask_enabled" />
+            app:dialogMessage="@string/pref_ask_server_message" />
         <!-- Signal K's own device flow: the summary is set in SettingsActivity, because it
              reports what actually happened when this phone asked to be let in. -->
         <Preference
             app:key="ask_pair"
-            app:title="@string/pref_ask_pair_title"
-            app:dependency="ask_enabled" />
+            app:title="@string/pref_ask_pair_title" />
         <ListPreference
             app:key="ask_speed_unit"
             app:title="@string/pref_ask_speed_title"
             app:entries="@array/ask_speed_entries"
             app:entryValues="@array/ask_speed_values"
             app:defaultValue="knots"
-            app:useSimpleSummaryProvider="true"
-            app:dependency="ask_enabled" />
+            app:useSimpleSummaryProvider="true" />
         <ListPreference
             app:key="ask_depth_unit"
             app:title="@string/pref_ask_depth_title"
             app:entries="@array/ask_depth_entries"
             app:entryValues="@array/ask_depth_values"
             app:defaultValue="metres"
-            app:useSimpleSummaryProvider="true"
-            app:dependency="ask_enabled" />
+            app:useSimpleSummaryProvider="true" />
         <!-- Set in SettingsActivity to the privacy note, or to why this phone cannot ask by voice. -->
         <Preference
             app:key="ask_note"

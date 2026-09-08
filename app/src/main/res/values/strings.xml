@@ -346,7 +346,8 @@
     <string name="ask_u_metres">metres</string>
     <string name="ask_u_feet">feet</string>
     <string name="ask_u_nautical_miles">nautical miles</string>
-    <string name="ask_u_celsius">degrees</string>
+    <!-- Named, because the same word without it is also a heading. -->
+    <string name="ask_u_celsius">degrees Celsius</string>
     <string name="ask_u_percent">percent</string>
     <string name="ask_u_volts">volts</string>
     <string name="ask_u_litres">litres</string>
@@ -357,7 +358,13 @@
     <string name="ask_value">%1$s %2$s %3$s</string>
     <string name="ask_to_port">%1$s %2$s degrees to port</string>
     <string name="ask_to_starboard">%1$s %2$s degrees to starboard</string>
-    <string name="ask_position_value">%1$s %2$s degrees %3$s minutes north, %4$s degrees %5$s minutes east</string>
+    <!-- The hemispheres are arguments, not words in the template: a position south or west of
+         zero is the one this most needs to get right. -->
+    <string name="ask_position_value">%1$s %2$s degrees %3$s minutes %4$s, %5$s degrees %6$s minutes %7$s</string>
+    <string name="ask_north">north</string>
+    <string name="ask_south">south</string>
+    <string name="ask_east">east</string>
+    <string name="ask_west">west</string>
     <string name="ask_hours_minutes">%1$s hours %2$s minutes</string>
     <string name="ask_minutes_only">%1$s minutes</string>
     <string name="ask_missing">no %1$s</string>

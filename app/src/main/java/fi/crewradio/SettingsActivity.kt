@@ -85,7 +85,10 @@ class SettingsActivity : AppCompatActivity() {
                 if (!prefs.isManaged(key)) continue
                 findPreference<Preference>(key)?.apply {
                     isEnabled = false
-                    summary = getString(R.string.managed_by_org)
+                    // Preference.setSummary throws once a SummaryProvider is set, and the server
+                    // row has one. Its provider says "set by your organisation" itself, so the
+                    // row is only disabled here — assigning the summary would crash the screen.
+                    if (key != Prefs.KEY_ASK_SERVER) summary = getString(R.string.managed_by_org)
                 }
             }
         }
@@ -98,11 +101,28 @@ class SettingsActivity : AppCompatActivity() {
          * shown, typed or read out. The request is made on a worker thread and its state polled
          * until the server has decided; the summary says what is happening the whole time.
          */
+        /**
+         * The rows under the ask switch follow [Prefs.askEnabled] rather than an XML dependency on
+         * it. A dependency reads the switch, and the switch is disabled whenever the fleet sets
+         * the value — so a fleet that turns the feature *on* centrally would leave every row under
+         * it dead. This asks what the app will actually do.
+         */
+        private fun askRowsEnabled(prefs: Prefs) {
+            val on = prefs.askEnabled
+            for (key in ASK_CHILD_KEYS) {
+                val row = findPreference<Preference>(key) ?: continue
+                if (prefs.isManaged(key)) continue        // already disabled, and says why
+                row.isEnabled = on
+            }
+        }
+
         private fun ask(prefs: Prefs) {
             findPreference<Preference>(Prefs.KEY_ASK_SERVER)?.summaryProvider =
                 Preference.SummaryProvider<Preference> {
                     val typed = prefs.askServerTyped
                     when {
+                        prefs.isManaged(Prefs.KEY_ASK_SERVER) ->
+                            getString(R.string.managed_by_org) + " · " + SignalKUrl.describe(typed)
                         typed.isNullOrBlank() -> getString(R.string.pref_ask_server_none)
                         typed == discovered -> getString(R.string.pref_ask_server_found, SignalKUrl.describe(typed))
                         else -> SignalKUrl.describe(typed)
@@ -119,6 +139,17 @@ class SettingsActivity : AppCompatActivity() {
             // Nothing set: look for a server on the network and fill it in. The crew can always
             // type an address instead, and a boat network that blocks multicast still works.
             if (prefs.askServerTyped.isNullOrBlank() && !prefs.isManaged(Prefs.KEY_ASK_SERVER)) discover()
+
+            askRowsEnabled(prefs)
+            findPreference<Preference>(Prefs.KEY_ASK_ENABLED)?.setOnPreferenceChangeListener { _, value ->
+                // The stored value has not been written yet, so ask the new one directly.
+                val on = value == true
+                for (key in ASK_CHILD_KEYS) {
+                    if (prefs.isManaged(key)) continue
+                    findPreference<Preference>(key)?.isEnabled = on
+                }
+                true
+            }
 
             val pair = findPreference<Preference>(Prefs.KEY_ASK_PAIR) ?: return
             pair.summary = pairSummary(prefs)
@@ -339,6 +370,12 @@ class SettingsActivity : AppCompatActivity() {
             const val PAIR_TIMEOUT_MS = 180_000L
             /** The state a Signal K access request reaches once the server has decided. */
             const val COMPLETED = "COMPLETED"
+            /** The rows that only make sense once the feature is on. */
+            val ASK_CHILD_KEYS = listOf(
+                Prefs.KEY_ASK_MODE, Prefs.KEY_ASK_SERVER, Prefs.KEY_ASK_PAIR,
+                Prefs.KEY_ASK_SPEED_UNIT, Prefs.KEY_ASK_DEPTH_UNIT,
+            )
+
             /** The keys an EMM may set; the rest are per phone (see res/xml/app_restrictions.xml). */
             val MANAGED_KEYS = listOf(
                 Prefs.KEY_ASK_ENABLED, Prefs.KEY_ASK_SERVER, Prefs.KEY_ASK_MODE,

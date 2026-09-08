@@ -146,8 +146,8 @@ class SignalKClient(
             }
             if (code == HttpURLConnection.HTTP_NOT_FOUND) return Result.Failed(Failure.BAD_RESPONSE, NOT_FOUND)
             if (code !in 200..299) return Result.Failed(Failure.BAD_RESPONSE, "HTTP $code")
-            val text = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            if (text.length > MAX_BODY) return Result.Failed(Failure.BAD_RESPONSE, "response too large")
+            val text = readBounded(connection.inputStream)
+                ?: return Result.Failed(Failure.BAD_RESPONSE, "response too large")
             return Result.Ok(if (text.isBlank()) JSONObject() else JSONObject(text))
         } catch (e: IOException) {
             // Wrong address, nothing listening, or this phone is not on the boat's network.
@@ -162,12 +162,33 @@ class SignalKClient(
         }
     }
 
+    /**
+     * The body, or null once it passes [MAX_BODY]. The cap is applied while reading rather than
+     * to the finished string: a server that answers with a hundred megabytes should cost this
+     * phone a megabyte and a rejection, not a hundred megabytes of heap first.
+     */
+    private fun readBounded(stream: java.io.InputStream): String? =
+        stream.bufferedReader(Charsets.UTF_8).use { reader ->
+            val text = StringBuilder()
+            val chunk = CharArray(CHUNK_CHARS)
+            var read = reader.read(chunk)
+            while (read >= 0) {
+                if (text.length + read > MAX_BODY) return@use null
+                text.appendRange(chunk, 0, read)
+                read = reader.read(chunk)
+            }
+            text.toString()
+        }
+
     companion object {
         const val CONNECT_TIMEOUT_MS = 2_500
         const val READ_TIMEOUT_MS = 3_500
 
         /** A boat's whole `navigation` branch is a few kilobytes; a megabyte is something else. */
         const val MAX_BODY = 1 shl 20
+
+        /** How much is read at a time while the cap is being counted. */
+        private const val CHUNK_CHARS = 8 * 1024
 
         private const val NOT_FOUND = "HTTP 404"
 

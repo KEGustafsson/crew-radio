@@ -92,7 +92,10 @@ class AskVoice(context: Context) {
             return
         }
         applyRoute()
-        engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE)
+        // speak() only reports whether the request reached the queue. When it did not there is no
+        // progress callback to come, so the caller would wait for an utterance that never starts —
+        // and the channel would stay ducked behind it.
+        if (engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE) != TextToSpeech.SUCCESS) finished()
     }
 
     private fun finished() {

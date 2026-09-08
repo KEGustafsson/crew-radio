@@ -90,16 +90,22 @@ class AskSheet(
 
     fun dismiss() = dialog.dismiss()
 
-    private fun showMode() {
+    /**
+     * [locked] is set while the answer is being fetched. The controller takes a copy of the mode
+     * when the read starts and announces by that copy, so a tap after it has started would move
+     * the pill without moving the answer — the sheet would read "Just me" while the boat was
+     * about to tell the whole crew.
+     */
+    private fun showMode(locked: Boolean = false) {
         mode.setText(
             if (controller.mode == AskController.Mode.CREW) R.string.ask_mode_crew else R.string.ask_mode_just_me
         )
         // "Whole crew" has the boat say the answer over the channel, so off channel it is not on
         // offer: the pill goes dim and stops taking taps rather than promising something the
         // question cannot do.
-        val crew = controller.crewPossible()
-        mode.isEnabled = crew
-        mode.alpha = if (crew) 1f else DIMMED
+        val settable = controller.crewPossible() && !locked
+        mode.isEnabled = settable
+        mode.alpha = if (settable) 1f else DIMMED
     }
 
     private fun render(next: AskController.State) {
@@ -123,6 +129,7 @@ class AskSheet(
 
             is AskController.State.Working -> {
                 state.setText(R.string.ask_working)
+                showMode(locked = true)             // the audience is settled from here on
                 panels(level = false, spinner = true, typing = false)
                 heard.text = next.heard
                 answer.visibility = View.GONE
@@ -153,6 +160,7 @@ class AskSheet(
     /** The question is over: the button becomes Done, and the level meter stops implying it is listening. */
     private fun settle(said: String) {
         settled = true
+        showMode()                                 // the audience can be chosen again for the next question
         state.text = activity.getString(R.string.ask_heard)
         panels(level = false, spinner = false, typing = false)
         heard.text = said

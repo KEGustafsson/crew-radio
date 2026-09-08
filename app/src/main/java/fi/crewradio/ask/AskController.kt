@@ -153,6 +153,11 @@ class AskController(
         recognizer.stop()
         voice?.stop()
         voice = null
+        // AskVoice.stop() drops the completion callback, so a sheet closed while the answer was
+        // still being spoken would never reach the duck(false) that callback carries and would
+        // leave the channel quiet for the rest of the session. Unduck here, where every ending
+        // passes, rather than relying on speech finishing.
+        engineOf()?.duck(false)
         engineOf()?.setAsking(false)
     }
 

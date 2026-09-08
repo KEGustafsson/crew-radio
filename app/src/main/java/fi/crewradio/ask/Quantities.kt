@@ -169,9 +169,10 @@ data class Quantity(
         fun byId(id: String): Quantity? = byId[id]
 
         /**
-         * The Signal K subtrees that between them hold every path in the catalogue, as the top two
-         * segments. One GET each answers any question, and a question about two things in different
-         * subtrees ("depth and speed") costs two requests, not one per value.
+         * The Signal K subtrees that between them hold every path in the catalogue: the top
+         * segment of each path — `environment`, not `environment.depth` — which is what
+         * `SignalKUrl.selfBranch` takes. One GET each answers any question, and a question about
+         * two things in different subtrees ("depth and speed") costs two requests, not one per value.
          */
         fun subtreesOf(quantities: List<Quantity>): List<String> =
             quantities.flatMap { q -> q.paths.map { it.substringBefore('.') } }.distinct()

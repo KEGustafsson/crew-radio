@@ -31,7 +31,11 @@ class AskWordingTest {
         value = "%1\$s %2\$s %3\$s",
         toPort = "%1\$s %2\$s degrees to port",
         toStarboard = "%1\$s %2\$s degrees to starboard",
-        position = "%1\$s %2\$s degrees %3\$s minutes north, %4\$s degrees %5\$s minutes east",
+        position = "%1\$s %2\$s degrees %3\$s minutes %4\$s, %5\$s degrees %6\$s minutes %7\$s",
+        north = "north",
+        south = "south",
+        east = "east",
+        west = "west",
         hoursMinutes = "%1\$s hours %2\$s minutes",
         minutesOnly = "%1\$s minutes",
         missing = "no %1\$s",
@@ -102,19 +106,43 @@ class AskWordingTest {
         )
     }
 
+    private fun position(northOfZero: Boolean, eastOfZero: Boolean) = say(
+        AskAnswer.Item.Position(
+            "position",
+            AskUnits.Coordinate(60, "09.8", northOfZero),
+            AskUnits.Coordinate(24, "57.4", eastOfZero),
+            "navigation.position",
+            3,
+        )
+    )
+
     @Test
     fun aPositionReadsAsDegreesAndMinutes() {
         assertEquals(
             "position 60 degrees 09.8 minutes north, 24 degrees 57.4 minutes east.",
-            say(
-                AskAnswer.Item.Position(
-                    "position",
-                    AskUnits.Coordinate(60, "09.8", true),
-                    AskUnits.Coordinate(24, "57.4", true),
-                    "navigation.position",
-                    3,
-                )
-            ),
+            position(northOfZero = true, eastOfZero = true),
+        )
+    }
+
+    /**
+     * All four, because the degrees carry no sign — [AskUnits.coordinate] keeps them positive and
+     * puts the direction in `positive`. A template with the hemispheres written into it reads the
+     * same for a position on the other side of the equator, which is the one case where being
+     * wrong matters most.
+     */
+    @Test
+    fun aPositionSaysWhichSideOfZeroItIsOn() {
+        assertEquals(
+            "position 60 degrees 09.8 minutes south, 24 degrees 57.4 minutes east.",
+            position(northOfZero = false, eastOfZero = true),
+        )
+        assertEquals(
+            "position 60 degrees 09.8 minutes north, 24 degrees 57.4 minutes west.",
+            position(northOfZero = true, eastOfZero = false),
+        )
+        assertEquals(
+            "position 60 degrees 09.8 minutes south, 24 degrees 57.4 minutes west.",
+            position(northOfZero = false, eastOfZero = false),
         )
     }
 
