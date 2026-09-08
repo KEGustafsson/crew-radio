@@ -272,7 +272,7 @@ your machine matching: {languageVersion=17…}*. Install one —
 ```
 winget install EclipseAdoptium.Temurin.17.JDK     # Windows
 brew install --cask temurin@17                    # macOS
-sudo apt install temurin-17-jdk                   # Linux, Adoptium's apt repository
+sudo apt install openjdk-17-jdk                    # Linux (Debian, Ubuntu)
 ```
 
 — and Gradle finds it in the standard install location by itself. `JAVA_HOME` can stay on a newer
