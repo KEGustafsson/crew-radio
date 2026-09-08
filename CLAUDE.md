@@ -193,6 +193,26 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 - Wi-Fi Aware: every node publishes and subscribes; lower senderId initiates the
   data path (one link per pair). Publisher uses accept-any on API 31+.
 
+- Asking the boat (`ask/`): the main screen's `ASK BOAT DATA` row opens `AskSheet`, and
+  `AskController` runs one question — on-device `SpeechRecognizer` (Android 12+; below that, and
+  where the phone has no local recogniser, the sheet opens straight into a typed question and never
+  falls back to a network recogniser), `AskIntents` (transcript → `Quantity` list), `SignalKClient`
+  (one GET per top-level branch of `vessels/self`), `SignalKTree` (path + `*` instance → value and
+  age), `AskAnswer` (SI → crew units, and the staleness gate), `AskWording` (+ `AskVocabulary` from
+  `strings.xml`) → `AskVoice` here or the plugin's existing `POST /say` for the whole crew. Nothing
+  new on the wire and no plugin change: the channel knows nothing about this.
+  Everything from `AskIntents` to `AskWording` is pure and unit-tested. Three rules: a reading older
+  than its `Quantity.staleSec` never becomes a number (a dead instrument keeps its last value for
+  ever, and a leaf with no timestamp is an age nobody can check, so it is stale too); `setAsking`
+  suspends the voice-keying monitor for the whole question, because two `AudioRecord` clients do not
+  share a mic and a live gate would key the channel with the question, released in exactly one place
+  (`AskController.finish`); and `AskIntents` matches the longest trigger first and consumes its
+  words, over every n-best hypothesis, so "wind speed" never also answers the boat's speed. Phrases
+  live in `R.array.ask_phrases`. The Signal K token sits in the same SharedPreferences file as the
+  channel key and under the same backup exclusion; cleartext HTTP is permitted
+  (`network_security_config.xml`) because a boat server has no certificate for `192.168.1.9`, and it
+  is the app's only HTTP traffic.
+
 ## Signal K plugin (`sk-plugin/`)
 - `signalk-crewradio`: the boat's Signal K server as a node on the channel, with text-to-speech
   inside the plugin. Node 24+, CommonJS, one dependency (`@echogarden/flite-wasi`: Flite compiled

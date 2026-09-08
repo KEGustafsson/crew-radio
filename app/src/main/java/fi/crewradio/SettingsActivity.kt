@@ -128,10 +128,12 @@ class SettingsActivity : AppCompatActivity() {
          * was set.
          */
         private fun discover() {
+            // The row is found here, on the main thread: mDNS calls back on a binder thread and
+            // the preference tree is not safe to walk from one.
+            val row = findPreference<EditTextPreference>(Prefs.KEY_ASK_SERVER) ?: return
             val finder = SignalKDiscovery(requireContext()).also { discovery = it }
             finder.start(
                 onFound = { found ->
-                    val row = findPreference<EditTextPreference>(Prefs.KEY_ASK_SERVER) ?: return@start
                     row.context.mainExecutor.execute {
                         if (!isAdded) return@execute
                         val prefs = Prefs(requireContext())

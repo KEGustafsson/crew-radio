@@ -193,6 +193,48 @@ of the transports, so they need a rejoin. The channel key is generated at random
 | `transport/StreamLink`, `SendQueue`, `Backoff`, `Threads` | Length-prefixed framing, per-link outbound queue, retry schedule, guarded threads |
 | `transport/AwareSsi`, `BluetoothTieBreak`, `LanAddressing`, `PeerTable` | Discovery tag, one link per pair, broadcast address, peers heard from directly |
 
+## Asking the boat
+
+`ask/` is a feature the channel knows nothing about: the phone asks the boat's Signal K server
+directly over HTTP and speaks the answer itself. Nothing new goes on the wire, and the plugin is
+unchanged — the whole-crew answer reuses its existing `POST /say`.
+
+```
+ASK BOAT DATA row -> AskSheet -> AskController
+                                   |-> AskRecognizer (on-device SpeechRecognizer) -> hypotheses
+                                   |-> AskIntents      transcript  -> List<Quantity>
+                                   |-> SignalKClient   GET /signalk/v1/api/vessels/self/<branch>
+                                   |-> SignalKTree     path (+ `*` instance) -> value + age
+                                   |-> AskAnswer       SI + staleness -> Item.Value / Missing / …
+                                   |-> AskWording      Items + strings.xml -> one sentence
+                                   `-> AskVoice (this phone) | SignalKClient.say (whole crew)
+```
+
+Everything from `AskIntents` to `AskWording` is pure Kotlin with no Android in it, which is why
+the interesting half is unit-tested without a phone or a server. The wording is assembled from a
+`Vocabulary` handed in rather than written in code, so the strings stay in `strings.xml`.
+
+Three rules worth keeping:
+
+* **The staleness gate.** A dead instrument keeps its last value in the Signal K tree for ever, so
+  a reading older than its `Quantity.staleSec` never becomes a number — it becomes "no heading,
+  nothing for three minutes", and the rest of the question is still answered. A leaf with no
+  timestamp is an age nobody can check, which is exactly what gets a stopped instrument believed,
+  so it counts as stale too.
+* **The microphone.** `SpeechRecognizer` holds the mic, and two `AudioRecord` clients do not share
+  one. `PttEngine.setAsking(true)` suspends the voice-keying monitor for the whole question — and
+  it is what stops a live gate keying the channel with the question. It is released in exactly one
+  place, `AskController.finish()`, whatever happened in between. The channel is ducked, not muted,
+  while an answer is spoken here.
+* **Longest phrase first, then consumed.** `AskIntents` matches the longest trigger it can and
+  takes those words out of play, so "wind speed" never also answers the boat's speed. It matches
+  every n-best hypothesis, not only the top one, because the recogniser's best guess is often the
+  wrong half of a near-homophone pair; a word of five letters or more matches within one edit,
+  shorter ones exactly, since at four letters one edit turns "wind" into "mind".
+
+The phrase table is `R.array.ask_phrases`, so a translator reaches it with everything else and a
+crew can add their own wording; the catalogue it points at is `Quantity.ALL`.
+
 ## Building and releasing
 
 `./gradlew assembleDebug testDebugUnitTest` with an Android SDK (platform 37; Gradle 9.7 via the

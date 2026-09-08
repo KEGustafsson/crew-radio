@@ -35,7 +35,7 @@ class AskVoice(context: Context) {
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build()
                 )
-                tts?.language = Locale.getDefault().takeIf { supported(it) } ?: Locale.UK
+                tts?.setLanguage(Locale.getDefault().takeIf { supported(it) } ?: Locale.UK)
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) = Unit
                     override fun onDone(utteranceId: String?) = finished()

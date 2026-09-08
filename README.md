@@ -145,6 +145,11 @@ the Releases page.
 | **Keep screen on** | While on the channel. Turn off when a headset or the volume keys do the talking. |
 | **Relay** | Forward what this phone hears to its other links. Leave on. |
 | **Opus compression** | On (default): about a tenth of the bandwidth of raw audio. |
+| **Ask boat data** | Adds the **ASK BOAT DATA** button to the main screen: ask the boat for heading, speed, depth, wind and the rest, out loud. Off until you set it up. |
+| **Who hears it** | **Just me** (default): nobody hears the question and the answer plays in your ear only. **Whole crew**: the question and the answer are announced on the channel by the boat, so everyone hears the exchange. |
+| **Signal K server** | The boat's server, as a name or an address. Left empty the app looks for one on the network. |
+| **Pair with server** | Asks the server to let this phone in; somebody approves it once in the server's admin page. Nothing secret is typed or read out. Whole-crew answers need write access — the row says which you have. |
+| **Speed / depth unit** | Knots or metres per second; metres or feet. |
 | **WLAN group and port** | The multicast group every phone listens to. Change only if it clashes with something on your network, and change it on every phone. |
 | **Hop limit** | How many phones a packet may be relayed through (4). |
 
@@ -206,6 +211,34 @@ LAN or WLAN (the router the phones' Wi‑Fi hangs off), with a voice of its own:
 it reaches every phone on the channel as speech, and Signal K alarms (anchor dragging, man
 overboard, a hot engine) are announced by voice, urgently when they are emergencies, until they clear. The phones need the WLAN link ticked for it; the server shows on
 the roster under the vessel's name.
+
+## Asking the boat
+
+If the boat runs Signal K, the main screen gets an **ASK BOAT DATA** button under the volume row.
+Press it, say *"heading and speed"*, and the boat answers: **"heading 245 degrees, speed 6.2 knots."**
+
+It understands the things you actually ask under way — heading, course, speed, depth, position,
+wind, water and air temperature, battery, fuel, fresh water, engine temperature and revs, and
+distance, bearing and time to the next waypoint. Two at once is fine ("depth and wind"). You can
+type the question instead of saying it, which is what happens anyway on a phone that cannot
+recognise speech on its own.
+
+Three things worth knowing:
+
+* **It listens on the phone, never over the internet.** There is no internet at sea, and a crew
+  channel is nobody else's business. A phone that cannot recognise speech on its own says so and
+  offers the typed question instead; it never falls back to sending your voice somewhere.
+* **A stopped instrument is not answered with a number.** If the compass has been quiet for three
+  minutes you hear *"no heading, nothing for 3 minutes"* — and the rest of the question is still
+  answered. A number said with confidence from an instrument that died ten minutes ago is worse
+  than no answer.
+* **It says where an odd answer came from.** With no compass talking, *"course over ground 245
+  degrees"* — the GPS number, named as the GPS number.
+
+Set it up in Settings: switch on **Ask boat data**, let it find the server (or type the address),
+and press **Pair with server** — then approve this phone once in the Signal K admin page. Choose
+**Who hears it**: quiet on a night watch, out loud when you are docking. The chip on the sheet
+flips it for one question without changing the setting.
 
 ## Build it yourself
 

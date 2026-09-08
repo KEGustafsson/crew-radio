@@ -103,7 +103,7 @@
         android:inputType="text"
         android:imeOptions="actionSend"
         android:maxLines="1"
-        android:autofillHints=""
+        android:importantForAutofill="no"
         android:visibility="gone" />
 
     <LinearLayout
