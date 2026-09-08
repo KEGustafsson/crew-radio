@@ -30,7 +30,10 @@ flooding relay so multiple transports and multi-hop topologies work.
   builds again with the `CREWRADIO_*` secrets (keystore base64 + passwords), signs, verifies the
   signer certificate and attests — all under a **read-only** token — and hands the files to
   `publish`, which holds the only write token in the workflow and does nothing but
-  `gh release create` for `v<version>` with `CrewRadio-<version>.apk`. Splitting them is the point:
+  `gh release create` for `v<version>` with `CrewRadio-<version>.apk` and the plugin tarball
+  (`npm pack --ignore-scripts` in `sk-plugin/`, packed in `release` after the keystore is deleted so
+  npm never runs beside the signing key, attested with the rest; its name carries the plugin's own
+  semantic version, which is not the app's `1.<commits>`). Splitting them is the point:
   no checkout, no Gradle and no third-party action ever runs alongside a token that can write here. Without the keystore `assembleRelease` falls back to
   the debug key; with it, a shallow clone is refused (the commit count would be wrong). The
   keystore lives outside the repo (`*.keystore` ignored); the maintainer keeps it in `~/.crewradio/`.
