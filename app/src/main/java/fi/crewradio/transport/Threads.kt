@@ -74,7 +74,12 @@ internal class Waiter {
             val left = (end - System.nanoTime()) / 1_000_000
             if (left <= 0) break                       // so await() is never handed a non-positive timeout
             try {
-                wakeSignal.await(left, TimeUnit.MILLISECONDS)
+                // await() reports whether it returned before the deadline. False means the wait
+                // ran out, and there is nothing more to wait for — unless a wake arrived at the
+                // same moment, which is what the second half of the test is for. Reading the
+                // answer here rather than going round again saves a clock read and, more to the
+                // point, says which of the two happened instead of leaving it to be inferred.
+                if (!wakeSignal.await(left, TimeUnit.MILLISECONDS) && !pending) break
             } catch (_: InterruptedException) {
                 pending = false
                 return true
