@@ -7,6 +7,7 @@ the links for the evidence.
 | | |
 | --- | --- |
 | **Assessed** | 9 September 2026, at commit `b4c241a` (192 commits) |
+| **Code fixed since** | The availability cluster, and eight further findings — see below |
 | **Premise** | Placed on the EU market as a commercial product |
 | **Route** | Module A, internal control — **no notified body, no fee, no audit** |
 | **Products** | Two: the Android app, and `signalk-crewradio` |
@@ -27,10 +28,10 @@ The CRA is nonetheless a *product-compliance* regime rather than a security-qual
 named legal person, a declared support period, an update mechanism, a declaration of conformity and
 a reporting capability. The repository has none of them.
 
-And on **availability** — the axis that matters most for a product a crew uses while manoeuvring —
-the code does not support the claim the documentation makes. Four verified findings let an attacker
-with no channel key degrade or silence the channel, and the product cannot detect, display or record
-any of it.
+**Availability** — the axis that matters most for a product a crew uses while manoeuvring — was
+where the code did not support the claim the documentation made. That part is now fixed; see the
+cluster below. What remains on that axis is the record rather than the defence: there is still no
+persistent log, so an attempt leaves nothing behind for a support case or an Article 14 report.
 
 > "The app is open source and not placed on the market commercially, so the Cyber Resilience Act's
 > manufacturer obligations do not apply to it." — `docs/SECURITY.md`
@@ -64,7 +65,15 @@ range degrades or kills the channel, and nothing notices. Evidence in
 | **H-3** | The plugin has no ingress rate limiting at all (`lan.js:51`, `node.js:223`) | Saturates the single-threaded Signal K server, taking NMEA, AIS and autopilot deltas with it. |
 | **H-4** | `Transport.ready` has four implementations and zero call sites; the only log is 40 lines in memory | None of the above is detectable, displayable or recordable — including for Article 14, where you cannot report what you cannot detect. |
 
-All five are small, local fixes. C-1 and H-1 need no wire change.
+**Status: C-1, H-1, H-2 and H-3 are fixed, H-4 in part.** Peers are learned only through
+`Transport.confirmPeer`, after the AEAD. The seen-cache keeps the highest ttl a packet has been
+forwarded with and relays a copy that would reach further. A `SourceLimiter` bucket per source
+address sits on the LAN socket, and a `WireLimiter` port gives the plugin the three budgets it
+never had. The hello claims only transports that are `ready`, and the heartbeat says when none is.
+
+What is **not** fixed is the recording half of H-4: still no persistent log, no crash reporter, no
+diagnostics export, so an attempt still leaves nothing behind. That is Annex I (2)(l), and it is
+what roadmap phase 4 is for.
 
 ## Annex I Part I at a glance
 
