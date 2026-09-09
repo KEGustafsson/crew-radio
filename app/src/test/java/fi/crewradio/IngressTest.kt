@@ -219,4 +219,67 @@ class IngressTest {
             assertTrue("a copy must not have spent the budget", limiter.allowSender(2, 0L))
         }
     }
+
+    /**
+     * The attack the ttl-aware duplicate exists to stop. The ttl is the one header byte outside
+     * the AAD, because relays rewrite it - so anyone in radio range can capture a frame, lower it
+     * and re-send. Arriving first, that copy used to take the packet's place in the seen-cache
+     * with a ttl that relays nothing, and the genuine copy behind it was merely a duplicate: the
+     * far side of the mesh went silent while this phone played the audio and noticed nothing.
+     */
+    @Test
+    fun aCopyWithALoweredTtlDoesNotStopTheGenuineOneBeingRelayed() {
+        val i = Ingress()
+        val forged = i.admit(header(seq = 1, ttl = 1, hops = 4), 0, now, 4, opens) as Ingress.Result.Accept
+        assertEquals(0, forged.relayTtl)                          // as the attacker intended: forwarded nowhere
+        val real = i.admit(header(seq = 1, ttl = 4, hops = 4), 1, now, 4, opens)
+        assertTrue(real is Ingress.Result.RelayOnly)              // played once, but still relayed
+        assertEquals(3, (real as Ingress.Result.RelayOnly).relayTtl)
+    }
+
+    /** A copy that would reach no further than the one already forwarded is only a duplicate. */
+    @Test
+    fun aCopyThatReachesNoFurtherIsJustADuplicate() {
+        val i = Ingress()
+        assertEquals(3, (i.admit(header(seq = 1, ttl = 4, hops = 4), 0, now, 4, opens) as Ingress.Result.Accept).relayTtl)
+        assertEquals(Ingress.Result.Duplicate, i.admit(header(seq = 1, ttl = 4, hops = 4), 1, now, 4, opens))   // the WLAN broadcast copy
+        assertEquals(Ingress.Result.Duplicate, i.admit(header(seq = 1, ttl = 1, hops = 4), 2, now, 4, opens))   // and a lowered one
+        assertEquals(Ingress.Result.Duplicate, i.admit(header(seq = 1, ttl = 3, hops = 4), 3, now, 4, opens))   // one that came the long way round
+    }
+
+    /** Each copy must beat the last, so the extra forwards are bounded by the sender's own budget. */
+    @Test
+    fun risingTtlCopiesAreBoundedByTheSignedHopBudget() {
+        val i = Ingress()
+        var relays = 0
+        for (ttl in 1..255) {                                     // an attacker walking the ttl up as far as the byte goes
+            val r = i.admit(header(seq = 1, ttl = ttl, hops = 4), ttl.toLong(), now, 4, opens)
+            if (r is Ingress.Result.Accept && r.relayTtl > 0) relays++
+            if (r is Ingress.Result.RelayOnly) relays++
+        }
+        assertEquals(3, relays)                                   // hops = 4: three forwards, however many copies arrive
+    }
+
+    /**
+     * Our own frame, relayed back by a peer. It is a duplicate - but the sender id is in the clear
+     * in every packet we send, so a flood can claim it; dropping it before the global budget would
+     * be a way in that costs the attacker nothing. It is charged, and never opened.
+     */
+    @Test
+    fun ourOwnFrameComingBackIsADuplicateThatStillCostsTheGlobalBudget() {
+        var opened = 0
+        val counting = { opened++; body }
+        val i = Ingress(RateLimiter(globalPerSecond = 0.0, globalBurst = 2.0))
+        assertEquals(Ingress.Result.Duplicate, i.admit(header(sender = 7, seq = 1), 0, now, 4, counting, selfId = 7))
+        assertEquals(Ingress.Result.Duplicate, i.admit(header(sender = 7, seq = 2), 0, now, 4, counting, selfId = 7))
+        assertEquals(0, opened)                                   // never decrypted: it is ours
+        assertTrue(i.admit(header(sender = 8, seq = 1), 0, now, 4, counting, selfId = 7).rejectedFor(Ingress.Why.GLOBAL_BUDGET))
+    }
+
+    /** Without a self id nothing is dropped for it: the parameter is opt-in, as the plugin needs. */
+    @Test
+    fun withoutASelfIdEverySenderIsAStranger() {
+        val i = Ingress()
+        assertTrue(i.admit(header(sender = 7, seq = 1), 0, now, 4, opens).accepted())
+    }
 }

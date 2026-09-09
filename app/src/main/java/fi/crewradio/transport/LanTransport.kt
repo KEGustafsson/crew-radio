@@ -60,6 +60,7 @@ class LanTransport(
     private val waiter = Waiter()                        // cuts a backoff wait short, or skips the next one
     private val lifecycle = Any()                        // orders "publish a socket" against "stop and close it"
     private val peers = PeerTable<InetAddress, Unit>(PEER_TTL_MS, MAX_PEERS)
+    private val sources = SourceLimiter()                // one ingress budget per source address
 
     @Volatile private var socket: MulticastSocket? = null
     @Volatile private var openedOn: String? = null       // "wlan0/192.168.0.35" while a socket is up
@@ -67,6 +68,8 @@ class LanTransport(
     @Volatile private var broadcastAddr: InetAddress? = null
     @Volatile private var wifi: WifiLink? = null         // the Wi-Fi network the callback last described
     @Volatile private var heard = false
+    @Volatile private var lastAudioMs = 0L               // when audio last went out, for the burst floor
+    @Volatile private var groupCopiesLeft = 0
     @Volatile private var running = false
     private var lock: WifiManager.MulticastLock? = null
     private lateinit var onPacket: (ByteArray, Transport, Any?) -> Unit
@@ -148,6 +151,7 @@ class LanTransport(
             broadcastAddr = target.broadcast
             heard = false
             peers.clear()
+            sources.clear()
             val bc = target.broadcast?.hostAddress?.let { " + $it" } ?: " (multicast only)"
             onStatus("LAN: $group:$port$bc via ${target.nic.name}")
             receiveUntilClosed(s)
@@ -191,17 +195,33 @@ class LanTransport(
                 s.receive(p)
                 val from = p.address
                 if (from == ownAddr) continue                  // the broadcast copy of our own frame
-                peers.put(from, Unit, System.currentTimeMillis())
-                if (!heard) {
-                    heard = true
-                    backoff.reset()                            // a working network: the next reopen starts fast again
-                    onStatus("LAN: hearing ${from.hostAddress}")
-                }
+                // Per-source budget before anything else: the engine's global budget is charged
+                // before the AEAD and so cannot tell a crew frame from a stranger's, and one host
+                // asking faster than the crew would take all of it.
+                if (!sources.allow(from.hashCode(), System.currentTimeMillis())) continue
                 onPacket(buf.copyOf(p.length), this, from)
             } catch (e: IOException) {
                 if (running && !s.isClosed) onStatus("LAN: socket error (${e.message}), reopening")
                 return
             }
+        }
+    }
+
+    /**
+     * A packet from [link] opened with the channel key, so its address is a crew member's and is
+     * worth a unicast copy. Learning it from the datagram instead would mean any host on the WLAN
+     * could fill [peers] with sixteen addresses of its own and, since audio drops the group copies
+     * once a peer is known, take every frame this phone sends — while the roster and the status
+     * line still showed a healthy channel, because hellos keep the group copy and we still receive
+     * normally. It is a silent, one-way loss of audio, which is the worst thing this app can do.
+     */
+    override fun confirmPeer(link: Any?) {
+        val from = link as? InetAddress ?: return
+        peers.put(from, Unit, System.currentTimeMillis())
+        if (!heard) {
+            heard = true
+            backoff.reset()                                // a working network: the next reopen starts fast again
+            onStatus("LAN: hearing ${from.hostAddress}")
         }
     }
 
@@ -228,11 +248,24 @@ class LanTransport(
      */
     override fun send(packet: ByteArray, except: Any?): Boolean {
         val s = socket ?: return false
-        val live = peers.live(System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        val live = peers.live(now)
         val hello = packet.size > 3 && packet[3].toInt() == Packet.Codec.HELLO.id
-        if (hello || live.isEmpty()) {
+        // The first frames of a talk burst keep the group and broadcast copies whatever the table
+        // holds. The AEAD authenticates the packet, not the address it arrived from, so a listener
+        // who replays a captured frame from its own address and wins the race against the genuine
+        // copy can still enter the table - and once the table is full of it, unicast-only audio
+        // reaches nobody. This is the floor under that: the crew hears the start of every burst,
+        // so the fault is audible rather than silent. Ten extra packets per burst, not per frame.
+        if (!hello) {
+            if (now - lastAudioMs > BURST_GAP_MS) groupCopiesLeft = BURST_GROUP_FRAMES
+            lastAudioMs = now
+        }
+        val alsoGroup = hello || live.isEmpty() || groupCopiesLeft > 0
+        if (alsoGroup) {
             sendTo(s, packet, groupAddr)
             broadcastAddr?.let { sendTo(s, packet, it) }
+            if (!hello && groupCopiesLeft > 0) groupCopiesLeft--
         }
         for (a in live) if (a != except) sendTo(s, packet, a)
         return true
@@ -306,5 +339,9 @@ class LanTransport(
         const val PEER_TTL_MS = 5_000L
         /** Unicast fan-out is bounded: a flood of source addresses evicts, it does not grow. */
         const val MAX_PEERS = 16
+        /** A gap this long before an audio frame starts a new talk burst. */
+        const val BURST_GAP_MS = 400L
+        /** Frames at the start of a burst that keep the group and broadcast copies: 100 ms at 50 fps. */
+        const val BURST_GROUP_FRAMES = 5
     }
 }

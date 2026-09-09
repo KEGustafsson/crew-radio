@@ -47,6 +47,13 @@ Two things are nonetheless true:
 Confidentiality and integrity are strong. These five findings share one shape: an unauthenticated
 attacker within radio range degrades or kills the channel, and nothing notices.
 
+> **Fixed.** C-1, H-1, H-2 and H-3 are closed, and H-4 in part — the hello now claims only
+> transports that are `ready` and the heartbeat reports when none is, but the recording half
+> (a persistent log, a crash reporter, a diagnostics export) is still open and is roadmap phase 4.
+> The findings are kept here as written, because what the code used to do is the evidence for why
+> it does what it does now, and Annex VII item 6 wants that trail. `H-5` to `H-8`, `M-2`, `M-4`,
+> `M-8`, `M-12`, `M-15` and `M-16` in the register below are closed too.
+
 ### C-1 — Unauthenticated peer-table poisoning silently redirects all outgoing audio
 **Critical · verified at source · Annex I I(2)(h)**
 

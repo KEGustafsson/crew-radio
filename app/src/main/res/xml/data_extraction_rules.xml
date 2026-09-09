@@ -6,13 +6,21 @@
   to a cloud backup or to a new phone during a device transfer, where it would leave a
   credential for the boat in a place nobody chose. The crew types the key in; the token is
   issued again by pairing.
+
+  Both the domain and the file are named. The older full-backup parser skips an <exclude>
+  with no path, and cloud backup is switched off by allowBackup="false" anyway — but
+  device transfer is not, so this file is the only thing standing between the channel key
+  and a new phone, and it is not the place to rely on a default. The file name is what
+  PreferenceManager.getDefaultSharedPreferences uses: <package>_preferences.xml.
   See docs/SECURITY.md.
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <exclude domain="sharedpref" />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="sharedpref" path="fi.crewradio_preferences.xml" />
     </cloud-backup>
     <device-transfer>
-        <exclude domain="sharedpref" />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="sharedpref" path="fi.crewradio_preferences.xml" />
     </device-transfer>
 </data-extraction-rules>

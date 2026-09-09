@@ -236,3 +236,52 @@ test("two announcements queued at once go out one after the other, never interle
   assert.deepEqual(order, [1, 1, 1, 2, 2, 2, 3, 3]);
   a.stop();
 });
+
+/**
+ * The plugin runs inside the boat's Signal K server, and the packet path is entered from a dgram
+ * callback - the top of a libuv tick, where an uncaught exception exits the process by default.
+ * A listener that throws (app.handleMessage rejecting a delta, say) must not take the vessel's
+ * data server down with it.
+ */
+test("a throwing roster listener cannot bring the process down from the packet path", async () => {
+  const m = new Medium();
+  const node = new ChannelNode({ name: "boat", crypto, link: m.link(), guard: new ReplayGuard() });
+  const faults = [];
+  node.on("fault", (e) => faults.push(e));
+  node.on("roster", () => { throw new Error("handleMessage said no"); });
+  assert.doesNotThrow(() => node.receive(packet({ senderId: 11, seq: 1 }), { address: "10.0.0.11" }));
+  assert.equal(faults.length, 1, "the fault is reported, not thrown");
+  assert.match(faults[0].message, /handleMessage said no/);
+  assert.equal(node.stats.rejected, 1);
+  node.stop();
+});
+
+/** The three buckets the plugin was missing: without the key, and without the sender's id. */
+test("a keyless flood is bounded by the global budget before anything is decrypted", () => {
+  const m = new Medium();
+  let opened = 0;
+  const counting = { open: (...a) => { opened++; return crypto.open(...a); }, seal: (...a) => crypto.seal(...a) };
+  const node = new ChannelNode({
+    name: "boat", crypto: counting, link: m.link(), guard: new ReplayGuard(),
+    limiter: new (require("../lib/wirelimit").WireLimiter)({ globalPerSecond: 0, globalBurst: 4, now: () => 0 }),
+  });
+  const junk = Buffer.concat([P.encodeHeader({ senderId: 99, seq: 1, codec: P.Codec.OPUS, ttl: 4, hops: 4 }), Buffer.alloc(29)]);
+  for (let i = 0; i < 50; i++) node.receive(junk, { address: "10.0.0.99" });
+  assert.equal(opened, 4, "only the global burst was ever handed to the AEAD");
+  assert.equal(node.stats.rejected, 50);
+  node.stop();
+});
+
+test("an authenticated sender over its own budget writes nothing further", () => {
+  const m = new Medium();
+  const node = new ChannelNode({
+    name: "boat", crypto, link: m.link(), guard: new ReplayGuard(),
+    limiter: new (require("../lib/wirelimit").WireLimiter)({ perSecond: 0, burst: 3, now: () => 0 }),
+  });
+  for (let seq = 1; seq <= 3; seq++) node.receive(packet({ senderId: 12, seq }), { address: "10.0.0.12" });
+  assert.equal(node.nodes.size, 1);
+  const rxBefore = node.stats.rx;
+  for (let seq = 4; seq <= 10; seq++) node.receive(packet({ senderId: 12, seq }), { address: "10.0.0.12" });
+  assert.equal(node.stats.rx, rxBefore, "over budget: nothing more is counted");
+  node.stop();
+});

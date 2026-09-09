@@ -127,6 +127,16 @@ class PttEngine(
     @Volatile var displayName: String = defaultName
     val isTalking: Boolean get() = talking
     val isConnected: Boolean get() = transports.isNotEmpty()
+
+    /**
+     * True while at least one transport can actually carry a packet - a socket open, a listener
+     * up, a link alive - as opposed to [isConnected], which only says a transport object exists.
+     * On channel with this false, the crew is talking to nobody and the roster says so far too
+     * quietly: the head count drifts to zero and nothing else changes.
+     */
+    val healthy: Boolean get() = transports.any { it.ready }
+
+    @Volatile private var linksUp = true              // so the first tick with nothing up reports it
     /** The roster as last published; the UI reads this when it (re)binds. */
     val roster: List<Peer> get() = lastRoster
     /** A fresh roster with current ages, for a screen that polls. */
@@ -758,13 +768,23 @@ class PttEngine(
         if (transports.isEmpty()) return                  // a transport still winding down after disconnect
         val c = counters                                  // this session's set, whatever happens meanwhile
         val h = Packet.parse(p) ?: run { c.rejected.incrementAndGet(); return }
-        if (h.senderId == senderId) return
         val cr = crypto ?: return
         val now = SystemClock.elapsedRealtime()
         val plain: ByteArray
         val relayTtl: Int
-        when (val r = ingress.admit(h, now, System.currentTimeMillis() / 1000, maxHops, { cr.open(Packet.aadOf(p), p, Packet.HEADER, p.size - Packet.HEADER) })) {
+        when (val r = ingress.admit(
+            h, now, System.currentTimeMillis() / 1000, maxHops,
+            { cr.open(Packet.aadOf(p), p, Packet.HEADER, p.size - Packet.HEADER) },
+            selfId = senderId
+        )) {
             is Ingress.Result.Accept -> { plain = r.plain; relayTtl = r.relayTtl }
+            // Heard already, but this copy reaches further than the one we forwarded: relay it and
+            // nothing else. Whoever sent the shorter copy first does not get to cut the mesh in two.
+            is Ingress.Result.RelayOnly -> {
+                c.duplicates.incrementAndGet()
+                relayPacket(p, r.relayTtl, from, link, c)
+                return
+            }
             Ingress.Result.Duplicate -> { c.duplicates.incrementAndGet(); return }
             Ingress.Result.Stale -> {
                 c.stale.incrementAndGet()
@@ -779,16 +799,9 @@ class PttEngine(
         }
         c.rxPackets.incrementAndGet()
         c.rxBytes.addAndGet(p.size.toLong())
+        from.confirmPeer(link)                            // the key opened it, so the address is a crew member's
 
-        if (relay && relayTtl > 0) {
-            Packet.setTtl(p, relayTtl)
-            var forwarded = false
-            for (t in transports) {
-                if (t === from) { if (t.relayWithin && t.send(p, except = link)) forwarded = true }
-                else if (t.send(p)) forwarded = true
-            }
-            if (forwarded) c.relayed.incrementAndGet()
-        }
+        relayPacket(p, relayTtl, from, link, c)
 
         if (h.codec == Packet.Codec.HELLO) {
             c.hellos.incrementAndGet()
@@ -812,6 +825,22 @@ class PttEngine(
         }
     }
 
+    /**
+     * Forwards an authenticated packet with the ttl [Ingress] worked out, to every other transport
+     * and, where forwarding within one makes sense, to its other links. A ttl of 0 or a relay
+     * switched off means it stops here.
+     */
+    private fun relayPacket(p: ByteArray, relayTtl: Int, from: Transport, link: Any?, c: Counters) {
+        if (!relay || relayTtl <= 0) return
+        Packet.setTtl(p, relayTtl)
+        var forwarded = false
+        for (t in transports) {
+            if (t === from) { if (t.relayWithin && t.send(p, except = link)) forwarded = true }
+            else if (t.send(p)) forwarded = true
+        }
+        if (forwarded) c.relayed.incrementAndGet()
+    }
+
     /** A status line for a condition that recurs on every packet: at most once per [REPORT_INTERVAL_MS], whichever thread sees it. */
     private fun reportOnce(last: AtomicLong, now: Long, message: () -> String) {
         val prev = last.get()
@@ -823,6 +852,11 @@ class PttEngine(
     /** Heartbeat thread: announce ourselves, drop the silent, clear stale talking marks, publish if anything moved. */
     private fun tick() {
         sendHello()
+        val up = healthy
+        if (up != linksUp) {
+            linksUp = up
+            onStatus(if (up) "Links up" else "No link is up: nobody can hear this phone")
+        }
         val now = SystemClock.elapsedRealtime()
         var changed = false
         for ((id, n) in nodes) {
@@ -838,7 +872,10 @@ class PttEngine(
 
     private fun sendHello() {
         var flags = 0
-        for (t in transports) flags = flags or Hello.bitFor(t.name)
+        // Only what can actually carry a packet: a Bluetooth transport whose adapter is off is
+        // started but not ready, and claiming BT on the roster then sends the crew looking for a
+        // link that cannot exist. The flag has always been there; nothing read it.
+        for (t in transports) if (t.ready) flags = flags or Hello.bitFor(t.name)
         broadcast(Packet.Codec.HELLO, Hello(displayName, flags, maxHops, BuildConfig.VERSION_CODE).encode())
     }
 

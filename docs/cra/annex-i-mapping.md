@@ -168,27 +168,34 @@ voice with `isNetworkConnectionRequired == false`, or state the caveat.
 
 ### (2)(h) Availability of essential and basic functions, resilience against denial of service
 
-**Not met.** This is the clause the documentation currently claims to satisfy, and it is the one
-most clearly unmet. See the availability cluster in `gap-analysis.md`: C-1 (peer-table poisoning,
-critical), H-1 (ttl relay suppression), H-2 (keyless flood starvation), H-3 (plugin has no limiter),
-plus H-7 and H-8 (audio threads with no exception isolation, and a release-vs-join race that turns a
-survivable audio-server fault into a process crash).
+**Partial** — was Not met; the cluster behind that verdict has been fixed.
 
-The rate limiter bounds CPU, which it does well. It is not an availability control, because it is
-charged before the AEAD and is therefore blind to authenticity.
+C-1 (peer-table poisoning), H-1 (ttl relay suppression), H-2 (keyless flood starvation), H-3 (the
+plugin's missing budgets) and H-7/H-8 (the audio threads and their release-vs-join race) are all
+closed: peers are learned only after the AEAD, a duplicate that would reach further is relayed, a
+per-source bucket sits ahead of the global one on both the app's socket and the plugin's, and the
+two audio threads catch, report, and release exactly once. `docs/SECURITY.md` has been corrected
+to match, including the hop-count claim it could no longer support.
 
-*To close:* roadmap phase 2 in full. Then correct the claim in `docs/SECURITY.md`.
+It stays Partial rather than Met for two reasons, both real and both needing the channel key or a
+paired device, which is why they are Medium rather than High. An attacker inside the channel can
+still poison a sender's sequence high-water mark and mute that sender for the life of the process
+(M-1). And the Bluetooth and Wi-Fi Aware transports still lack the link liveness and the caps the
+LAN path now has (M-10, M-11).
+
+*To close:* expire the sequence marks after a couple of minutes of silence and clamp a forward
+jump; give the stream transports an idle sweep and the same link caps.
 
 ### (2)(i) Minimising negative impact on the availability of services provided by other devices
 
-**Partial.** Packets are small, bounded and rate-limited, and `LanLink.onSubnet` in the plugin
-refuses to send unicast copies off its own subnet — a deliberate, tested anti-reflection control.
-Multicast plus broadcast is the only noisy behaviour and is confined to the WLAN.
+**Met** — was Partial. Packets are small, bounded and rate-limited; `LanLink.onSubnet` refuses to
+send unicast copies off its own subnet, a deliberate and tested anti-reflection control; multicast
+plus broadcast is confined to the WLAN.
 
-But the plugin runs in-process in the boat's Signal K server, and an unauthenticated flood degrades
-NMEA, AIS, autopilot deltas, the admin UI and every other plugin along with it (H-3).
-
-*To close:* the plugin rate limiter. This clause closes with (2)(h).
+The gap was H-3. The plugin runs in-process in the boat's Signal K server, so an unauthenticated
+flood degraded NMEA, AIS, autopilot deltas, the admin UI and every other plugin along with it. It
+now carries the same three budgets as the app plus a per-source bucket on the socket, and the
+packet path can no longer throw or reject its way out of the process.
 
 ### (2)(j) Limiting attack surfaces, including external interfaces
 

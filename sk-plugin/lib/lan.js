@@ -15,6 +15,7 @@ const dgram = require("node:dgram");
 const os = require("node:os");
 const { EventEmitter } = require("node:events");
 const { MAX_SIZE } = require("./packet");
+const { PeerBudget } = require("./wirelimit");
 
 class LanLink extends EventEmitter {
   /**
@@ -30,6 +31,7 @@ class LanLink extends EventEmitter {
     this.netmask = null;
     this.broadcast = null;
     this.iface = null;
+    this.peers = opts.peers ?? new PeerBudget();   // one ingress budget per source address
   }
 
   /** Resolves with `{iface, address, broadcast}` once bound and joined; a socket that fails to bind is closed, not leaked. */
@@ -50,6 +52,10 @@ class LanLink extends EventEmitter {
       });
       sock.on("message", (buf, rinfo) => {
         if (buf.length > MAX_SIZE) return; // dropped unread, as the app does
+        // Per-source budget before anything else. Everything downstream is charged to a budget
+        // that cannot yet tell who sent the packet, so without this one host on the boat network
+        // takes the lot and the crew's frames queue behind it.
+        if (rinfo && rinfo.address && !this.peers.allow(rinfo.address)) return;
         this.emit("packet", buf, rinfo);
       });
       try {

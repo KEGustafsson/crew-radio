@@ -47,6 +47,8 @@ class Mixer(
     private val cues = ArrayDeque<ByteArray>()              // tone frames, one per slot, on top of the streams
     @Volatile private var running = false
     private var worker: Thread? = null
+    private var generation = 0                       // which session owns the track
+    private var closedGen = -1
 
     /** Slots filled by concealment since [start]; shown on the Status screen. */
     val concealedFrames = AtomicLong()
@@ -92,9 +94,19 @@ class Mixer(
     fun start() {
         if (running) return
         open()
+        val gen = synchronized(this) { ++generation }
         worker = thread(name = "ptt-mixer") {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
-            while (running) if (!tick(clock())) pace()
+            try {
+                while (running) if (!tick(clock())) pace()
+            } catch (t: Throwable) {
+                // A bare thread here took the whole app with it: the loop calls into a vendor
+                // AudioTrack and, through onStatus, back into the service and the UI.
+                running = false
+                report("Audio out failed (${t.message})")
+            } finally {
+                closePlayback(gen)
+            }
         }
     }
 
@@ -216,7 +228,7 @@ class Mixer(
         if (failedWrites < PERSISTENT_WRITES) return
         if (!failing) {
             failing = true
-            onStatus?.invoke("Playback failed ($code), restarting")
+            report("Playback failed ($code), restarting")
         }
         if (now < retryAtNs) return
         retryAtNs = now + backoff.next() * 1_000_000L
@@ -233,7 +245,7 @@ class Mixer(
             failing = false
             backoff.reset()
             retryAtNs = 0L
-            onStatus?.invoke("Playback restored")
+            report("Playback restored")
         }
     }
 
@@ -281,16 +293,45 @@ class Mixer(
     /** Streams currently held, talking or not yet swept; for the tests. */
     internal fun streamCount(): Int = streams.size
 
-    fun stop() {
-        running = false
-        worker?.join(500)
-        worker = null
-        streams.clear()
-        synchronized(cues) { cues.clear() }
+    /**
+     * Stops the track once, and only for the session that opened it.
+     *
+     * [playback] is one object shared across sessions, so a worker left behind by a [stop] whose
+     * join timed out must not be allowed to stop the track a *later* [start] has since opened -
+     * which is what an instance-wide flag would have let it do, cutting the new session's audio
+     * with nothing to show for it. The generation says whose track it is.
+     */
+    @Synchronized
+    private fun closePlayback(gen: Int) {
+        if (gen != generation || closedGen == gen) return
+        closedGen = gen
         playback.stop()
     }
 
+    /** A status line that cannot take the mixer thread down: the listener is the service's and the UI's. */
+    private fun report(msg: String) {
+        try {
+            onStatus?.invoke(msg)
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun stop() {
+        running = false
+        val w = worker
+        worker = null
+        val gen = synchronized(this) { generation }
+        w?.join(JOIN_MS)
+        streams.clear()
+        synchronized(cues) { cues.clear() }
+        // Not while the worker may still be inside playback.write(); its finally closes instead.
+        if (w == null || !w.isAlive) closePlayback(gen)
+    }
+
     private companion object {
+        /** Long enough for a blocking write to drain; beyond that the worker owns the close. */
+        const val JOIN_MS = 500L
+
         /** Queue marker for a slot whose packet never came. */
         val HOLE = ByteArray(0)
 

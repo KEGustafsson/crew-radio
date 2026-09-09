@@ -9,6 +9,17 @@ project has relied on stops being true:
 
 That is correct today. It is wrong, publicly and in writing, on the day of the first sale.
 
+## Current status: not being sold yet
+
+**Crew Radio is not being sold yet.** It is free and open source, supplied outside the course of a
+commercial activity. The manufacturer obligations analysed in these papers are therefore **dormant
+rather than overdue** — including the Article 14 reporting duty called the nearest deadline below,
+which binds manufacturers and so binds nobody here yet.
+
+Nothing in this folder is withdrawn on that account. The analysis holds and is the plan for the day
+the answer changes; [`open-findings.md`](open-findings.md) records what the statement changes, what
+it does not, and the disposition of every finding still open.
+
 ## What this folder is, and is not
 
 **It is** a self-assessment: what the Regulation asks for, where the product stands against each
@@ -34,6 +45,7 @@ behind it.
 | File | What it settles |
 | --- | --- |
 | [`state-of-play.md`](state-of-play.md) | The whole picture on one page, dated. Summarises everything below; the papers remain the source of truth. |
+| [`open-findings.md`](open-findings.md) | What is still open after PR #45 and why, with the argument for each: scheduled, blocked on a wire version, blocked on a decision, accepted, or dormant while the product is not sold. |
 | [`scope-and-classification.md`](scope-and-classification.md) | Whether the CRA applies, to what, in which category, by which route — and the two classification arguments worth pre-answering in writing. |
 | [`gap-analysis.md`](gap-analysis.md) | What the code review found, ranked, with evidence. Includes the seven places where `docs/SECURITY.md` and the code disagree. |
 | [`annex-i-mapping.md`](annex-i-mapping.md) | Clause-by-clause verdicts: Annex I Part I (1) and (2)(a)–(m), Annex I Part II (1)–(8), Annex II items 1–9. |

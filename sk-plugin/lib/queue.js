@@ -92,12 +92,12 @@ class AnnouncementQueue extends EventEmitter {
         this.current.cancelled = true;
         this.onCancel();
       }
-      this.pump();
+      this.pump().catch((e) => this.log(`queue failed: ${e.message}`));
       return at;
     }
     if (this.waiting("normal") >= this.max) throw new Error(`queue full (${this.max} waiting)`);
     this.items.push(entry);
-    this.pump();
+    this.pump().catch((e) => this.log(`queue failed: ${e.message}`));
     return this.items.length - 1 + (this.current ? 1 : 0);
   }
 

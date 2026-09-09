@@ -38,6 +38,9 @@ const SAY_PATH = "communication.crewradio.say";
 const RATE_PER_MINUTE = 10;          // say() calls a minute for each door
 const BRIDGE_RATE_PER_MINUTE = 30;   // the notification bridge: several alarms repeating every 30 s
 const MAX_BODY = 10_000;             // characters of a POST /say body
+const KEY_MIN = 8;                   // the app's SettingsRules floors, kept in step by hand
+const NEW_KEY_MIN = 12;              // ... what it asks for a key being typed in
+const KEY_MAX = 64;
 
 /** @param {object} app the Signal K plugin API; `deps` lets tests inject a fake network link and speech engine */
 module.exports = function crewRadioPlugin(app, deps = {}) {
@@ -98,6 +101,14 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     guard ??= new ReplayGuard();
     crypto = null;
 
+    // openLink() is called and never awaited, and an unhandled rejection is a process exit by
+    // default - the process being the boat's Signal K server. Everything after the try/catch
+    // inside it (the node, its listeners, node.start()) is outside that catch, so it needs this.
+    const onLinkCrash = (e) => {
+      reportLink(e && e.message ? e.message : String(e));
+      scheduleReopen();
+      status();
+    };
     const openLink = async () => {
       if (!running || gen !== generation) return;
       const mine = new Link({ group: cfg.group, port: cfg.port, iface: cfg.iface });
@@ -132,7 +143,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       if (node) { node.stop(); node = null; }
       if (link) { link.close(); link = null; }
       linkInfo = null;
-      reopenTimer = setTimeout(() => { reopenTimer = null; openLink(); }, backoffMs);
+      reopenTimer = setTimeout(() => { reopenTimer = null; openLink().catch(onLinkCrash); }, backoffMs);
       backoffMs = Math.min(backoffMs * 2, 15_000);
     };
     /** A link failure is logged once; the same message again (every retry) is not, until the link has been up in between. */
@@ -184,7 +195,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     // The packet key takes a while to derive (600 000 rounds of PBKDF2); it runs on the thread
     // pool, and the link opens when it is there. start() itself returns at once.
     ChannelCrypto.forChannelKey(cfg.channelKey).then(
-      (c) => { if (running && gen === generation) { crypto = c; openLink(); } },
+      (c) => { if (running && gen === generation) { crypto = c; openLink().catch(onLinkCrash); } },
       (e) => { if (running && gen === generation) app.setPluginError(`Channel key: ${e.message}`); },
     );
     status();
@@ -389,10 +400,20 @@ function withDefaults(o, app) {
     }
     return n;
   };
+  // The app's own floors: 8-64 printable ASCII for a key already stored, 12-64 for one being
+  // typed in. A key configured here is being typed in, but refusing a short one outright would
+  // lock out a crew carrying a legacy key, so it is said rather than enforced - and the packet
+  // key is stretched from this and nothing else, so it is worth saying.
+  const channelKey = String(o.channelKey ?? "").trim();
+  if (channelKey && channelKey.length < KEY_MIN) {
+    warnings.push(`channel key is ${channelKey.length} characters; the app will not accept fewer than ${KEY_MIN}`);
+  } else if (channelKey && channelKey.length < NEW_KEY_MIN) {
+    warnings.push(`channel key is only ${channelKey.length} characters; ${NEW_KEY_MIN} or more is what the app asks for a new one`);
+  }
   let group = String(o.group ?? "239.255.42.1").trim() || "239.255.42.1";
   if (!isMulticastV4(group)) { warnings.push(`multicast group ${JSON.stringify(group)} is not an IPv4 multicast address, using 239.255.42.1`); group = "239.255.42.1"; }
   return {
-    channelKey: String(o.channelKey ?? "").trim(),
+    channelKey,
     nodeName: sanitiseName(o.nodeName) || boatName(app),
     group,
     port: number(o.port, 47474, 1024, 65535, "UDP port", true),
@@ -484,7 +505,7 @@ function schema(app) {
     type: "object",
     required: ["channelKey"],
     properties: {
-      channelKey: { type: "string", title: "Channel key", description: "The crew's channel key, exactly as on the phones (Settings › Channel key). Keeps the channel private; every node must share it." },
+      channelKey: { type: "string", minLength: KEY_MIN, maxLength: KEY_MAX, title: "Channel key", description: `The crew's channel key, exactly as on the phones (Settings › Channel key). Keeps the channel private; every node must share it. ${KEY_MIN}-${KEY_MAX} characters, ${NEW_KEY_MIN} or more for a new one.` },
       nodeName: { type: "string", title: "Name on the roster", description: `How the phones list the server. Empty: the vessel's name (${boatName(app)}).`, default: "" },
       voice: { type: "string", title: "Voice", enum: VOICES, default: "slt", description: "Flite voices, English: slt (female), kal16, rms and awb (male)." },
       rate: { type: "number", title: "Speaking rate", default: 1, minimum: 0.7, maximum: 1.3, description: "1 is the voice's own pace; 0.8 slower for a noisy deck." },
