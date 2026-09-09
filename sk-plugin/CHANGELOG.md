@@ -3,6 +3,29 @@
 All notable changes to signalk-crewradio. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semver.
 
+## Unreleased
+
+### Security
+
+- Ingress budgets on the wire, which the plugin did not have at all while the app has had three.
+  The server is single-threaded and carries the boat's NMEA, AIS and autopilot deltas, so a flood
+  of well-formed headers and 29 bytes of garbage — no channel key needed — made it attempt an
+  AES-GCM open per packet and took the whole vessel's data with it. Now a global budget before the
+  packet is opened, a junk budget charged only when the open fails, a per-sender budget after the
+  AEAD and the duplicate look, and one bucket per source address on the socket itself, so a flood
+  costs the flooder. `lib/wirelimit.js`, mirroring the app's `RateLimiter` and `SourceLimiter`.
+- The packet path can no longer end the process. It is entered from a dgram callback, the top of a
+  libuv tick, where an uncaught exception exits by default — so a listener that throws (a delta the
+  server rejects, say) took the Signal K server down. `receive()` now catches and emits `fault`.
+- `openLink()` and `pump()` were called and never awaited, so a throw became an unhandled
+  rejection, which is also a process exit by default. Both have handlers now.
+
+### Changed
+
+- The channel key is checked against the app's own length rules (8–64, and 12 or more for a key
+  being typed in) and the schema carries them, so a one-character key is refused by the admin UI
+  and a short one is said out loud in the settings warnings rather than silently stretched.
+
 ## 0.1.0 - 2026-09-06
 
 First release.

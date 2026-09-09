@@ -18,6 +18,7 @@ const crypto = require("node:crypto");
 const { EventEmitter } = require("node:events");
 const P = require("./packet");
 const { ReplayGuard } = require("./replay");
+const { WireLimiter } = require("./wirelimit");
 
 const FRAME_BYTES = 640; // 16 kHz * 20 ms * 2 bytes
 const FRAME_MS = 20;
@@ -52,6 +53,7 @@ class ChannelNode extends EventEmitter {
     this.repeatMs = opts.repeatMs ?? 0;         // > 0: send every audio packet a second time this much later (heals a lost copy)
     this.now = opts.now ?? Date.now;
     this.guard = opts.guard ?? new ReplayGuard();
+    this.limiter = opts.limiter ?? new WireLimiter({ now: () => this.now() });
     this.senderId = randomSenderId();
     this.audioSeq = 0;
     this.helloSeq = 0;
@@ -214,19 +216,39 @@ class ChannelNode extends EventEmitter {
    * clock, then the replay guard (seen or late), and only then the roster or talking.
    */
   receive(buf, rinfo) {
+    // Nothing below may throw into the dgram callback: that is the top of a libuv tick, so an
+    // uncaught exception there is the default-exit kind, and this plugin runs inside the boat's
+    // Signal K server. The app keeps the same rule for its transport threads.
+    try {
+      this.receiveOrThrow(buf, rinfo);
+    } catch (e) {
+      this.stats.rejected++;
+      this.emit("fault", e);
+    }
+  }
+
+  receiveOrThrow(buf, rinfo) {
     const h = P.parseHeader(buf);
     if (!h) { this.stats.rejected++; return; }
+    // The global budget first, before the packet is opened: the sender id it claims is chosen by
+    // whoever sent it, so nothing is charged to a sender yet - and our own id is in the clear in
+    // every packet we send, so dropping our echo before this would be a way in that costs nothing.
+    if (!this.limiter.allowGlobal()) { this.stats.rejected++; return; }
     if (h.senderId === this.senderId) return;
     // Authenticate first, then dedupe, as the app does: a forged header must not be able to
     // occupy a (sender, seq) slot and get the authentic packet dropped as its duplicate, nor
     // touch the stale counter.
     const plain = this.crypto.open(P.aadOf(buf), buf.subarray(P.HEADER));
-    if (!plain) { this.stats.rejected++; return; }
+    if (!plain) { this.stats.rejected++; this.limiter.allowJunk(); return; }
     const now = this.now();
     if (!P.isFresh(h.time, Math.floor(now / 1000))) { this.stale(now); return; }
     const verdict = this.guard.admit(h.senderId, h.seq, h.codec === P.Codec.HELLO ? "hello" : "audio");
     if (verdict === "seen") return;                  // the broadcast twin, or a relay echo
     if (verdict === "late") { this.stats.late++; return; }
+    // Charged after the AEAD and after the duplicate look, so only authenticated first copies
+    // cost a sender anything: the two WLAN copies of every frame would otherwise spend a
+    // talker's budget in seconds, which is what the app measured in the field.
+    if (!this.limiter.allowSender(h.senderId)) { this.stats.rejected++; return; }
     let n = this.nodes.get(h.senderId);
     const fresh = !n;
     if (fresh) {
