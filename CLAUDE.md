@@ -341,6 +341,10 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   made in both. The diagrams and the screen mock-ups are generated:
   `python docs/diagrams/make_diagrams.py` writes the `.drawio` files, draw.io desktop exports the
   PNGs (command at the top of the script). No real screenshots in the repo: they carry device names.
+  The screen mock-ups stand in for those screenshots, so they are drawn from the layouts, not from
+  memory: every position, colour, letter spacing, icon and word in `make_diagrams.py` comes from
+  `app/src/main/res`, the phone is a real 360 x 800 dp screen and a longer screen is cut off at the
+  bottom edge the way a screenshot is. Change a screen and change its mock-up in the same commit.
 
 ## Pull requests
 - Work on a branch and open the PR with `gh pr create`; never push to `main` directly, because a
