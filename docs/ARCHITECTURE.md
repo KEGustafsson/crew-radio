@@ -274,32 +274,11 @@ crew can add their own wording; the catalogue it points at is `Quantity.ALL`.
 
 ## Building and releasing
 
-`./gradlew assembleDebug testDebugUnitTest` with an Android SDK (platform 37; Gradle 9.7 via the
-wrapper, AGP 9.4 with its built-in Kotlin, Kotlin 2.4 from the build classpath). The build needs a
-JDK 17 on the machine and will not download one — `winget install EclipseAdoptium.Temurin.17.JDK`,
-`brew install --cask temurin@17` or `sudo apt install openjdk-17-jdk` puts one where Gradle's
-auto-detection finds it, and `JAVA_HOME` may stay on a newer JDK, which is what runs Gradle itself;
-`-Porg.gradle.java.installations.paths=<dir>` names one installed somewhere unusual. The Gradle
-distribution and every dependency are checked against the checksums in
-`gradle/wrapper/gradle-wrapper.properties` and
-`gradle/verification-metadata.xml`, so a dependency change means regenerating that file (the recipe
-is in `.github/dependabot.yml`). Release builds are shrunk by R8 with class and method names kept,
-so a crash trace from a phone reads without a mapping file.
-
-Unit tests are pure Kotlin (JUnit 4) and cover the packet format and its replay window, the hello
-payload, the ingress pipeline, settings rules, the rate limiter, backoff, the send queue, the LAN
-addressing and peer table, the Aware discovery tag, the Bluetooth tie-break, the mixer, decimator,
-concealment, tones, the sequence tracker and the voice gate. Anything with a transport or a codec
-needs real phones.
-
-Versions come from git in `app/build.gradle.kts`: `versionCode` is the commit count,
-`versionName` is `1.<count>`, and the short commit hash is shown on the Status screen.
-`.github/workflows/build.yml` runs the tests and a debug-signed release build on every push and
-pull request (read-only token, no secrets) plus Android Lint as a gate and, on a push to `main`, a
-second job signs with the crew's key from the repository secrets and publishes a GitHub Release
-with the APK, its checksum and its SBOM, all three carrying a signed provenance attestation. The
-signing secrets reach only the two steps that need them and the decoded keystore is deleted before
-anything else runs.
+The procedures live in their own document: [BUILDING.md](BUILDING.md) — the debug loop, the tests
+and the lint gate, the release keystore and its environment variables, the workflow secrets, and
+what a push to `main` publishes. What matters here is that versions are not written by hand:
+`versionCode` is the commit count, `versionName` is `1.<count>` and the short commit hash is on
+the Status screen, so every merge is a new version and a phone can always say which build it has.
 
 ## Conventions
 
