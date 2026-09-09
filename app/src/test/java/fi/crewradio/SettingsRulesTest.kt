@@ -108,4 +108,19 @@ class SettingsRulesTest {
         assertFalse(SettingsRules.validHops("17"))
         assertFalse(SettingsRules.validHops(""))
     }
+
+    /**
+     * The plugin trims its configured key and the app does not, so a key with a stray space
+     * worked between phones and derived a different packet key on the boat server - which shows
+     * up as the plugin simply never appearing on the roster, with nothing to say why. A key being
+     * typed in is refused; one already stored is left alone, so nobody working today is broken.
+     */
+    @Test
+    fun aKeyBeingTypedInMayNotBeginOrEndWithASpace() {
+        assertFalse(SettingsRules.validChannelKey(" north-star-2026"))
+        assertFalse(SettingsRules.validChannelKey("north-star-2026 "))
+        assertFalse(SettingsRules.validChannelKey(" north-star-2026 "))
+        assertTrue(SettingsRules.validChannelKey("north star 2026"))     // inside is fine: it is printable ASCII
+        assertTrue(SettingsRules.validPassphrase(" carried over "))      // already stored: still accepted
+    }
 }

@@ -6,6 +6,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
@@ -29,6 +30,7 @@ class AudioCapture(
     @Volatile private var running = false
     private var record: AudioRecord? = null
     private var worker: Thread? = null
+    private val released = AtomicBoolean(true)     // nothing open yet
     private var aec: AcousticEchoCanceler? = null
     private var ns: NoiseSuppressor? = null
 
@@ -53,13 +55,30 @@ class AudioCapture(
             throw IllegalStateException("AudioRecord init failed")
         }
         record = rec
+        released.set(false)
         // Hardware/platform echo cancellation is what makes full duplex on speakerphone usable.
         if (AcousticEchoCanceler.isAvailable()) aec = AcousticEchoCanceler.create(rec.audioSessionId)?.apply { enabled = true }
         if (NoiseSuppressor.isAvailable()) ns = NoiseSuppressor.create(rec.audioSessionId)?.apply { enabled = true }
         running = true
         rec.startRecording()
+        // The one thread in the app that used to run bare. It carries the whole send path -
+        // encoder, crypto, every transport's socket - so a vendor MediaCodec, a SecurityException
+        // after a permission is revoked, or an audio server that restarts under it would take the
+        // process down, which is the same reason transportThread exists for the transports.
         worker = thread(name = "ptt-capture") {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+            try {
+                capture(rec)
+            } catch (t: Throwable) {
+                running = false
+                onError("mic failed (${t.message})")
+            } finally {
+                release(rec)                       // whoever gets here first; stop() may already have
+            }
+        }
+    }
+
+    private fun capture(rec: AudioRecord) {
             while (running) {
                 val buf = ByteArray(AudioConfig.FRAME_BYTES)     // handed on: onFrame keeps it
                 var got = 0
@@ -79,19 +98,38 @@ class AudioCapture(
                     onError("mic read failed ($n)")
                 }
             }
-        }
+    }
+
+    /**
+     * Releases the record exactly once, whichever of [stop] and the worker's `finally` gets here
+     * first. Both must be able to: a worker still inside a blocking read cannot be released out
+     * from under - that is a use-after-release on an urgent-audio thread - and a start that never
+     * produced a worker has nobody else to do it.
+     */
+    private fun release(rec: AudioRecord) {
+        if (!released.compareAndSet(false, true)) return
+        try { rec.stop() } catch (_: Exception) {}
+        rec.release()
     }
 
     fun stop() {
         running = false
-        worker?.join(500)
+        val w = worker
         worker = null
+        w?.join(JOIN_MS)
         aec?.release(); aec = null
         ns?.release(); ns = null
-        record?.let {
-            try { it.stop() } catch (_: Exception) {}
-            it.release()
-        }
+        val rec = record
         record = null
+        // Only when no worker can still be inside rec.read(). A read that never returns (a wedged
+        // audio HAL - exactly the fault this class exists to survive) leaves the record to the
+        // worker's finally instead: a leaked record is recoverable, a released one under a live
+        // reader is a crash.
+        if (rec != null && (w == null || !w.isAlive)) release(rec)
+    }
+
+    private companion object {
+        /** Long enough for a blocking 20 ms read to return; beyond that the worker owns the release. */
+        const val JOIN_MS = 500L
     }
 }

@@ -190,7 +190,29 @@ class AskController(
         val token = prefs.askToken
         val unitPrefs = prefs.askUnits
         val wanted = mode
+        // execute(), not submit(): anything escaping this body reaches the thread's default
+        // uncaught handler and ends the app. Deeply nested JSON from the boat's server raises
+        // StackOverflowError, which is an Error and slips past the JSONException catch inside the
+        // client - and the server is reached over cleartext HTTP, so anyone on the boat's network
+        // can post one.
         work.execute {
+            try {
+                askOnce(gen, base, token, unitPrefs, wanted, match)
+            } catch (t: Throwable) {
+                deliver(gen, State.Failed(match.transcript, explain(SignalKClient.Failure.UNREACHABLE)))
+            }
+        }
+    }
+
+    private fun askOnce(
+        gen: Int,
+        base: String,
+        token: String?,
+        unitPrefs: AskUnits.Prefs,
+        wanted: Mode,
+        match: AskIntents.Match,
+    ) {
+        run {
             val client = SignalKClient(base, token)
             when (val read = client.read(Quantity.subtreesOf(match.quantities))) {
                 is SignalKClient.Result.Failed -> deliver(gen, State.Failed(match.transcript, explain(read.failure)))

@@ -127,6 +127,16 @@ class PttEngine(
     @Volatile var displayName: String = defaultName
     val isTalking: Boolean get() = talking
     val isConnected: Boolean get() = transports.isNotEmpty()
+
+    /**
+     * True while at least one transport can actually carry a packet - a socket open, a listener
+     * up, a link alive - as opposed to [isConnected], which only says a transport object exists.
+     * On channel with this false, the crew is talking to nobody and the roster says so far too
+     * quietly: the head count drifts to zero and nothing else changes.
+     */
+    val healthy: Boolean get() = transports.any { it.ready }
+
+    @Volatile private var linksUp = true              // so the first tick with nothing up reports it
     /** The roster as last published; the UI reads this when it (re)binds. */
     val roster: List<Peer> get() = lastRoster
     /** A fresh roster with current ages, for a screen that polls. */
@@ -842,6 +852,11 @@ class PttEngine(
     /** Heartbeat thread: announce ourselves, drop the silent, clear stale talking marks, publish if anything moved. */
     private fun tick() {
         sendHello()
+        val up = healthy
+        if (up != linksUp) {
+            linksUp = up
+            onStatus(if (up) "Links up" else "No link is up: nobody can hear this phone")
+        }
         val now = SystemClock.elapsedRealtime()
         var changed = false
         for ((id, n) in nodes) {
@@ -857,7 +872,10 @@ class PttEngine(
 
     private fun sendHello() {
         var flags = 0
-        for (t in transports) flags = flags or Hello.bitFor(t.name)
+        // Only what can actually carry a packet: a Bluetooth transport whose adapter is off is
+        // started but not ready, and claiming BT on the roster then sends the crew looking for a
+        // link that cannot exist. The flag has always been there; nothing read it.
+        for (t in transports) if (t.ready) flags = flags or Hello.bitFor(t.name)
         broadcast(Packet.Codec.HELLO, Hello(displayName, flags, maxHops, BuildConfig.VERSION_CODE).encode())
     }
 

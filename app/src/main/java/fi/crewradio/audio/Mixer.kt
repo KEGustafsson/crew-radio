@@ -3,6 +3,7 @@ package fi.crewradio.audio
 import fi.crewradio.transport.Backoff
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 import kotlin.math.roundToInt
@@ -47,6 +48,7 @@ class Mixer(
     private val cues = ArrayDeque<ByteArray>()              // tone frames, one per slot, on top of the streams
     @Volatile private var running = false
     private var worker: Thread? = null
+    private val closed = AtomicBoolean(true)          // no track open yet
 
     /** Slots filled by concealment since [start]; shown on the Status screen. */
     val concealedFrames = AtomicLong()
@@ -92,9 +94,19 @@ class Mixer(
     fun start() {
         if (running) return
         open()
+        closed.set(false)
         worker = thread(name = "ptt-mixer") {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
-            while (running) if (!tick(clock())) pace()
+            try {
+                while (running) if (!tick(clock())) pace()
+            } catch (t: Throwable) {
+                // A bare thread here took the whole app with it: the loop calls into a vendor
+                // AudioTrack and, through onStatus, back into the service and the UI.
+                running = false
+                onStatus?.invoke("Audio out failed (${t.message})")
+            } finally {
+                closePlayback()
+            }
         }
     }
 
@@ -281,16 +293,26 @@ class Mixer(
     /** Streams currently held, talking or not yet swept; for the tests. */
     internal fun streamCount(): Int = streams.size
 
+    /** Stops the track exactly once, whichever of [stop] and the worker's `finally` gets there first. */
+    private fun closePlayback() {
+        if (closed.compareAndSet(false, true)) playback.stop()
+    }
+
     fun stop() {
         running = false
-        worker?.join(500)
+        val w = worker
         worker = null
+        w?.join(JOIN_MS)
         streams.clear()
         synchronized(cues) { cues.clear() }
-        playback.stop()
+        // Not while the worker may still be inside playback.write(); its finally closes instead.
+        if (w == null || !w.isAlive) closePlayback()
     }
 
     private companion object {
+        /** Long enough for a blocking write to drain; beyond that the worker owns the close. */
+        const val JOIN_MS = 500L
+
         /** Queue marker for a slot whose packet never came. */
         val HOLE = ByteArray(0)
 

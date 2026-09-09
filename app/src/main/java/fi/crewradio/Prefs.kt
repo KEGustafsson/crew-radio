@@ -55,7 +55,11 @@ object SettingsRules {
      * least [NEW_KEY_MIN] characters, because the packet key is stretched from it and nothing else.
      */
     fun validChannelKey(s: String): Boolean =
-        s.length in NEW_KEY_MIN..KEY_MAX && s.all { it.code in 0x20..0x7E }
+        s.length in NEW_KEY_MIN..KEY_MAX && s.all { it.code in 0x20..0x7E } &&
+            s.first() != ' ' && s.last() != ' '      // the plugin trims its key and the app does not:
+                                                      // a stray space works phone to phone and derives a
+                                                      // different key on the boat server, which shows up
+                                                      // as the plugin simply never appearing on the roster
 
     /** How good the stored key is: nothing set, an old short one, or one this build would accept. */
     enum class KeyState { MISSING, SHORT, OK }
@@ -107,7 +111,7 @@ class Prefs(context: Context) {
     fun isManaged(key: String): Boolean = when (key) {
         KEY_CREW_NAME -> managedString(key)?.let { SettingsRules.validCrewName(it) }
         KEY_NAME -> managedString(key)?.let { SettingsRules.validName(it) }
-        KEY_CHANNEL_KEY -> managedString(key)?.let { SettingsRules.validPassphrase(it) }
+        KEY_CHANNEL_KEY -> managedString(key)?.let { SettingsRules.validChannelKey(it) }
         KEY_GROUP -> managedString(key)?.let { SettingsRules.validGroup(it) }
         KEY_PORT -> managedInt(key)?.let { SettingsRules.validPort(it.toString()) }
         KEY_HOPS -> managedInt(key)?.let { SettingsRules.validHops(it.toString()) }
@@ -153,7 +157,10 @@ class Prefs(context: Context) {
      */
     val channelKey: String
         get() {
-            managedString(KEY_CHANNEL_KEY)?.takeIf { SettingsRules.validPassphrase(it) }?.let { return it }
+            // A key an administrator provisions is a new key, held to the same rule as one typed
+            // into Settings - not the looser rule for one already stored, which exists only so a
+            // key carried over from an older build keeps working.
+            managedString(KEY_CHANNEL_KEY)?.takeIf { SettingsRules.validChannelKey(it) }?.let { return it }
             sp.getString(KEY_CHANNEL_KEY, null)?.takeIf { SettingsRules.validPassphrase(it) }?.let { return it }
             val legacy = sp.getString(KEY_LEGACY_PASSPHRASE, null)?.takeIf { SettingsRules.validPassphrase(it) && it != "crew-radio" }
             val key = legacy ?: SettingsRules.generateChannelKey()
