@@ -23,21 +23,17 @@ not a document generated from an audit.
 The findings come from a code review of the tree at `b4c241a` (192 commits). Where a finding is
 marked *verified at source* it was re-checked against the code a second time, independently.
 
-## Status at a glance
+## Where things stand
 
-| | |
-| --- | --- |
-| Classification | Not Annex III, not Annex IV → **Module A, internal control**. No notified body. |
-| Products | Two, placed on the market separately: the Android app and `signalk-crewradio`. |
-| Hard blockers | 4 — no support period, no update mechanism, no manufacturer identity or formal artefacts, no Art. 14 process. |
-| Findings | 1 critical, 19 high, 28 medium, 22 low/info. |
-| Nearest deadline | **11 September 2026** — Article 14 reporting obligations apply. |
-| Full application | 11 December 2027. |
+[`state-of-play.md`](state-of-play.md) is the one-page answer: the verdict, the four blockers, the
+clause scorecard, and what happens next. **Start there.** The rest of this folder is the evidence
+behind it.
 
 ## The papers
 
 | File | What it settles |
 | --- | --- |
+| [`state-of-play.md`](state-of-play.md) | The whole picture on one page, dated. Summarises everything below; the papers remain the source of truth. |
 | [`scope-and-classification.md`](scope-and-classification.md) | Whether the CRA applies, to what, in which category, by which route — and the two classification arguments worth pre-answering in writing. |
 | [`gap-analysis.md`](gap-analysis.md) | What the code review found, ranked, with evidence. Includes the seven places where `docs/SECURITY.md` and the code disagree. |
 | [`annex-i-mapping.md`](annex-i-mapping.md) | Clause-by-clause verdicts: Annex I Part I (1) and (2)(a)–(m), Annex I Part II (1)–(8), Annex II items 1–9. |
@@ -55,6 +51,9 @@ what `annex-i-mapping.md` is for. Update these papers on:
 - any vulnerability report, whether or not it is confirmed;
 - any change to the release or signing pipeline;
 - otherwise, annually.
+
+Update [`state-of-play.md`](state-of-play.md) at the same time, and whenever a roadmap phase
+completes or a clause verdict moves — a summary that has drifted from the papers is worse than none.
 
 Technical documentation and the declaration must be retained for **10 years** after the product is
 placed on the market, or for the support period if longer. With a release on every merge to `main`,
