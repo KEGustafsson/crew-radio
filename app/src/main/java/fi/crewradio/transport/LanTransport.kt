@@ -68,6 +68,8 @@ class LanTransport(
     @Volatile private var broadcastAddr: InetAddress? = null
     @Volatile private var wifi: WifiLink? = null         // the Wi-Fi network the callback last described
     @Volatile private var heard = false
+    @Volatile private var lastAudioMs = 0L               // when audio last went out, for the burst floor
+    @Volatile private var groupCopiesLeft = 0
     @Volatile private var running = false
     private var lock: WifiManager.MulticastLock? = null
     private lateinit var onPacket: (ByteArray, Transport, Any?) -> Unit
@@ -246,11 +248,24 @@ class LanTransport(
      */
     override fun send(packet: ByteArray, except: Any?): Boolean {
         val s = socket ?: return false
-        val live = peers.live(System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        val live = peers.live(now)
         val hello = packet.size > 3 && packet[3].toInt() == Packet.Codec.HELLO.id
-        if (hello || live.isEmpty()) {
+        // The first frames of a talk burst keep the group and broadcast copies whatever the table
+        // holds. The AEAD authenticates the packet, not the address it arrived from, so a listener
+        // who replays a captured frame from its own address and wins the race against the genuine
+        // copy can still enter the table - and once the table is full of it, unicast-only audio
+        // reaches nobody. This is the floor under that: the crew hears the start of every burst,
+        // so the fault is audible rather than silent. Ten extra packets per burst, not per frame.
+        if (!hello) {
+            if (now - lastAudioMs > BURST_GAP_MS) groupCopiesLeft = BURST_GROUP_FRAMES
+            lastAudioMs = now
+        }
+        val alsoGroup = hello || live.isEmpty() || groupCopiesLeft > 0
+        if (alsoGroup) {
             sendTo(s, packet, groupAddr)
             broadcastAddr?.let { sendTo(s, packet, it) }
+            if (!hello && groupCopiesLeft > 0) groupCopiesLeft--
         }
         for (a in live) if (a != except) sendTo(s, packet, a)
         return true
@@ -324,5 +339,9 @@ class LanTransport(
         const val PEER_TTL_MS = 5_000L
         /** Unicast fan-out is bounded: a flood of source addresses evicts, it does not grow. */
         const val MAX_PEERS = 16
+        /** A gap this long before an audio frame starts a new talk burst. */
+        const val BURST_GAP_MS = 400L
+        /** Frames at the start of a burst that keep the group and broadcast copies: 100 ms at 50 fps. */
+        const val BURST_GROUP_FRAMES = 5
     }
 }

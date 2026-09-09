@@ -27,17 +27,27 @@ class AudioCapture(
     /** `AudioCapture { frame -> ... }`: the trailing lambda is the frame sink, the failure goes unreported. */
     constructor(onFrame: (ByteArray) -> Unit) : this(onFrame, {})
 
+    /**
+     * One capture, and the token that says who releases it.
+     *
+     * Per session, not per instance. A [stop] whose join times out leaves the old worker alive
+     * while [start] opens a new record, and an instance-wide flag would then let the old worker's
+     * `finally` consume the *new* session's release — leaving the new record open for ever.
+     */
+    private class Session(val record: AudioRecord) {
+        val released = AtomicBoolean(false)
+    }
+
     @Volatile private var running = false
-    private var record: AudioRecord? = null
+    private var session: Session? = null
     private var worker: Thread? = null
-    private val released = AtomicBoolean(true)     // nothing open yet
     private var aec: AcousticEchoCanceler? = null
     private var ns: NoiseSuppressor? = null
 
     @SuppressLint("MissingPermission")
     fun start() {
         if (running) return
-        if (record != null) stop()            // a capture that died on a read: release it before opening again
+        if (session != null) stop()           // a capture that died on a read: release it before opening again
         val minBuf = AudioRecord.getMinBufferSize(
             AudioConfig.SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
@@ -54,8 +64,8 @@ class AudioCapture(
             rec.release()
             throw IllegalStateException("AudioRecord init failed")
         }
-        record = rec
-        released.set(false)
+        val mine = Session(rec)
+        session = mine
         // Hardware/platform echo cancellation is what makes full duplex on speakerphone usable.
         if (AcousticEchoCanceler.isAvailable()) aec = AcousticEchoCanceler.create(rec.audioSessionId)?.apply { enabled = true }
         if (NoiseSuppressor.isAvailable()) ns = NoiseSuppressor.create(rec.audioSessionId)?.apply { enabled = true }
@@ -71,10 +81,23 @@ class AudioCapture(
                 capture(rec)
             } catch (t: Throwable) {
                 running = false
-                onError("mic failed (${t.message})")
+                report { onError("mic failed (${t.message})") }
             } finally {
-                release(rec)                       // whoever gets here first; stop() may already have
+                release(mine)                      // this session's record, whoever gets here first
             }
+        }
+    }
+
+    /**
+     * A report that cannot take the thread down with it. [onError] reaches `PttService`'s status
+     * listener and from there the UI, none of which promises not to throw — and a throw here would
+     * escape the worker after the `catch` that exists to stop exactly that, or skip the recovery
+     * the engine schedules. There is nowhere to report a failure to report, so it is swallowed.
+     */
+    private inline fun report(block: () -> Unit) {
+        try {
+            block()
+        } catch (_: Throwable) {
         }
     }
 
@@ -95,7 +118,7 @@ class AudioCapture(
                     // gone. An urgent-audio thread must not spin on it, so this is the end of the
                     // worker; stop() (ours or the engine's) releases the record.
                     running = false
-                    onError("mic read failed ($n)")
+                    report { onError("mic read failed ($n)") }
                 }
             }
     }
@@ -106,10 +129,10 @@ class AudioCapture(
      * from under - that is a use-after-release on an urgent-audio thread - and a start that never
      * produced a worker has nobody else to do it.
      */
-    private fun release(rec: AudioRecord) {
-        if (!released.compareAndSet(false, true)) return
-        try { rec.stop() } catch (_: Exception) {}
-        rec.release()
+    private fun release(s: Session) {
+        if (!s.released.compareAndSet(false, true)) return
+        try { s.record.stop() } catch (_: Exception) {}
+        s.record.release()
     }
 
     fun stop() {
@@ -119,13 +142,14 @@ class AudioCapture(
         w?.join(JOIN_MS)
         aec?.release(); aec = null
         ns?.release(); ns = null
-        val rec = record
-        record = null
+        val mine = session
+        session = null
         // Only when no worker can still be inside rec.read(). A read that never returns (a wedged
-        // audio HAL - exactly the fault this class exists to survive) leaves the record to the
-        // worker's finally instead: a leaked record is recoverable, a released one under a live
-        // reader is a crash.
-        if (rec != null && (w == null || !w.isAlive)) release(rec)
+        // audio HAL - exactly the fault this class exists to survive) leaves the record to that
+        // session's own finally instead: a leaked record is recoverable, a released one under a
+        // live reader is a crash. The token travels with the session, so a start() that follows a
+        // timed-out stop() cannot have its release consumed by the worker still winding down.
+        if (mine != null && (w == null || !w.isAlive)) release(mine)
     }
 
     private companion object {
