@@ -4,8 +4,12 @@ Step by step, from an empty machine to a published Release. The [README](../READ
 crew how to install a build; [ARCHITECTURE.md](ARCHITECTURE.md) tells a developer how the code
 works; this page is only about the procedures.
 
-Commands are written `./gradlew` (Git Bash, macOS, Linux). In PowerShell or `cmd` the same command
-is `.\gradlew.bat` — everything else is identical.
+Commands are written for a POSIX shell: Git Bash on Windows (it comes with Git for Windows),
+or any shell on macOS and Linux. Most of them are the same everywhere — Gradle, `adb`, `git`,
+`gh`, `keytool` and `npm` differ only in the wrapper, `.\gradlew.bat` in PowerShell and `cmd`
+for `./gradlew`. The few steps that pipe through `grep`, `sed`, `tr`, `base64` or `sha256sum`
+do need Git Bash or WSL; where a native form is worth having it is given beside the other,
+for the signing variables (5.2), the keystore's base64 (6) and a download's checksum (8).
 
 ## 1. What the machine needs, once
 
@@ -14,7 +18,7 @@ is `.\gradlew.bat` — everything else is identical.
    Gradle stops with *Cannot find a Java installation on your machine matching:
    {languageVersion=17…}*.
 
-   ```
+   ```sh
    winget install EclipseAdoptium.Temurin.17.JDK     # Windows
    brew install --cask temurin@17                    # macOS
    sudo apt install openjdk-17-jdk                   # Linux (Debian, Ubuntu)
@@ -36,7 +40,7 @@ is `.\gradlew.bat` — everything else is identical.
 
 Check it:
 
-```
+```sh
 ./gradlew --version          # Gradle 9.7, and the JVM it found
 ./gradlew printVersion       # 1.<commit count> — also written to app/build/version.txt
 ```
@@ -49,19 +53,19 @@ Nothing else is fetched blind: the Gradle distribution is checked against the ch
 
 1. Build:
 
-   ```
+   ```sh
    ./gradlew assembleDebug
    ```
 
    The APK lands in `app/build/outputs/apk/debug/app-debug.apk`.
 2. Plug in a phone with USB debugging switched on and check it is seen:
 
-   ```
+   ```sh
    adb devices
    ```
 3. Install it:
 
-   ```
+   ```sh
    adb install -r app/build/outputs/apk/debug/app-debug.apk
    ```
 
@@ -78,7 +82,7 @@ Plugin 9.4 and press Run.
 
 ## 3. Tests and lint, before pushing
 
-```
+```sh
 ./gradlew testDebugUnitTest        # report: app/build/reports/tests/testDebugUnitTest/index.html
 ./gradlew lintRelease              # report: app/build/reports/lint-results-release.html
 ```
@@ -103,13 +107,13 @@ with the debug key because the release key never leaves `main`.
    `app/release.keystore` does not exist.
 2. Build:
 
-   ```
+   ```sh
    ./gradlew assembleRelease
    ```
 3. Read the one line the build prints about signing. It is there so nobody reads *BUILD
    SUCCESSFUL* as *release-signed*:
 
-   ```
+   ```text
    Release signing: debug key (no release keystore; see README, Releases)
    ```
 4. The APK is `app/build/outputs/apk/release/app-release.apk`. Install it the way section 2
@@ -128,7 +132,7 @@ if there is none, and **back the file up** somewhere that is not this machine.
    git-ignored, but the safe habit is that the key is never under the repository at all.
 2. Create the key with `keytool`, which ships with the JDK:
 
-   ```
+   ```sh
    keytool -genkeypair -v \
      -keystore ~/.crewradio/crewradio.keystore \
      -storetype PKCS12 \
@@ -170,7 +174,7 @@ $env:CREWRADIO_KEYSTORE = "$env:USERPROFILE\.crewradio\crewradio.keystore"
 $env:CREWRADIO_KEYSTORE_PASSWORD = (Get-Credential -UserName crewradio -Message "keystore password").GetNetworkCredential().Password
 ```
 
-```bash
+```sh
 # Git Bash, macOS, Linux — `read -s` keeps the password out of the shell history
 export CREWRADIO_KEYSTORE="$HOME/.crewradio/crewradio.keystore"
 read -s -p "keystore password: " CREWRADIO_KEYSTORE_PASSWORD; echo
@@ -182,12 +186,12 @@ export CREWRADIO_KEYSTORE_PASSWORD
 1. Set the variables (5.2) in the shell.
 2. Build:
 
-   ```
+   ```sh
    ./gradlew assembleRelease
    ```
 3. Check the signing line names the crew's key, not the debug one:
 
-   ```
+   ```text
    Release signing: crew release key /home/you/.crewradio/crewradio.keystore
    ```
 4. The APK is again `app/build/outputs/apk/release/app-release.apk`. `./gradlew printVersion`
@@ -203,14 +207,14 @@ compares against the repository variable `CREWRADIO_CERT_SHA256`: lowercase hex,
 
 From a signed APK, with `apksigner` from the SDK's `build-tools` (`apksigner.bat` on Windows):
 
-```
+```sh
 apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
 ```
 
 or straight from the keystore, converting keytool's colon-separated uppercase into the form the
 workflow wants:
 
-```bash
+```sh
 keytool -list -v -keystore ~/.crewradio/crewradio.keystore -alias crewradio \
   | grep -i "SHA256:" | head -1 | sed 's/.*SHA256: *//' | tr -d ':' | tr 'A-F' 'a-f'
 ```
@@ -222,7 +226,7 @@ debug-signed APK.
 
 1. Base64 the keystore into a file:
 
-   ```bash
+   ```sh
    base64 -w0 ~/.crewradio/crewradio.keystore > keystore.b64      # Linux, Git Bash
    base64 -i ~/.crewradio/crewradio.keystore -o keystore.b64      # macOS
    ```
@@ -235,7 +239,7 @@ debug-signed APK.
    Secrets and variables › Actions*. The three `gh secret set` calls without a file prompt for the
    value:
 
-   ```
+   ```sh
    gh secret set CREWRADIO_KEYSTORE_BASE64 < keystore.b64
    gh secret set CREWRADIO_KEYSTORE_PASSWORD
    gh secret set CREWRADIO_KEY_ALIAS
@@ -265,7 +269,7 @@ Nobody bumps a number and nobody uploads an APK by hand. `versionCode` is the co
      `v<version>` from the files `release` handed it. No checkout, no Gradle, no third-party code.
 3. Watch it land, if you want to:
 
-   ```
+   ```sh
    gh run watch
    gh release view "v$(./gradlew -q printVersion | tail -1)"
    ```
@@ -283,10 +287,18 @@ fails on the existing tag.
 
 Anyone can check what the Releases page offers, without trusting it:
 
-```
+```sh
 sha256sum -c CrewRadio-<version>.apk.sha256
 gh attestation verify CrewRadio-<version>.apk --repo KEGustafsson/crew-radio
 apksigner verify --print-certs CrewRadio-<version>.apk
+```
+
+`sha256sum` is the one line with no PowerShell equivalent; there the checksum is compared by eye
+against the `.sha256` file, which holds it followed by the file name:
+
+```powershell
+Get-FileHash CrewRadio-<version>.apk -Algorithm SHA256 | Format-List
+Get-Content CrewRadio-<version>.apk.sha256
 ```
 
 The attestation proves the file came out of this repository's workflow, from the commit named in
@@ -296,7 +308,7 @@ the release notes.
 
 In `sk-plugin/` (Node 24+, CommonJS, one dependency):
 
-```
+```sh
 cd sk-plugin
 npm install                # only for the runtime dependency; there is no lockfile here
 npm test                   # node --test
@@ -310,7 +322,7 @@ the checkout and then looks for it at the repository root, which fails every job
 
 Install a packed plugin on a boat's server from the file:
 
-```
+```sh
 npm install /path/to/signalk-crewradio-<version>.tgz
 ```
 
@@ -323,7 +335,7 @@ Every artifact the build downloads is checked against `gradle/verification-metad
 neither Dependabot nor a hand edit of a version adds the new checksums. On the branch that changed
 the version, with the SDK and a JDK 17 on the machine:
 
-```
+```sh
 ./gradlew --write-verification-metadata sha256 help testDebugUnitTest assembleRelease assembleDebug lintRelease sbom
 ```
 

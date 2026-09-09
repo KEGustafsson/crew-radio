@@ -336,7 +336,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   the release keystore and the `CREWRADIO_*` environment variables, the workflow secrets and the
   certificate fingerprint variable, what a push to `main` publishes, the plugin, the verification
   metadata recipe, and what the failures mean). Keep it current when the build or the workflow
-  changes; ARCHITECTURE and README only point at it. The diagrams and the screen mock-ups are generated:
+  changes. ARCHITECTURE only points at it; the README keeps its own short build-it-yourself
+  summary for the crew, so a change to the signing variables or the prerequisites has to be
+  made in both. The diagrams and the screen mock-ups are generated:
   `python docs/diagrams/make_diagrams.py` writes the `.drawio` files, draw.io desktop exports the
   PNGs (command at the top of the script). No real screenshots in the repo: they carry device names.
 
