@@ -88,6 +88,10 @@ roster marks a peer whose build differs from this phone's.
 
 ## CRA Annex I mapping (informative)
 
+Working papers for the commercial case — what would apply, where the product actually stands
+against each requirement, and the order to close the gaps in — are in
+[docs/cra/](cra/README.md).
+
 The app is open source and not placed on the market commercially, so the Cyber Resilience Act's
 manufacturer obligations do not apply to it; its essential requirements are still a good
 checklist, and this is where the app stands against each:
