@@ -758,13 +758,23 @@ class PttEngine(
         if (transports.isEmpty()) return                  // a transport still winding down after disconnect
         val c = counters                                  // this session's set, whatever happens meanwhile
         val h = Packet.parse(p) ?: run { c.rejected.incrementAndGet(); return }
-        if (h.senderId == senderId) return
         val cr = crypto ?: return
         val now = SystemClock.elapsedRealtime()
         val plain: ByteArray
         val relayTtl: Int
-        when (val r = ingress.admit(h, now, System.currentTimeMillis() / 1000, maxHops, { cr.open(Packet.aadOf(p), p, Packet.HEADER, p.size - Packet.HEADER) })) {
+        when (val r = ingress.admit(
+            h, now, System.currentTimeMillis() / 1000, maxHops,
+            { cr.open(Packet.aadOf(p), p, Packet.HEADER, p.size - Packet.HEADER) },
+            selfId = senderId
+        )) {
             is Ingress.Result.Accept -> { plain = r.plain; relayTtl = r.relayTtl }
+            // Heard already, but this copy reaches further than the one we forwarded: relay it and
+            // nothing else. Whoever sent the shorter copy first does not get to cut the mesh in two.
+            is Ingress.Result.RelayOnly -> {
+                c.duplicates.incrementAndGet()
+                relayPacket(p, r.relayTtl, from, link, c)
+                return
+            }
             Ingress.Result.Duplicate -> { c.duplicates.incrementAndGet(); return }
             Ingress.Result.Stale -> {
                 c.stale.incrementAndGet()
@@ -779,16 +789,9 @@ class PttEngine(
         }
         c.rxPackets.incrementAndGet()
         c.rxBytes.addAndGet(p.size.toLong())
+        from.confirmPeer(link)                            // the key opened it, so the address is a crew member's
 
-        if (relay && relayTtl > 0) {
-            Packet.setTtl(p, relayTtl)
-            var forwarded = false
-            for (t in transports) {
-                if (t === from) { if (t.relayWithin && t.send(p, except = link)) forwarded = true }
-                else if (t.send(p)) forwarded = true
-            }
-            if (forwarded) c.relayed.incrementAndGet()
-        }
+        relayPacket(p, relayTtl, from, link, c)
 
         if (h.codec == Packet.Codec.HELLO) {
             c.hellos.incrementAndGet()
@@ -810,6 +813,22 @@ class PttEngine(
             Packet.Codec.OPUS -> decodeOpus(h.senderId, plain)
             Packet.Codec.HELLO -> Unit                        // handled above
         }
+    }
+
+    /**
+     * Forwards an authenticated packet with the ttl [Ingress] worked out, to every other transport
+     * and, where forwarding within one makes sense, to its other links. A ttl of 0 or a relay
+     * switched off means it stops here.
+     */
+    private fun relayPacket(p: ByteArray, relayTtl: Int, from: Transport, link: Any?, c: Counters) {
+        if (!relay || relayTtl <= 0) return
+        Packet.setTtl(p, relayTtl)
+        var forwarded = false
+        for (t in transports) {
+            if (t === from) { if (t.relayWithin && t.send(p, except = link)) forwarded = true }
+            else if (t.send(p)) forwarded = true
+        }
+        if (forwarded) c.relayed.incrementAndGet()
     }
 
     /** A status line for a condition that recurs on every packet: at most once per [REPORT_INTERVAL_MS], whichever thread sees it. */

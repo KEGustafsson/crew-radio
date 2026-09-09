@@ -26,7 +26,9 @@ package fi.crewradio
  * hello) and, like the sequence high-water marks ([SeqTracker]), live for the process, not the
  * session: leaving and rejoining the channel must not reopen the window.
  *
- * An accepted packet also carries the ttl to relay it with ([relayTtl]).
+ * An accepted packet also carries the ttl to relay it with ([relayTtl]); a duplicate that would
+ * travel further than the copy already forwarded is [Result.RelayOnly], because the ttl is the one
+ * header byte a relay rewrites and therefore the one an attacker can lower.
  */
 class Ingress(
     private val limiter: RateLimiter = RateLimiter(),
@@ -39,6 +41,12 @@ class Ingress(
         class Accept(val plain: ByteArray, val relayTtl: Int) : Result()
         /** Authentic, but already heard on another path. */
         object Duplicate : Result()
+        /**
+         * Authentic and already heard, but this copy carries a ttl that reaches further than the
+         * best one forwarded so far, so it is relayed again — and only relayed: the payload was
+         * played the first time. See [admit] for why a duplicate may still be worth forwarding.
+         */
+        class RelayOnly(val relayTtl: Int) : Result()
         /** Authentic, but its timestamp is outside the replay window. */
         object Stale : Result()
         /** Dropped for the given reason; counts as rejected. */
@@ -56,8 +64,9 @@ class Ingress(
         SENDER_BUDGET
     }
 
-    private class SeenCache(private val capacity: Int) : LinkedHashMap<Long, Boolean>(16, 0.75f, false) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Boolean>?) = size > capacity
+    /** Key -> the highest ttl this packet has been forwarded with so far; see [admit]. */
+    private class SeenCache(private val capacity: Int) : LinkedHashMap<Long, Int>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Int>?) = size > capacity
         override fun clone(): Any = SeenCache(capacity).also { it.putAll(this) }   // HashMap is Cloneable; keep the bound
     }
     private val seen = SeenCache(audioCache)          // audio frames; their own sequence space
@@ -68,8 +77,20 @@ class Ingress(
      * [nowS] the wall clock in seconds for the timestamp, [maxHops] this phone's own hop limit;
      * [open] is called at most once, after the global budget and before anything else.
      */
-    fun admit(h: Packet.Header, nowMs: Long, nowS: Long, maxHops: Int, open: () -> ByteArray?): Result {
+    fun admit(
+        h: Packet.Header,
+        nowMs: Long,
+        nowS: Long,
+        maxHops: Int,
+        open: () -> ByteArray?,
+        selfId: Int? = null
+    ): Result {
         if (!limiter.allowGlobal(nowMs)) return Result.Rejected(Why.GLOBAL_BUDGET)
+        // Our own frame, relayed back by a peer. Dropped here rather than before the pipeline so
+        // that a flood claiming our id is still charged the global budget: the id is in the clear
+        // in every packet we send, so anyone can copy it, and a check that returns before the
+        // budget would be a way in that costs the attacker nothing.
+        if (selfId != null && h.senderId == selfId) return Result.Duplicate
         val plain = open() ?: return Result.Rejected(if (limiter.allowJunk(nowMs)) Why.UNREADABLE else Why.JUNK_FLOOD)
         if (!Packet.isFresh(h.time, nowS)) return Result.Stale
         // Look, charge and mark under one lock. Apart they are three steps, and the same frame
@@ -78,12 +99,27 @@ class Ingress(
         // budget in the field. A sender over its budget still writes nothing into the cache.
         val cache = cacheFor(h)
         val k = key(h)
+        val ttl = relayTtl(h, maxHops)
         synchronized(cache) {
-            if (cache.containsKey(k)) return Result.Duplicate
+            val forwarded = cache[k]
+            if (forwarded != null) {
+                // Heard already, so the payload is not played twice. But the ttl is the one header
+                // byte outside the AAD (relays rewrite it), so anyone within radio range can replay
+                // a captured frame with it lowered and, arriving first, take the packet's place in
+                // this cache with a ttl that relays nothing — the genuine copy behind it is then
+                // only a duplicate and the far side of the mesh goes silent. So a copy that would
+                // reach further than the best one forwarded is forwarded too. The ttl is capped at
+                // the sender's own signed budget ([relayTtl]) and each copy must beat the last, so
+                // this costs at most that budget in extra forwards per packet, and a lowered ttl
+                // buys nothing.
+                if (ttl <= forwarded) return Result.Duplicate
+                cache[k] = ttl
+                return Result.RelayOnly(ttl)
+            }
             if (!limiter.allowSender(h.senderId, nowMs)) return Result.Rejected(Why.SENDER_BUDGET)
-            cache.put(k, true)
+            cache.put(k, ttl)
         }
-        return Result.Accept(plain, relayTtl(h, maxHops))
+        return Result.Accept(plain, ttl)
     }
 
     /**

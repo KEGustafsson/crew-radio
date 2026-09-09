@@ -21,6 +21,13 @@ interface Transport {
      */
     val ready: Boolean get() = true
 
+    /**
+     * Called once a packet that arrived on [link] has passed the AEAD, so a transport that keeps
+     * a table of peers learns only from senders that hold the channel key. Anything learned from
+     * an unopened datagram is learned from whoever shouted loudest. Default: nothing to learn.
+     */
+    fun confirmPeer(link: Any?) {}
+
     fun start(onPacket: (packet: ByteArray, transport: Transport, link: Any?) -> Unit, onStatus: (String) -> Unit)
     /** Queues for every link but [except] and returns at once; true if the packet went to at least one. Send failures are transient and count as sent. */
     fun send(packet: ByteArray, except: Any? = null): Boolean

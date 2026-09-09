@@ -60,6 +60,7 @@ class LanTransport(
     private val waiter = Waiter()                        // cuts a backoff wait short, or skips the next one
     private val lifecycle = Any()                        // orders "publish a socket" against "stop and close it"
     private val peers = PeerTable<InetAddress, Unit>(PEER_TTL_MS, MAX_PEERS)
+    private val sources = SourceLimiter()                // one ingress budget per source address
 
     @Volatile private var socket: MulticastSocket? = null
     @Volatile private var openedOn: String? = null       // "wlan0/192.168.0.35" while a socket is up
@@ -148,6 +149,7 @@ class LanTransport(
             broadcastAddr = target.broadcast
             heard = false
             peers.clear()
+            sources.clear()
             val bc = target.broadcast?.hostAddress?.let { " + $it" } ?: " (multicast only)"
             onStatus("LAN: $group:$port$bc via ${target.nic.name}")
             receiveUntilClosed(s)
@@ -191,17 +193,33 @@ class LanTransport(
                 s.receive(p)
                 val from = p.address
                 if (from == ownAddr) continue                  // the broadcast copy of our own frame
-                peers.put(from, Unit, System.currentTimeMillis())
-                if (!heard) {
-                    heard = true
-                    backoff.reset()                            // a working network: the next reopen starts fast again
-                    onStatus("LAN: hearing ${from.hostAddress}")
-                }
+                // Per-source budget before anything else: the engine's global budget is charged
+                // before the AEAD and so cannot tell a crew frame from a stranger's, and one host
+                // asking faster than the crew would take all of it.
+                if (!sources.allow(from.hashCode(), System.currentTimeMillis())) continue
                 onPacket(buf.copyOf(p.length), this, from)
             } catch (e: IOException) {
                 if (running && !s.isClosed) onStatus("LAN: socket error (${e.message}), reopening")
                 return
             }
+        }
+    }
+
+    /**
+     * A packet from [link] opened with the channel key, so its address is a crew member's and is
+     * worth a unicast copy. Learning it from the datagram instead would mean any host on the WLAN
+     * could fill [peers] with sixteen addresses of its own and, since audio drops the group copies
+     * once a peer is known, take every frame this phone sends — while the roster and the status
+     * line still showed a healthy channel, because hellos keep the group copy and we still receive
+     * normally. It is a silent, one-way loss of audio, which is the worst thing this app can do.
+     */
+    override fun confirmPeer(link: Any?) {
+        val from = link as? InetAddress ?: return
+        peers.put(from, Unit, System.currentTimeMillis())
+        if (!heard) {
+            heard = true
+            backoff.reset()                                // a working network: the next reopen starts fast again
+            onStatus("LAN: hearing ${from.hostAddress}")
         }
     }
 
