@@ -219,7 +219,10 @@ def phone_edge(nid, x, y, spill=0):
     """Drawn last: a mask over whatever the screen was too short to show, then the screen edge."""
     n = []
     if spill > 0:
-        n.append((nid + "m", "", x - 4, y + FRAME_H, FRAME_W + 8, spill + 4,
+        # Exactly the frame's width, never a pixel more: the export crops to the drawing, so a
+        # wider mask would set the canvas width instead of the phone and the same phone would come
+        # out a different size in two pictures the README shows at one width.
+        n.append((nid + "m", "", x, y + FRAME_H, FRAME_W, spill + 4,
                   f"rounded=0;whiteSpace=wrap;html=1;fillColor={PAGE};strokeColor=none;"))
     n.append((nid + "e", "", x, y, FRAME_W, FRAME_H,
               f"rounded=1;absoluteArcSize=1;arcSize=32;whiteSpace=wrap;html=1;fillColor=none;"
@@ -228,12 +231,16 @@ def phone_edge(nid, x, y, spill=0):
 
 
 def system_bar(p, x, y, tint=TEXT):
-    """The status bar the app draws under. No carrier and no device name: it is a drawing."""
+    """The status bar the app draws under. No carrier and no device name: it is a drawing.
+
+    The `sys` in the ids is not decoration: the channel row on the main screen is `p + "sw"`, and
+    a wifi glyph called the same thing made two cells with one id in every drawing that has both.
+    """
     return [
         txt(p + "clk", "14:25", x + 18, y + 4, 60, 20, 12, tint, mono=False),
-        icon(p + "sw", "wifi", x + FRAME_W - 72, y + 6, 16, 16, tint),
-        icon(p + "ss", "signal", x + FRAME_W - 51, y + 8, 15, 12, tint),
-        icon(p + "sb", "battery", x + FRAME_W - 32, y + 8, 20, 10, tint),
+        icon(p + "sysw", "wifi", x + FRAME_W - 72, y + 6, 16, 16, tint),
+        icon(p + "syss", "signal", x + FRAME_W - 51, y + 8, 15, 12, tint),
+        icon(p + "sysb", "battery", x + FRAME_W - 32, y + 8, 20, 10, tint),
     ]
 
 
