@@ -103,9 +103,14 @@ class SignalKClient(
         }
     }
 
-    /** Polls the href a request came back with, until it is approved or denied. */
-    fun pollAccess(href: String): Result<Access> =
-        when (val response = getJson(base + href)) {
+    /**
+     * Polls the href a request came back with, until it is approved or denied. The href is the
+     * server's own text, so it is resolved against [base] rather than concatenated: see
+     * [SignalKUrl.resolve] for what concatenating it allowed.
+     */
+    fun pollAccess(href: String): Result<Access> {
+        val url = SignalKUrl.resolve(base, href) ?: return Result.Failed(Failure.BAD_RESPONSE, "the server pointed the request somewhere else")
+        return when (val response = getJson(url)) {
             is Result.Ok -> {
                 val data = response.value.optJSONObject("accessRequest")
                 Result.Ok(
@@ -119,6 +124,7 @@ class SignalKClient(
             }
             is Result.Failed -> response
         }
+    }
 
     private fun getJson(url: String): Result<JSONObject> = request(url, "GET", null)
 
