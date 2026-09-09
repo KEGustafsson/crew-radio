@@ -9,6 +9,7 @@ the links for the evidence.
 | **Assessed** | 9 September 2026, at commit `b4c241a` (192 commits) |
 | **Code fixed since** | The availability cluster, and eight further findings — see below |
 | **Premise** | Placed on the EU market as a commercial product |
+| **Actual status** | **Not being sold yet** — the obligations below are dormant, not overdue. See [`open-findings.md`](open-findings.md). |
 | **Route** | Module A, internal control — **no notified body, no fee, no audit** |
 | **Products** | Two: the Android app, and `signalk-crewradio` |
 | **Blockers** | 4 |
