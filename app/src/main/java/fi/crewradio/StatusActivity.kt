@@ -178,14 +178,15 @@ class StatusActivity : AppCompatActivity() {
 
         card(R.string.card_network).let { (aside, rows) ->
             netAside = aside
-            nicRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            rows.addView(nicRows)
+            // The Wi-Fi link first, where a glance finds it, then whatever interfaces the phone has.
             rows.addView(kv(R.string.kv_wifi_signal))
             wifiBars = ContextCompat.getDrawable(this, R.drawable.ic_signal)!!.mutate()
             values[R.string.kv_wifi_signal]?.apply {
                 setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, wifiBars, null)
                 compoundDrawablePadding = dp(10)
             }
+            nicRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            rows.addView(nicRows)
             for (label in listOf(R.string.kv_multicast, R.string.kv_aware, R.string.kv_channel_key, R.string.kv_bluetooth)) {
                 rows.addView(kv(label))
             }

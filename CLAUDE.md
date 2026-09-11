@@ -390,7 +390,7 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 - Every user-visible string lives in `res/values/strings.xml` or `arrays.xml` — nothing in Kotlin,
   layouts or `preferences.xml` — so the app can be translated in one pass. `uppercase(Locale.getDefault())`
   for text the crew typed, `Locale.ROOT` for fixed labels.
-- Screens are edge to edge (targetSdk 36 and later enforce it): `WindowCompat.setDecorFitsSystemWindows(window, false)`
+- Screens are edge to edge (targetSdk 35 and later enforce it): `WindowCompat.setDecorFitsSystemWindows(window, false)`
   plus `View.padForWindowInsets()` on the root; Status and Settings carry a `MaterialToolbar` in the
   layout, not a window action bar. No `statusBarColor`/`navigationBarColor`.
 - `lintRelease` is a CI gate with `abortOnError` and `warningsAsErrors`: no errors and no warnings,

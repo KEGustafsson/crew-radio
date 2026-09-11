@@ -14,7 +14,7 @@
         <item name="colorSurface">@color/surface</item>
         <!-- The ground the screens are drawn on; the layouts do not paint it again (Overdraw). -->
         <item name="android:windowBackground">@color/surface</item>
-        <!-- Edge to edge (targetSdk 36 and later enforce it): the bars are transparent and the activities
+        <!-- Edge to edge (targetSdk 35 and later enforce it): the bars are transparent and the activities
              pad themselves with the window insets. The charcoal ground shows through, so the bar
              icons have to be the light set. -->
         <item name="android:windowLightStatusBar">false</item>

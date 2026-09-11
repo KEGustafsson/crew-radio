@@ -467,8 +467,8 @@ def status_screen(p, x, y):
 
     # NETWORK: the interfaces the phone actually has, then the endpoints. Cut off by the screen
     # edge, which is what the rest of a scrolling screen looks like in a screenshot.
-    net = [("WLAN0", "192.168.0.35/24"), ("AWARE_DATA0", "fe80::1234:5678:9abc:def0"),
-           ("WI-FI SIGNAL", "-58 dBm", 3),
+    net = [("WI-FI SIGNAL", "-58 dBm", 3),
+           ("WLAN0", "192.168.0.35/24"), ("AWARE_DATA0", "fe80::1234:5678:9abc:def0"),
            ("MULTICAST", "239.255.42.1:47474"), ("AWARE", "crewradio"),
            ("CHANNEL KEY", "…pd2h (ends)"), ("BLUETOOTH", "Mate's phone")]
     cut = y + FRAME_H
