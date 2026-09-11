@@ -297,7 +297,8 @@ class StatusActivity : AppCompatActivity() {
     /**
      * The platform's own signal-bar scale for [rssi], on the roster's 0 to [LinkQuality.BARS]: the
      * phone's tuning on API 30+, and before that the thresholds that tuning defaults to
-     * ([LinkQuality.wifiBars]), the only form of it Android 10 offers being deprecated.
+     * ([LinkQuality.wifiBars]), the only form of it Android 10 offers being deprecated. The same
+     * thresholds are the fallback if a newer platform reports no positive maximum level.
      */
     private fun wifiLevel(rssi: Int): Int {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return LinkQuality.wifiBars(rssi)

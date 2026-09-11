@@ -767,7 +767,10 @@ class PttEngine(
         for (t in transports) t.send(packet)
     }
 
-    /** Receive path for every transport: [Ingress] decides, then relay within the hop budget, then roster, then decode and play. */
+    /**
+     * Receive path for every transport: [Ingress] decides, then relay within the hop budget,
+     * update the roster and its packet-loss measurements, then decode and play admitted audio.
+     */
     private fun onPacket(p: ByteArray, from: Transport, link: Any?) {
         if (transports.isEmpty()) return                  // a transport still winding down after disconnect
         val c = counters                                  // this session's set, whatever happens meanwhile
@@ -859,7 +862,10 @@ class PttEngine(
 
     // ---- roster -------------------------------------------------------------------
 
-    /** Heartbeat thread: announce ourselves, drop the silent, clear stale talking marks, publish if anything moved. */
+    /**
+     * Heartbeat thread: announce ourselves, drop silent nodes, clear stale talking marks, and
+     * refresh the roster so overdue hellos can lower a link level.
+     */
     private fun tick() {
         sendHello()
         val up = healthy
@@ -937,6 +943,7 @@ class PttEngine(
     private fun nodeFor(id: Int): Node? =
         nodes[id] ?: if (nodes.size >= MAX_NODES) null else nodes.computeIfAbsent(id) { Node() }
 
+    /** Builds the sorted roster snapshot, including each node's link level at the current time. */
     private fun buildRoster(): List<Peer> {
         val now = SystemClock.elapsedRealtime()
         return nodes.entries

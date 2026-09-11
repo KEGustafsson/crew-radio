@@ -60,6 +60,10 @@ class LinkQuality {
         if (!first) audio.lost(n)
     }
 
+    /**
+     * Records an admitted audio frame at [nowMs], clearing the previous transmission's history
+     * first when the talker has been quiet for longer than [AUDIO_MEMORY_MS].
+     */
     @Synchronized
     fun audioHeard(nowMs: Long) {
         freshen(nowMs)
@@ -122,8 +126,8 @@ class LinkQuality {
         /**
          * A Wi-Fi RSSI in dBm as bars, 0 to [BARS], on the thresholds Android's own
          * `WifiManager.calculateSignalLevel` defaults to (`config_wifiRssiLevelThresholds`:
-         * -88, -77, -66, -55). For the one API level, 29, where the platform offers no
-         * un-deprecated way to ask it.
+         * -88, -77, -66, -55). Used on API 29, where the platform offers no un-deprecated way to
+         * ask it, and as a fallback when a newer platform reports no positive maximum level.
          */
         fun wifiBars(rssi: Int): Int = WIFI_THRESHOLDS.count { rssi >= it }
         private val WIFI_THRESHOLDS = intArrayOf(-88, -77, -66, -55)
