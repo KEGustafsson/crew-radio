@@ -145,6 +145,19 @@ class LinkQualityTest {
     }
 
     @Test
+    fun aGapOnTheFirstFrameAfterASilenceIsNotLoss() {
+        val q = LinkQuality()
+        repeat(100) { q.audioHeard(0) }
+        assertEquals(4, q.level(0, 0))
+        val later = LinkQuality.AUDIO_MEMORY_MS + 1
+        q.audioLost(200, later)                          // the gap arrives before the first frame of the new talk
+        repeat(60) { q.audioHeard(later) }
+        assertEquals(4, q.level(0, 0))                   // the window was emptied first, so the gap is history
+        q.audioLost(30, later); q.audioHeard(later)      // and from then on a gap counts: 30 of 91
+        assertEquals(1, q.level(0, 0))
+    }
+
+    @Test
     fun aGapLargerThanTheWindowFillsIt() {
         val q = LinkQuality()
         repeat(250) { q.audioHeard(0) }

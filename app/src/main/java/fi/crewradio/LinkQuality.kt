@@ -51,13 +51,14 @@ class LinkQuality {
      * [n] audio frames were missing before the one being admitted at [nowMs]; the frame itself is
      * [audioHeard]. A talker that has been quiet for [AUDIO_MEMORY_MS] starts with an empty window,
      * so the losses of an earlier transmission do not colour the first second of the next one, and
-     * the gap before the first frame this entry hears is history, not loss, as with the hellos.
+     * the gap before a window's first frame is history, not loss, as with the hellos: for a fresh
+     * entry it is whatever was sent while nobody listened, and after a silence it is the tail of
+     * the transmission the window was just emptied of.
      */
     @Synchronized
     fun audioLost(n: Int, nowMs: Long) {
-        val first = lastAudioMs == NEVER
-        freshen(nowMs)
-        if (!first) audio.lost(n)
+        freshen(nowMs)                                   // first, so a gap after a silence lands in the new window's rules
+        if (audio.total > 0) audio.lost(n)               // a gap before a window's first frame is history, not loss
     }
 
     @Synchronized
