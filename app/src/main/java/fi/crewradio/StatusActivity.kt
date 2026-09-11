@@ -8,6 +8,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.res.ColorStateList
+import android.graphics.drawable.Drawable
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
@@ -15,6 +22,7 @@ import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -65,6 +73,29 @@ class StatusActivity : AppCompatActivity() {
     private lateinit var netAside: TextView
     private lateinit var nicRows: LinearLayout
     private var nicKey = ""
+    /** The bars at the end of the WI-FI SIGNAL value: the same level-list as the roster's. */
+    private lateinit var wifiBars: Drawable
+
+    /**
+     * The phone's link to the access point, in dBm, from the Wi-Fi network's capabilities: the one
+     * radio level Android hands out (nothing of the kind exists for a Bluetooth Classic link, and
+     * Aware gives a distance at best). Watched by transport, not the default network: a boat AP
+     * with no internet is often not the default. Kept per network, because the callback can see
+     * more than one Wi-Fi network at a time and one going away must not blank the other: the
+     * strongest is shown. Null until heard, and again when the last one goes.
+     */
+    private val rssiByNetwork = HashMap<Network, Int>()
+    private val wifiRssi: Int? get() = synchronized(rssiByNetwork) { rssiByNetwork.values.maxOrNull() }
+    private val connectivity by lazy { getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager }
+    private val wifiCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: Network, nc: NetworkCapabilities) {
+            val rssi = nc.signalStrength
+            synchronized(rssiByNetwork) {
+                if (rssi == Int.MIN_VALUE) rssiByNetwork.remove(network) else rssiByNetwork[network] = rssi
+            }
+        }
+        override fun onLost(network: Network) { synchronized(rssiByNetwork) { rssiByNetwork.remove(network) } }
+    }
     private lateinit var packetsAside: TextView
     private lateinit var phoneAside: TextView
     private lateinit var logRows: LinearLayout
@@ -104,11 +135,16 @@ class StatusActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         bindService(Intent(this, PttService::class.java), connection, Context.BIND_AUTO_CREATE)
+        connectivity.registerNetworkCallback(
+            NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), wifiCallback
+        )
         handler.post(tick)
     }
 
     override fun onStop() {
         handler.removeCallbacks(tick)
+        try { connectivity.unregisterNetworkCallback(wifiCallback) } catch (_: IllegalArgumentException) {}
+        synchronized(rssiByNetwork) { rssiByNetwork.clear() }
         unbindService(connection)
         service = null
         super.onStop()
@@ -142,6 +178,13 @@ class StatusActivity : AppCompatActivity() {
 
         card(R.string.card_network).let { (aside, rows) ->
             netAside = aside
+            // The Wi-Fi link first, where a glance finds it, then whatever interfaces the phone has.
+            rows.addView(kv(R.string.kv_wifi_signal))
+            wifiBars = ContextCompat.getDrawable(this, R.drawable.ic_signal)!!.mutate()
+            values[R.string.kv_wifi_signal]?.apply {
+                setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, wifiBars, null)
+                compoundDrawablePadding = dp(10)
+            }
             nicRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             rows.addView(nicRows)
             for (label in listOf(R.string.kv_multicast, R.string.kv_aware, R.string.kv_channel_key, R.string.kv_bluetooth)) {
@@ -172,7 +215,7 @@ class StatusActivity : AppCompatActivity() {
         // Crew
         val peers = e?.rosterNow ?: emptyList()
         crewAside.text = getString(R.string.aboard, peers.size)
-        val key = peers.joinToString("|") { "${it.id}/${it.label}/${it.talking}/${it.via}/${it.hops}/${it.transports}/${it.versionCode}" } + "/$on"
+        val key = peers.joinToString("|") { "${it.id}/${it.label}/${it.talking}/${it.via}/${it.hops}/${it.transports}/${it.versionCode}/${it.level}" } + "/$on"
         if (key != crewKey) {
             crewKey = key
             crewRows.removeAllViews()
@@ -218,6 +261,10 @@ class StatusActivity : AppCompatActivity() {
             nicRows.removeAllViews()
             for ((nic, addr) in nics) nicRows.addView(kvLiteral(nic.uppercase(Locale.ROOT), addr))
         }
+        val rssi = wifiRssi
+        set(R.string.kv_wifi_signal, if (rssi == null) getString(R.string.value_dash) else getString(R.string.value_dbm, rssi))
+        wifiBars.level = if (rssi == null) 0 else wifiLevel(rssi)
+        wifiBars.setTint(color(if (rssi != null && wifiBars.level <= LinkQuality.WEAK) R.color.error else R.color.primary))
         set(R.string.kv_multicast, getString(R.string.value_endpoint, prefs.group, prefs.port))
         set(R.string.kv_aware, fi.crewradio.transport.WifiAwareTransport.SERVICE_NAME)
         // Enough to compare across phones, not enough to copy.
@@ -246,6 +293,19 @@ class StatusActivity : AppCompatActivity() {
             if (lines.isEmpty()) logRows.addView(note(getString(R.string.value_dash)))
             else for (line in lines) logRows.addView(logLine(line))
         }
+    }
+
+    /**
+     * The platform's own signal-bar scale for [rssi], on the roster's 0 to [LinkQuality.BARS]: the
+     * phone's tuning on API 30+, and before that the thresholds that tuning defaults to
+     * ([LinkQuality.wifiBars]), the only form of it Android 10 offers being deprecated. The same
+     * thresholds are the fallback if a newer platform reports no positive maximum level.
+     */
+    private fun wifiLevel(rssi: Int): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return LinkQuality.wifiBars(rssi)
+        val wifi = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+        val max = wifi.maxSignalLevel
+        return if (max <= 0) LinkQuality.wifiBars(rssi) else wifi.calculateSignalLevel(rssi) * LinkQuality.BARS / max
     }
 
     /** What the audio-output setting says while the channel is off and there is no route in use. */
@@ -311,6 +371,15 @@ class StatusActivity : AppCompatActivity() {
             meta.setTextColor(color(R.color.text_dim))
             dot.backgroundTintList = null
         }
+        // How many of its packets get here: red when it is breaking up, green with the rest of the row while it talks.
+        val level = v.findViewById<ImageView>(R.id.level)
+        level.setImageLevel(p.level)
+        level.imageTintList = ColorStateList.valueOf(color(when {
+            p.level <= LinkQuality.WEAK -> R.color.error
+            p.talking -> R.color.talking
+            else -> R.color.primary
+        }))
+        level.contentDescription = getString(R.string.a11y_link_level, p.level, LinkQuality.BARS)
         // Every phone on the crew must run the same build: the wire format has no legacy mode.
         val build = v.findViewById<TextView>(R.id.build)
         val theirs = p.versionCode

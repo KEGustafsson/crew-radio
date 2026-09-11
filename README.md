@@ -66,7 +66,10 @@ no account, no internet, no subscription. Connecting people, with what is in the
    listening end for several others. The peer is fixed when you join, so the row disappears
    while you are on channel and comes back when you leave.
 3. **Join the channel.** Tap the switch row. It reads *ON CHANNEL*, the head count at the top
-   shows who else is there, and the notification says what the links are doing.
+   shows who else is there, and the notification says what the links are doing. The bars beside
+   the count are the weakest link aboard: four when everyone's packets arrive, fewer as they go
+   missing, and one, in red, when someone is breaking up. Who it is, and each link's own bars,
+   are on the Status screen.
 4. **Talk.** Hold the big disc. It turns red, *ON AIR*, and everyone hears you. Let go to
    listen. While someone else talks, their name appears in green above the disc.
 5. **Volume.** The slider above the disc is the phone's call volume, the level the volume keys
@@ -118,10 +121,12 @@ mute is cleared when you leave the channel.
 ## The Status screen
 
 Menu ⋮ › **Status** is the place to look when something seems off. It shows every crew member
-with the link they arrive on, how many hops away they are, what they are connected to and when
-they were last heard; this phone's name, mode, codec, where the audio goes, the call volume and
-the app version;
-the phone's addresses; packet counters (received, sent, relayed, duplicates dropped, concealed,
+with the link they arrive on, how many of their packets get through as four bars (every hello
+and every frame of speech is numbered, so a missing one is counted whatever it travelled over:
+four bars is nothing missing, one bar, in red, is a link that is breaking up), how many hops away
+they are, what they are connected to and when they were last heard; this phone's name, mode, codec,
+where the audio goes, the call volume and the app version;
+the phone's addresses and the strength of its Wi-Fi link to the access point; packet counters (received, sent, relayed, duplicates dropped, concealed,
 hellos, plus **clock** — packets thrown away because the sender's time was more than a minute off
 this phone's, which is what a wrong clock looks like — and **underruns**, the times playback ran
 dry); and the last forty status lines with time stamps. **Check for updates** at the bottom opens
@@ -298,7 +303,7 @@ checksum: the Gradle distribution in `gradle/wrapper/gradle-wrapper.properties`,
 request included) regenerate that file, as `.github/dependabot.yml` describes, and commit it with
 the change. Release builds are shrunk by R8 with names kept, so a crash report from a phone reads
 without a mapping file. Pure-Kotlin unit tests: `./gradlew testDebugUnitTest`; Android Lint
-(`./gradlew lintRelease`) must pass without errors, as it does in CI; warnings are reported, not fatal.
+(`./gradlew lintRelease`) must pass without errors or warnings, as it does in CI: a warning fails it too.
 The APK lands in `app/build/outputs/apk/debug/app-debug.apk`, and
 `adb install -r app/build/outputs/apk/debug/app-debug.apk` puts it on a phone plugged in with USB
 debugging switched on. Real testing needs two or more phones; the emulator has neither Bluetooth

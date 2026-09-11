@@ -14,11 +14,22 @@
         <item name="colorSurface">@color/surface</item>
         <!-- The ground the screens are drawn on; the layouts do not paint it again (Overdraw). -->
         <item name="android:windowBackground">@color/surface</item>
-        <!-- Edge to edge (targetSdk 36 enforces it): the bars are transparent and the activities
+        <!-- Edge to edge (targetSdk 35 and later enforce it): the bars are transparent and the activities
              pad themselves with the window insets. The charcoal ground shows through, so the bar
              icons have to be the light set. -->
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
+        <!-- The ask sheet's ground is the sheet's own, painted once (see the styles below). -->
+        <item name="bottomSheetDialogTheme">@style/ThemeOverlay.PTT.BottomSheet</item>
+    </style>
+
+    <!-- A bottom sheet on the Radio palette: Material's own 28 dp top corners, on surface_card. The
+         sheet container paints this, so sheet_ask.xml paints no background of its own (Overdraw). -->
+    <style name="ThemeOverlay.PTT.BottomSheet" parent="ThemeOverlay.Material3.BottomSheetDialog">
+        <item name="bottomSheetStyle">@style/Widget.PTT.BottomSheet</item>
+    </style>
+    <style name="Widget.PTT.BottomSheet" parent="Widget.Material3.BottomSheet">
+        <item name="backgroundTint">@color/surface_card</item>
     </style>
 
     <!-- Status and Settings: no window action bar, a MaterialToolbar in the layout instead, so the

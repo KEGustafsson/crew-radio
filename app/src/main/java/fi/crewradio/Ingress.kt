@@ -34,7 +34,8 @@ class Ingress(
     private val limiter: RateLimiter = RateLimiter(),
     audioCache: Int = AUDIO_CACHE,
     helloCache: Int = HELLO_CACHE,
-    private val seq: SeqTracker = SeqTracker()
+    private val seq: SeqTracker = SeqTracker(),
+    private val helloSeq: SeqTracker = SeqTracker()
 ) {
     sealed class Result {
         /** New and within budget: [plain] is the payload, [relayTtl] the ttl to forward with, 0 when it is not to be forwarded. */
@@ -135,6 +136,14 @@ class Ingress(
         if (gap > 0) onGap(gap)
         true
     }
+
+    /**
+     * Hellos number themselves too, one a second per node, so a gap in that sequence is a hello
+     * that never arrived: the roster's link meter ([LinkQuality]). Nothing is gated here — the
+     * seen-cache in [admit] has already passed the packet — it only says how many are missing
+     * before this one, or -1 for a duplicate or one that arrives after a later one.
+     */
+    fun helloGap(senderId: Int, seq: Int): Int = helloSeq.admit(senderId, seq)
 
     private fun key(h: Packet.Header) = (h.senderId.toLong() shl 32) or (h.seq.toLong() and 0xFFFF_FFFFL)
     private fun cacheFor(h: Packet.Header) = if (h.codec == Packet.Codec.HELLO) seenHellos else seen

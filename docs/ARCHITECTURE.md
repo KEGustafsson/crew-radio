@@ -114,9 +114,23 @@ is what starts the reconnect.
 <img src="images/mesh.png" alt="Three phones, two kinds of link" width="640">
 
 The roster: a heartbeat thread sends a hello every second; every hello or audio packet refreshes
-the sender's entry (name, transports, via which transport, hops, talking). Silent for four
-seconds means gone. The main screen shows only the head count and who is talking; the Status
-screen polls the full list once a second.
+the sender's entry (name, transports, via which transport, hops, talking, link level). Silent for
+four seconds means gone. The main screen shows only the head count, the weakest link's bars and
+who is talking; the Status screen polls the full list once a second.
+
+The link level (`LinkQuality`, pure and tested) is measured on the packets, not the radio: Android
+reports no signal strength for a connected Bluetooth Classic link and at best a distance for Wi-Fi
+Aware, while every node numbers its hellos and every talker its audio frames, so a gap in either
+sequence is a packet that did not arrive, whatever it travelled over and however many relays it
+crossed. `Ingress.helloGap` measures the hello sequence with a second `SeqTracker` (the seen-cache
+still does the gating, so a copy heard twice counts once); the audio gap is the one the mixer
+conceals. Two windows per sender, the last ten hellos and the last five seconds of speech, graded
+into four bars, the worse of the two shown; a hello overdue right now counts as missing, so a node
+that goes quiet loses a bar a second until the roster drops it, and the audio window is set aside
+ten seconds after the talker stops. The gap before the first hello or frame an entry hears is not
+counted: the sender numbered those packets while this phone was off the channel or the sender was
+out of the roster, and a link is judged only on what it could have carried. The Status screen's NETWORK card adds the one radio level the
+platform does hand out, the Wi-Fi link to the access point, from the Wi-Fi network's capabilities.
 
 Reconnect lives inside each transport, never in the engine: Bluetooth re-dials its chosen peer
 from the reader's `finally`, and waits for the adapter to come back on when it is switched off;
@@ -180,6 +194,7 @@ of the transports, so they need a rejoin. The channel key is generated at random
 | `PttEngine` | Transports, roster, relay, sequence tracking, concealment, talk state, voice gate |
 | `CallService`, `CallBridge` | Opt-in self-managed Telecom call for hang-up-style headset buttons |
 | `Packet`, `Hello`, `SeqTracker` | Wire header, roster heartbeat payload, per-sender sequence admission |
+| `LinkQuality` | A sender's link level from its missing hellos and audio frames, the roster's bars |
 | `Ingress` | Every admission decision for a received packet, in one testable place |
 | `ChannelCrypto`, `RateLimiter` | AES-GCM sealing under the packet key derived from the channel key, and the Aware secrets derived from that packet key; ingress budgets |
 | `audio/AudioConfig` | 16 kHz, 20 ms, frame sizes |

@@ -8,7 +8,7 @@ flooding relay so multiple transports and multi-hop topologies work.
 ## Stack
 - Android Gradle Plugin 9.4 with its built-in Kotlin (the Kotlin Android plugin is applied nowhere; the root
   build puts Kotlin 2.4 on the build classpath, which is how the built-in compiler is moved past AGP's
-  default), Gradle 9.7, compileSdk 37, minSdk 29, targetSdk 36, JDK 17 (a real toolchain: Gradle
+  default), Gradle 9.7, compileSdk 37, minSdk 29, targetSdk 37, JDK 17 (a real toolchain: Gradle
   will not download one). R8 shrinks release builds with names kept, so crash traces stay readable.
   Dependabot keeps AndroidX current; the toolchain itself (AGP, Kotlin, Gradle majors, compileSdk)
   is moved by hand, since a new AndroidX generation often needs a newer compileSdk or AGP (core 1.19
@@ -117,6 +117,18 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   audio packet refreshes the sender's `Node` (name, transports, via, hops, talking). Silent for
   4 s = dropped. `onRoster` fires only when the rendered list changes; the service mirrors the
   head count into the notification title. Display name = Android device name, else `Build.MODEL`.
+  Each `Peer` carries a `level`, 1-4 bars, from `LinkQuality` (pure, tested): the sender's missing
+  hellos (`Ingress.helloGap`, a second `SeqTracker` over the hello sequence; the seen-cache still
+  gates) over the last ten, and its lost audio frames (the gap `admitAudio` reports) over the last
+  five seconds of talk, the worse of the two; an overdue hello counts as missing, so a quiet node
+  loses a bar a second until it is dropped. The gap before an entry's *first* hello or audio frame
+  is ignored: the sequence numbers live for the sender's process, so after a rejoin that gap is
+  every packet sent while nobody listened, and charging it made a good link climb from one bar
+  to four over ten seconds (seen on the S25, 2026-09-11). Measured on packets on purpose: Android gives no RSSI
+  for a Bluetooth Classic link and only a distance for Aware. The main screen's head-count box
+  shows the weakest link's bars (`ic_signal` is a level-list, `setImageLevel`), red at one bar
+  (`LinkQuality.WEAK`); the Status screen shows each member's own bars and, in NETWORK, the Wi-Fi
+  RSSI to the access point from the Wi-Fi network's capabilities, the one radio level available.
 - The main screen shows only what matters while talking (head count, one status line, who is
   talking): the Bluetooth peer row is hidden while on channel (the peer is a constructor argument
   of the transport, so it is a before-Connect choice) and the talk disc is dimmed to 0.55 while
@@ -240,8 +252,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   crew" is not offered off channel at all, forced in `AskController.start` as well as dimmed in the
   sheet. The Signal K token sits in the same SharedPreferences file as the
   channel key and under the same backup exclusion; cleartext HTTP is permitted
-  (`network_security_config.xml`) because a boat server has no certificate for `192.168.1.9`, and it
-  is the app's only HTTP traffic.
+  (`android:usesCleartextTraffic` in the manifest, with the reasoning beside it; a network security
+  config saying the same is lint's InsecureBaseConfiguration) because a boat server has no
+  certificate for `192.168.1.9`, and it is the app's only HTTP traffic.
 
 ## Signal K plugin (`sk-plugin/`)
 - `signalk-crewradio`: the boat's Signal K server as a node on the channel, with text-to-speech
@@ -377,11 +390,13 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 - Every user-visible string lives in `res/values/strings.xml` or `arrays.xml` — nothing in Kotlin,
   layouts or `preferences.xml` — so the app can be translated in one pass. `uppercase(Locale.getDefault())`
   for text the crew typed, `Locale.ROOT` for fixed labels.
-- Screens are edge to edge (targetSdk 36 enforces it): `WindowCompat.setDecorFitsSystemWindows(window, false)`
+- Screens are edge to edge (targetSdk 35 and later enforce it): `WindowCompat.setDecorFitsSystemWindows(window, false)`
   plus `View.padForWindowInsets()` on the root; Status and Settings carry a `MaterialToolbar` in the
   layout, not a window action bar. No `statusBarColor`/`navigationBarColor`.
-- `lintRelease` is a CI gate with `abortOnError`: no errors. Suppress an issue only inline, with a
-  comment saying why.
+- `lintRelease` is a CI gate with `abortOnError` and `warningsAsErrors`: no errors and no warnings,
+  ever. Suppress an issue only inline, with a comment saying why. No `@Suppress("DEPRECATION")`
+  either: where a platform API has only a deprecated form on an old API level, write the small
+  replacement by hand and unit-test it (`LinkQuality.wifiBars` is the pattern).
 - Anything blocking (sockets, AudioTrack.write) lives on its own named thread
   (`ptt-*`); never on the main thread.
 - Transport threads go through `transport/transportThread`: an uncaught throwable on a

@@ -556,10 +556,14 @@ class MainActivity : AppCompatActivity() {
      *
      * A crew member running a different build of the app is said on that same line when nobody is
      * talking: the wire format has no legacy mode, so a mismatch is worth seeing before it matters.
+     *
+     * The bars beside the count are the weakest link on the roster ([Peer.level]): one glance says
+     * someone is breaking up without leaving the talk screen, and who it is waits on the Status
+     * screen. At one bar the box turns the error colour, whoever is talking; green while someone
+     * talks and every link holds; no bars at all with nobody aboard.
      */
     private fun renderRoster(peers: List<Peer>) {
         peerCount.text = getString(R.string.head_count, peers.size)
-        peersBox.contentDescription = resources.getQuantityString(R.plurals.a11y_aboard, peers.size, peers.size)
         val talking = peers.filter { it.talking }
         val green = ContextCompat.getColor(this, R.color.talking)
         val otherBuild = peers.any { it.versionCode != 0 && it.versionCode != BuildConfig.VERSION_CODE }
@@ -567,22 +571,28 @@ class MainActivity : AppCompatActivity() {
             talking.isNotEmpty() -> {
                 channelLabel.text = getString(R.string.talking_line, talking.joinToString(", ") { it.label.uppercase(Locale.getDefault()) })
                 channelLabel.setTextColor(green)
-                peersIcon.imageTintList = ColorStateList.valueOf(green)
-                peerCount.setTextColor(green)
             }
             otherBuild -> {
                 channelLabel.text = getString(R.string.other_build_aboard)
                 channelLabel.setTextColor(ContextCompat.getColor(this, R.color.error))
-                peersIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
-                peerCount.setTextColor(ContextCompat.getColor(this, R.color.text))
             }
             else -> {
                 channelLabel.text = getString(R.string.crew_channel)
                 channelLabel.setTextColor(ContextCompat.getColor(this, R.color.text_teal_dim))
-                peersIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary))
-                peerCount.setTextColor(ContextCompat.getColor(this, R.color.text))
             }
         }
+        val worst = peers.minOfOrNull { it.level } ?: 0
+        val weak = peers.isNotEmpty() && worst <= LinkQuality.WEAK
+        peersIcon.setImageLevel(worst)
+        val boxColor = when {
+            weak -> ContextCompat.getColor(this, R.color.error)
+            talking.isNotEmpty() -> green
+            else -> 0
+        }
+        peersIcon.imageTintList = ColorStateList.valueOf(if (boxColor != 0) boxColor else ContextCompat.getColor(this, R.color.primary))
+        peerCount.setTextColor(if (boxColor != 0) boxColor else ContextCompat.getColor(this, R.color.text))
+        val aboard = resources.getQuantityString(R.plurals.a11y_aboard, peers.size, peers.size)
+        peersBox.contentDescription = if (weak) getString(R.string.a11y_weak_link, aboard) else aboard
     }
 
     // ---- Bluetooth peer -----------------------------------------------------------

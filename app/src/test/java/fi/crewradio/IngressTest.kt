@@ -42,6 +42,18 @@ class IngressTest {
         assertTrue(i.admit(header(seq = 0, codec = Packet.Codec.PCM), 0, now, 4, opens) is Ingress.Result.Duplicate)   // PCM and Opus share the audio sequence
     }
 
+    /** The hello sequence is measured, not gated: how many went missing before this one, per sender, and late ones say so. */
+    @Test
+    fun helloGapsCountTheMissingOnes() {
+        val i = Ingress()
+        assertEquals(0, i.helloGap(1, 10))
+        assertEquals(0, i.helloGap(1, 11))
+        assertEquals(2, i.helloGap(1, 14))                 // 12 and 13 never came
+        assertEquals(-1, i.helloGap(1, 13))                // and 13 turning up now is late
+        assertEquals(0, i.helloGap(2, 100))                // another sender, its own numbers
+        assertEquals(0, i.helloGap(1, 15))
+    }
+
     /** Every frame arrives twice on WLAN and again over each other link: the copies must not spend the sender's 75/s budget. */
     @Test
     fun copiesAreNotChargedToTheSender() {
