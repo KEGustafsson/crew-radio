@@ -121,7 +121,10 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   hellos (`Ingress.helloGap`, a second `SeqTracker` over the hello sequence; the seen-cache still
   gates) over the last ten, and its lost audio frames (the gap `admitAudio` reports) over the last
   five seconds of talk, the worse of the two; an overdue hello counts as missing, so a quiet node
-  loses a bar a second until it is dropped. Measured on packets on purpose: Android gives no RSSI
+  loses a bar a second until it is dropped. The gap before an entry's *first* hello or audio frame
+  is ignored: the sequence numbers live for the sender's process, so after a rejoin that gap is
+  every packet sent while nobody listened, and charging it made a good link climb from one bar
+  to four over ten seconds (seen on the S25, 2026-09-11). Measured on packets on purpose: Android gives no RSSI
   for a Bluetooth Classic link and only a distance for Aware. The main screen's head-count box
   shows the weakest link's bars (`ic_signal` is a level-list, `setImageLevel`), red at one bar
   (`LinkQuality.WEAK`); the Status screen shows each member's own bars and, in NETWORK, the Wi-Fi

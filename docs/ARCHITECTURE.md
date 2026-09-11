@@ -127,7 +127,9 @@ still does the gating, so a copy heard twice counts once); the audio gap is the 
 conceals. Two windows per sender, the last ten hellos and the last five seconds of speech, graded
 into four bars, the worse of the two shown; a hello overdue right now counts as missing, so a node
 that goes quiet loses a bar a second until the roster drops it, and the audio window is set aside
-ten seconds after the talker stops. The Status screen's NETWORK card adds the one radio level the
+ten seconds after the talker stops. The gap before the first hello or frame an entry hears is not
+counted: the sender numbered those packets while this phone was off the channel or the sender was
+out of the roster, and a link is judged only on what it could have carried. The Status screen's NETWORK card adds the one radio level the
 platform does hand out, the Wi-Fi link to the access point, from the Wi-Fi network's capabilities.
 
 Reconnect lives inside each transport, never in the engine: Bluetooth re-dials its chosen peer

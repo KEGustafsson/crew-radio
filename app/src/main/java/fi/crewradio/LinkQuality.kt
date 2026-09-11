@@ -15,6 +15,11 @@ package fi.crewradio
  *  - audio: up to 2 % of frames lost is 4, up to 8 % 3, up to 20 % 2, worse 1. The mixer conceals
  *    a lost frame with a fade, so a few percent is audible as voids and 20 % is broken speech.
  *
+ * The gap before the first hello or the first audio frame an entry hears is not loss: the sender
+ * numbered those packets while this phone was off the channel or the sender was out of the roster,
+ * and an entry is fresh in both cases (the engine clears the roster on leave and drops a node after
+ * four seconds of silence). Counting it made a good link climb from one bar to four after a rejoin.
+ *
  * A hello that is overdue right now counts as missing too (one every second past a grace of
  * [HELLO_GRACE_MS]), so a node that has gone quiet loses a bar a second until the roster drops it
  * at four seconds. The audio window is set aside once a talker has been silent for
@@ -28,23 +33,31 @@ class LinkQuality {
     private val hellos = LossWindow(HELLO_WINDOW)
     private val audio = LossWindow(AUDIO_WINDOW)
 
-    /** A hello arrived with [gap] missing before it; a late one (negative gap) counts nothing. */
+    /**
+     * A hello arrived with [gap] missing before it; a late one (negative gap) counts nothing, and
+     * neither does the gap before the first hello this entry hears: the sequence numbers live for
+     * the sender's process, so after this phone rejoins the channel, or the sender comes back
+     * from being dropped, that gap is every hello sent while nobody was listening, and charging
+     * it would show a link climbing from one bar for the ten seconds it takes to push it out.
+     */
     @Synchronized
     fun helloHeard(gap: Int) {
         if (gap < 0) return
-        hellos.lost(gap)
+        if (hellos.total > 0) hellos.lost(gap)
         hellos.heard()
     }
 
     /**
      * [n] audio frames were missing before the one being admitted at [nowMs]; the frame itself is
      * [audioHeard]. A talker that has been quiet for [AUDIO_MEMORY_MS] starts with an empty window,
-     * so the losses of an earlier transmission do not colour the first second of the next one.
+     * so the losses of an earlier transmission do not colour the first second of the next one, and
+     * the gap before the first frame this entry hears is history, not loss, as with the hellos.
      */
     @Synchronized
     fun audioLost(n: Int, nowMs: Long) {
+        val first = lastAudioMs == NEVER
         freshen(nowMs)
-        audio.lost(n)
+        if (!first) audio.lost(n)
     }
 
     @Synchronized

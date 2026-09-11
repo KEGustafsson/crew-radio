@@ -37,6 +37,27 @@ class LinkQualityTest {
     }
 
     @Test
+    fun theFirstHelloOfAnEntryCarriesNoHistory() {
+        val q = LinkQuality()
+        q.helloHeard(57)                                 // a minute of hellos sent while this phone was off the channel
+        assertEquals(4, q.level(0, quiet))
+        q.helloHeard(0)
+        assertEquals(4, q.level(0, quiet))
+        q.helloHeard(3)                                  // from the second hello on a gap is loss
+        assertEquals(1, q.level(0, quiet))
+    }
+
+    @Test
+    fun theFirstAudioFrameOfAnEntryCarriesNoHistory() {
+        val q = LinkQuality()
+        q.audioLost(3_000, 0)                            // a talk this phone was not on the channel for
+        repeat(60) { q.audioHeard(0) }
+        assertEquals(4, q.level(0, 0))
+        q.audioLost(30, 0); q.audioHeard(0)              // from then on a gap is loss: 30 of 91
+        assertEquals(1, q.level(0, 0))
+    }
+
+    @Test
     fun aLateHelloCountsNothing() {
         val q = LinkQuality()
         hellos(q, 10)
@@ -47,7 +68,8 @@ class LinkQualityTest {
     @Test
     fun oldLossesLeaveTheWindow() {
         val q = LinkQuality()
-        q.helloHeard(3)                                  // a bad start
+        q.helloHeard(0)
+        q.helloHeard(3)                                  // a bad start: three of the first five
         assertEquals(1, q.level(0, quiet))
         hellos(q, 10)                                    // ten clean hellos push it out
         assertEquals(4, q.level(0, quiet))
@@ -89,16 +111,18 @@ class LinkQualityTest {
     @Test
     fun theFirstFramesOfATalkAreNoMeasure() {
         val q = LinkQuality()
+        q.audioHeard(0)
         q.audioLost(10, 0)
         repeat(20) { q.audioHeard(0) }                    // a third lost, but under AUDIO_MIN frames
         assertEquals(4, q.level(0, 0))
         repeat(30) { q.audioHeard(0) }
-        assertEquals(2, q.level(0, 0))                   // 10 of 60, and now it counts
+        assertEquals(2, q.level(0, 0))                   // 10 of 61, and now it counts
     }
 
     @Test
     fun aBadTransmissionIsForgottenOnceTheTalkerIsQuiet() {
         val q = LinkQuality()
+        q.audioHeard(0)
         q.audioLost(50, 0)
         repeat(100) { q.audioHeard(0) }
         assertEquals(1, q.level(0, 0))
@@ -109,6 +133,7 @@ class LinkQualityTest {
     @Test
     fun aTalkerBackAfterASilenceStartsClean() {
         val q = LinkQuality()
+        q.audioHeard(0)
         q.audioLost(50, 0)
         repeat(100) { q.audioHeard(0) }
         assertEquals(1, q.level(0, 0))
