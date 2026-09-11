@@ -117,6 +117,15 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   audio packet refreshes the sender's `Node` (name, transports, via, hops, talking). Silent for
   4 s = dropped. `onRoster` fires only when the rendered list changes; the service mirrors the
   head count into the notification title. Display name = Android device name, else `Build.MODEL`.
+  Each `Peer` carries a `level`, 1-4 bars, from `LinkQuality` (pure, tested): the sender's missing
+  hellos (`Ingress.helloGap`, a second `SeqTracker` over the hello sequence; the seen-cache still
+  gates) over the last ten, and its lost audio frames (the gap `admitAudio` reports) over the last
+  five seconds of talk, the worse of the two; an overdue hello counts as missing, so a quiet node
+  loses a bar a second until it is dropped. Measured on packets on purpose: Android gives no RSSI
+  for a Bluetooth Classic link and only a distance for Aware. The main screen's head-count box
+  shows the weakest link's bars (`ic_signal` is a level-list, `setImageLevel`), red at one bar
+  (`LinkQuality.WEAK`); the Status screen shows each member's own bars and, in NETWORK, the Wi-Fi
+  RSSI to the access point from the Wi-Fi network's capabilities, the one radio level available.
 - The main screen shows only what matters while talking (head count, one status line, who is
   talking): the Bluetooth peer row is hidden while on channel (the peer is a constructor argument
   of the transport, so it is a before-Connect choice) and the talk disc is dimmed to 0.55 while

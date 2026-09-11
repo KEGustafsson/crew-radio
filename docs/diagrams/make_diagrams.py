@@ -210,6 +210,22 @@ def icon(nid, name, x, y, w, h, color):
             f"shape=image;html=1;imageAspect=0;image=data:image/svg+xml,{data};")
 
 
+def signal_bars(nid, x, y, w, h, color, lit, over=BG):
+    """ic_signal.xml as the level-list it is: `lit` of the four bars in `color`, the rest at the
+    0.3 fillAlpha of ic_signal_<n>.xml, resolved against the ground the view sits on."""
+    dim = mix(color, 0.3, over)
+    bars = [("M0,12 h4 v6 h-4 z", 0), ("M6,8 h4 v10 h-4 z", 1), ("M12,4 h4 v14 h-4 z", 2), ("M18,0 h4 v18 h-4 z", 3)]
+    body = "".join(f'<path d="{d}" fill="{color if i < lit else dim}"/>' for d, i in bars)
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 18" width="{w}" height="{h}">{body}</svg>'
+    data = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return (nid, "", x, y, w, h, f"shape=image;html=1;imageAspect=0;image=data:image/svg+xml,{data};")
+
+
+def helv_w(s, size):
+    """Roughly what Helvetica advances a string of mixed text: 0.55 em a glyph."""
+    return int(len(s) * size * 0.55 + 0.5)
+
+
 def phone_body(nid, x, y):
     return (nid, "", x, y, FRAME_W, FRAME_H,
             f"rounded=1;absoluteArcSize=1;arcSize=32;whiteSpace=wrap;html=1;fillColor={BG};strokeColor=none;")
@@ -255,15 +271,21 @@ def toggle(nid, x, y, on):
 
 # ---------------------------------------------------------------- the main screen
 
-def main_screen(p, x, y, state, peers="2", talking=None, ask_row=False, scrim=1.0,
+def main_screen(p, x, y, state, peers=None, talking=None, ask_row=False, scrim=1.0, level=3,
                 tiles=((False, "wifi", "WLAN"), (True, "bluetooth", "BLUETOOTH"), (True, "aware", "AWARE"))):
     """activity_main.xml. state: 'off' | 'on' | 'air'; `scrim` dims it under the ask sheet.
 
     The tiles are dimmed while the phone is on the channel (they are a before-Connect choice), and
-    the talk disc and the mute glyph while it is off it, the way MainActivity.syncUi does it.
+    the talk disc and the mute glyph while it is off it, the way MainActivity.syncUi does it. Off
+    the channel the roster is empty, so the count is 0 and the bars beside it are all unlit; on it,
+    `level` is the weakest link aboard, the way renderRoster draws it.
     """
     on = state != "off"
     live = state == "air"
+    if peers is None:
+        peers = "2" if on else "0"
+    if not on:
+        level = 0
 
     def c(col, alpha=1.0):
         return mix(col, alpha * scrim)
@@ -281,9 +303,11 @@ def main_screen(p, x, y, state, peers="2", talking=None, ask_row=False, scrim=1.
     box_w = 12 + 22 + 10 + mono_w(peers, 18) + 12
     box_x = cl + CW - 44 - 4 - box_w
     n.append(rect(p + "hb", box_x, top + 6, box_w, 44, fill="none", stroke=c(OUTLINE), r=12))
-    n.append(icon(p + "hi", "signal", box_x + 12, top + 19, 22, 18, c(TALKING if talking else PRIMARY)))
+    weak = on and level <= 1
+    n.append(signal_bars(p + "hi", box_x + 12, top + 19, 22, 18,
+                         c(ERROR if weak else TALKING if talking else PRIMARY), level))
     n.append(txt(p + "hc", peers, box_x + 44, top + 6, box_w - 56, 44, 18,
-                 c(TALKING if talking else TEXT), bold=True))
+                 c(ERROR if weak else TALKING if talking else TEXT), bold=True))
     n.append(icon(p + "hm", "more", cl + CW - 34, top + 16, 24, 24, c(SECONDARY)))
 
     # Transport tiles: an icon over a label, teal and filled in when the transport is switched on.
@@ -380,14 +404,21 @@ def status_card(p, key, x, ytop, rows_h, title, aside, cut=None):
 
 
 def kv_rows(p, key, x, ytop, rows, cut=None):
-    """row_kv.xml: a spaced mono label, its value flush right, 36 dp a row."""
+    """row_kv.xml: a spaced mono label, its value flush right, 36 dp a row. A row given a third
+    element draws that many of the link meter's bars after the value, 10 dp apart, the way the
+    WI-FI SIGNAL row carries them as a compound drawable."""
     n = []
-    for i, (k, v) in enumerate(rows):
+    for i, row in enumerate(rows):
+        k, v = row[0], row[1]
         ry = ytop + i * 36
         if cut is not None and ry >= cut:
             break
         n.append(txt(p + f"{key}k{i}", k, x + PAD + 16, ry, 150, 36, 12, TEXT_DIM, tracking=0.08))
-        n.append(txt(p + f"{key}v{i}", v, x + PAD + 166, ry, CW - 182, 36, 15, TEXT, align="right", mono=False))
+        right = x + PAD + CW - 16
+        if len(row) > 2:
+            n.append(signal_bars(p + f"{key}b{i}", right - 22, ry + 9, 22, 18, PRIMARY, row[2], over=CARD))
+            right -= 22 + 10
+        n.append(txt(p + f"{key}v{i}", v, x + PAD + 166, ry, right - (x + PAD + 166), 36, 15, TEXT, align="right", mono=False))
     return n
 
 
@@ -405,15 +436,19 @@ def status_screen(p, x, y):
     n.append(rect(p + "pill", cl + CW - pill_w, top + 6, pill_w, 44, fill="none", stroke=OUTLINE, r=12,
                   label="ON CHANNEL", color=PRIMARY, size=13, tracking=0.1))
 
-    # CREW: row_status_peer.xml, 56 dp a crew member (6 + 24 + 2 + 18 + 6).
-    crew = [("Mate", "TALKING", TALKING, "on BT+Aware · id 7a91c2e0 · heard just now"),
-            ("Skipper's phone", "AWARE · 1 HOP", TEXT_DIM, "on BT · id cfe7198c · heard just now")]
+    # CREW: row_status_peer.xml, 56 dp a crew member (6 + 24 + 2 + 18 + 6). The bars are the
+    # member's link level, 12 dp before the meta text, green with the rest of the row while talking.
+    crew = [("Mate", "TALKING", TALKING, 4, "on BT+Aware · id 7a91c2e0 · heard just now"),
+            ("Skipper's phone", "AWARE · 1 HOP", TEXT_DIM, 3, "on BT · id cfe7198c · heard just now")]
     nodes, rows, bottom = status_card(p, "c1", x, top + 68, len(crew) * 56, "CREW", "2 ABOARD")
     n += nodes
-    for i, (name, meta, meta_c, detail) in enumerate(crew):
+    for i, (name, meta, meta_c, level, detail) in enumerate(crew):
         ry = rows + i * 56
         n.append(circle(p + f"pd{i}", cl + 16, ry + 13, 10, meta_c if meta_c == TALKING else DOT_IDLE))
         n.append(txt(p + f"pn{i}", name, cl + 38, ry + 6, 170, 24, 17, TEXT, mono=False))
+        meta_w = mono_w(meta, 12, 0.06)
+        n.append(signal_bars(p + f"pl{i}", cl + CW - 16 - meta_w - 12 - 22, ry + 9, 22, 18,
+                             ERROR if level <= 1 else TALKING if meta_c == TALKING else PRIMARY, level, over=CARD))
         n.append(txt(p + f"pm{i}", meta, cl + CW - 156, ry + 6, 140, 24, 12, meta_c, align="right",
                      tracking=0.06))
         n.append(txt(p + f"pt{i}", detail, cl + 38, ry + 32, CW - 54, 18, 13, TEXT_DIM, mono=False))
@@ -432,6 +467,7 @@ def status_screen(p, x, y):
     # NETWORK: the interfaces the phone actually has, then the endpoints. Cut off by the screen
     # edge, which is what the rest of a scrolling screen looks like in a screenshot.
     net = [("WLAN0", "192.168.0.35/24"), ("AWARE_DATA0", "fe80::1234:5678:9abc:def0"),
+           ("WI-FI SIGNAL", "-58 dBm", 3),
            ("MULTICAST", "239.255.42.1:47474"), ("AWARE", "crewradio"),
            ("CHANNEL KEY", "…pd2h (ends)"), ("BLUETOOTH", "Mate's phone")]
     cut = y + FRAME_H

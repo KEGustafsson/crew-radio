@@ -29,7 +29,8 @@ import kotlin.random.Random
  *
  * [via] is the transport this phone heard it on last; [hops] how many relays that took;
  * [transports] the flags from its hello ([Hello.describe]), i.e. what it is connected to;
- * [versionCode] the build it runs, 0 until a hello arrives or for a node that is not the app.
+ * [versionCode] the build it runs, 0 until a hello arrives or for a node that is not the app;
+ * [level] how well its packets reach this phone, 1 to [LinkQuality.BARS] bars ([LinkQuality]).
  */
 class Peer(
     val id: Int,
@@ -40,7 +41,8 @@ class Peer(
     val talking: Boolean,
     /** Milliseconds since we last heard anything from it, at the time the list was built. */
     val seenAgoMs: Long,
-    val versionCode: Int
+    val versionCode: Int,
+    val level: Int
 ) {
     val label: String get() = name ?: id.toUInt().toString(16)
 }
@@ -543,8 +545,10 @@ class PttEngine(
         @Volatile var hops = 0
         @Volatile var versionCode = 0
         @Volatile var lastSeen = 0L
+        @Volatile var lastHello = 0L
         @Volatile var lastAudio = 0L
         @Volatile var talking = false
+        val link = LinkQuality()
     }
 
     /**
@@ -805,17 +809,23 @@ class PttEngine(
 
         if (h.codec == Packet.Codec.HELLO) {
             c.hellos.incrementAndGet()
-            Hello.decode(plain, 0, plain.size)?.let { heardHello(h.senderId, it, from, h.ttl) }
+            val gap = ingress.helloGap(h.senderId, h.seq)
+            Hello.decode(plain, 0, plain.size)?.let { heardHello(h.senderId, it, from, h.ttl, gap) }
             return
         }
-        heardAudio(h.senderId, from)
+        val node = heardAudio(h.senderId, from)
 
         if ((packetCount.incrementAndGet() and 0xFF) == 0) pruneDecoders()
         val playing = !(mode == Mode.HALF_DUPLEX && talking)   // radio semantics: not while we transmit
 
         // A gap before this frame is lost audio: its slots are reserved in the mixer atomically
-        // with the admission. A late frame is dropped, its slot was concealed already.
-        if (!ingress.admitAudio(h.senderId, h.seq) { gap -> if (playing && gap <= Conceal.MAX_FRAMES) mixer.conceal(h.senderId, gap) }) return
+        // with the admission, and the link meter is told. A late frame is dropped, its slot was
+        // concealed already.
+        if (!ingress.admitAudio(h.senderId, h.seq) { gap ->
+                node?.link?.audioLost(gap)
+                if (playing && gap <= Conceal.MAX_FRAMES) mixer.conceal(h.senderId, gap)
+            }) return
+        node?.link?.audioHeard()
         if (!playing) return
 
         when (h.codec) {
@@ -867,7 +877,9 @@ class PttEngine(
                 changed = true
             }
         }
-        if (changed) publishRoster()
+        // Always: a hello overdue since the last publish has moved a link level even when nothing
+        // was dropped, and publishRoster hands out nothing when the rendered list is the same.
+        publishRoster()
     }
 
     private fun sendHello() {
@@ -879,21 +891,32 @@ class PttEngine(
         broadcast(Packet.Codec.HELLO, Hello(displayName, flags, maxHops, BuildConfig.VERSION_CODE).encode())
     }
 
-    /** [ttlLeft] is what arrived on the header; every relay decrements from what it received, so the difference is the hops travelled. */
-    private fun heardHello(id: Int, hello: Hello, from: Transport, ttlLeft: Int) {
+    /**
+     * [ttlLeft] is what arrived on the header; every relay decrements from what it received, so the
+     * difference is the hops travelled. [gap] is how many of the sender's hellos went missing before
+     * this one ([Ingress.helloGap]), for the link meter.
+     */
+    private fun heardHello(id: Int, hello: Hello, from: Transport, ttlLeft: Int, gap: Int) {
         val n = nodeFor(id) ?: return
         n.name = hello.name.ifBlank { null }
         n.transports = hello.transports
         n.versionCode = hello.versionCode
         n.via = from.name
         n.hops = (hello.ttl - ttlLeft).coerceAtLeast(0)
-        n.lastSeen = SystemClock.elapsedRealtime()
+        val now = SystemClock.elapsedRealtime()
+        n.lastSeen = now
+        n.lastHello = now
+        n.link.helloHeard(gap)
         publishRoster()
     }
 
-    /** Audio is proof of life too, and lights the talking mark; the roster is only republished when that flips. */
-    private fun heardAudio(id: Int, from: Transport) {
-        val n = nodeFor(id) ?: return
+    /**
+     * Audio is proof of life too, and lights the talking mark; the roster is only republished when
+     * that flips. Returns the node, so the caller can tell its link meter about the frame once it
+     * is admitted, or null when the roster is full.
+     */
+    private fun heardAudio(id: Int, from: Transport): Node? {
+        val n = nodeFor(id) ?: return null
         val now = SystemClock.elapsedRealtime()
         n.lastSeen = now
         n.lastAudio = now
@@ -902,6 +925,7 @@ class PttEngine(
             n.talking = true
             publishRoster()
         }
+        return n
     }
 
     /**
@@ -916,15 +940,24 @@ class PttEngine(
     private fun buildRoster(): List<Peer> {
         val now = SystemClock.elapsedRealtime()
         return nodes.entries
-            .map { (id, n) -> Peer(id, n.name, n.transports, n.via, n.hops, n.talking, now - n.lastSeen, n.versionCode) }
+            .map { (id, n) ->
+                // A node heard only by its audio so far has no hello to be overdue; its last packet stands in.
+                val sinceHello = now - (if (n.lastHello != 0L) n.lastHello else n.lastSeen)
+                Peer(id, n.name, n.transports, n.via, n.hops, n.talking, now - n.lastSeen, n.versionCode,
+                    n.link.level(sinceHello, now - n.lastAudio))
+            }
             .sortedBy { it.label.lowercase() }
     }
 
-    /** Rebuilds the list and hands it out only if it differs from the last one published (ages do not count). */
+    /**
+     * Rebuilds the list and hands it out only if it differs from the last one published (ages do
+     * not count; the link level does, and the heartbeat tick republishes when an overdue hello
+     * has moved it).
+     */
     @Synchronized
     private fun publishRoster() {
         val list = buildRoster()
-        val key = list.joinToString("|") { "${it.id}/${it.name}/${it.transports}/${it.via}/${it.hops}/${it.talking}/${it.versionCode}" }
+        val key = list.joinToString("|") { "${it.id}/${it.name}/${it.transports}/${it.via}/${it.hops}/${it.talking}/${it.versionCode}/${it.level}" }
         if (key == lastRosterKey) return
         lastRosterKey = key
         lastRoster = list

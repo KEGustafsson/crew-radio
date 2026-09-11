@@ -66,6 +66,9 @@
     <string name="a11y_tile_aware">Wi-Fi Aware transport</string>
     <string name="a11y_unavailable">not available on this phone</string>
     <string name="a11y_peer">Bluetooth peer</string>
+    <!-- %1$s is the "N aboard" text above. -->
+    <string name="a11y_weak_link">%1$s, weak link</string>
+    <string name="a11y_link_level">Link %1$d of %2$d</string>
 
     <!-- Permissions -->
     <string name="perm_settings">App settings</string>
@@ -117,6 +120,8 @@
     <string name="kv_channel_key">CHANNEL KEY</string>
     <string name="kv_bluetooth">BLUETOOTH</string>
     <string name="kv_wifi">WI-FI</string>
+    <string name="kv_wifi_signal">WI-FI SIGNAL</string>
+    <string name="value_dbm">%1$d dBm</string>
     <string name="tile_received">RECEIVED</string>
     <string name="tile_sent">SENT</string>
     <string name="tile_relayed">RELAYED</string>
