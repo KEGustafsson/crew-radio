@@ -289,16 +289,16 @@ class StatusActivity : AppCompatActivity() {
         }
     }
 
-    /** The platform's own signal-bar scale for [rssi], on the roster's 0 to [LinkQuality.BARS]. */
+    /**
+     * The platform's own signal-bar scale for [rssi], on the roster's 0 to [LinkQuality.BARS]: the
+     * phone's tuning on API 30+, and before that the thresholds that tuning defaults to
+     * ([LinkQuality.wifiBars]), the only form of it Android 10 offers being deprecated.
+     */
     private fun wifiLevel(rssi: Int): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return LinkQuality.wifiBars(rssi)
         val wifi = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val max = wifi.maxSignalLevel
-            if (max <= 0) 0 else wifi.calculateSignalLevel(rssi) * LinkQuality.BARS / max
-        } else {
-            @Suppress("DEPRECATION")   // the static form is the only one before API 30
-            WifiManager.calculateSignalLevel(rssi, LinkQuality.BARS + 1)
-        }
+        val max = wifi.maxSignalLevel
+        return if (max <= 0) LinkQuality.wifiBars(rssi) else wifi.calculateSignalLevel(rssi) * LinkQuality.BARS / max
     }
 
     /** What the audio-output setting says while the channel is off and there is no route in use. */

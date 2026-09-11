@@ -116,6 +116,17 @@ class LinkQualityTest {
     }
 
     @Test
+    fun wifiBarsFollowThePlatformDefaults() {
+        assertEquals(0, LinkQuality.wifiBars(-95))
+        assertEquals(1, LinkQuality.wifiBars(-88))
+        assertEquals(1, LinkQuality.wifiBars(-80))
+        assertEquals(2, LinkQuality.wifiBars(-77))
+        assertEquals(3, LinkQuality.wifiBars(-60))
+        assertEquals(4, LinkQuality.wifiBars(-55))
+        assertEquals(4, LinkQuality.wifiBars(-30))
+    }
+
+    @Test
     fun theWorseOfHellosAndAudioWins() {
         val q = LinkQuality()
         hellos(q, 10)
