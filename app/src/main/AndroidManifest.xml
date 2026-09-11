@@ -60,6 +60,20 @@
         </intent>
     </queries>
 
+    <!--
+      usesCleartextTraffic: the boat's Signal K server. It lives on the vessel's own LAN, on an
+      address the crew types or the app finds over mDNS, and it is almost always plain HTTP: a boat
+      server has no public name and no certificate anybody can issue for 192.168.1.9. Since the host
+      cannot be known in advance it cannot be listed in a network security config, so cleartext is
+      permitted app-wide here (a base-config saying the same is what lint calls an insecure base
+      configuration; the manifest flag is the same permission, stated where it is read).
+
+      What that is worth knowing about, and why it is bounded: this is the app's ONLY HTTP traffic.
+      The channel itself never uses it — every packet between phones is AES-256-GCM under the
+      channel key over UDP, Bluetooth RFCOMM or Wi-Fi Aware, and none of it goes through this stack.
+      What crosses in the clear is a Signal K read, an announcement, and the token that authorises
+      them, all on the boat's own network. docs/SECURITY.md says so in the threat model.
+    -->
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
@@ -69,7 +83,7 @@
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
-        android:networkSecurityConfig="@xml/network_security_config">
+        android:usesCleartextTraffic="true">
 
         <!-- Managed configuration: an EMM may provision the channel and the network settings. -->
         <meta-data

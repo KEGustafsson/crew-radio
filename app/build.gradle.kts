@@ -65,7 +65,7 @@ android {
     defaultConfig {
         applicationId = "fi.crewradio"
         minSdk = 29
-        targetSdk = 36
+        targetSdk = 37
         versionCode = commitCount
         versionName = appVersion
         buildConfigField("String", "GIT_SHA", "\"$commitSha${if (dirty) "+" else ""}\"")
@@ -97,10 +97,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17      // built-in Kotlin takes its jvmTarget from this
     }
     lint {
-        // `gradlew lintRelease` is a CI gate: an error fails the build, warnings are reported
-        // (app/build/reports/lint-results-release.html) and fixed as they come.
+        // `gradlew lintRelease` is a CI gate: an error fails the build, and a warning is an error
+        // (the report is app/build/reports/lint-results-release.html). A finding is fixed, or
+        // suppressed inline with a comment saying why; it is never left standing.
         abortOnError = true
-        warningsAsErrors = false
+        warningsAsErrors = true
     }
 }
 

@@ -73,8 +73,8 @@ class LinkQualityTest {
         fun talk(lostPer100: Int): Int {
             val q = LinkQuality()
             repeat(200) { i ->
-                if (lostPer100 > 0 && i % (100 / lostPer100) == 0) q.audioLost(1)
-                q.audioHeard()
+                if (lostPer100 > 0 && i % (100 / lostPer100) == 0) q.audioLost(1, 0)
+                q.audioHeard(0)
             }
             return q.level(0, 0)
         }
@@ -89,29 +89,42 @@ class LinkQualityTest {
     @Test
     fun theFirstFramesOfATalkAreNoMeasure() {
         val q = LinkQuality()
-        q.audioLost(10)
-        repeat(20) { q.audioHeard() }                    // a third lost, but under AUDIO_MIN frames
+        q.audioLost(10, 0)
+        repeat(20) { q.audioHeard(0) }                    // a third lost, but under AUDIO_MIN frames
         assertEquals(4, q.level(0, 0))
-        repeat(30) { q.audioHeard() }
+        repeat(30) { q.audioHeard(0) }
         assertEquals(2, q.level(0, 0))                   // 10 of 60, and now it counts
     }
 
     @Test
     fun aBadTransmissionIsForgottenOnceTheTalkerIsQuiet() {
         val q = LinkQuality()
-        q.audioLost(50)
-        repeat(100) { q.audioHeard() }
+        q.audioLost(50, 0)
+        repeat(100) { q.audioHeard(0) }
         assertEquals(1, q.level(0, 0))
         assertEquals(1, q.level(0, LinkQuality.AUDIO_MEMORY_MS))
         assertEquals(4, q.level(0, LinkQuality.AUDIO_MEMORY_MS + 1))
     }
 
     @Test
+    fun aTalkerBackAfterASilenceStartsClean() {
+        val q = LinkQuality()
+        q.audioLost(50, 0)
+        repeat(100) { q.audioHeard(0) }
+        assertEquals(1, q.level(0, 0))
+        val later = LinkQuality.AUDIO_MEMORY_MS + 1
+        repeat(60) { q.audioHeard(later) }               // the next transmission, after the memory ran out
+        assertEquals(4, q.level(0, 0))                   // the old losses are gone, not merely waiting
+        q.audioLost(1, later); q.audioHeard(later)
+        assertEquals(4, q.level(0, 0))                   // 1 of 62
+    }
+
+    @Test
     fun aGapLargerThanTheWindowFillsIt() {
         val q = LinkQuality()
-        repeat(250) { q.audioHeard() }
-        q.audioLost(10_000)
-        repeat(60) { q.audioHeard() }
+        repeat(250) { q.audioHeard(0) }
+        q.audioLost(10_000, 0)
+        repeat(60) { q.audioHeard(0) }
         assertEquals(1, q.level(0, 0))                   // 190 lost of 250
     }
 
@@ -130,11 +143,11 @@ class LinkQualityTest {
     fun theWorseOfHellosAndAudioWins() {
         val q = LinkQuality()
         hellos(q, 10)
-        repeat(100) { q.audioHeard() }
+        repeat(100) { q.audioHeard(0) }
         assertEquals(4, q.level(0, 0))
         q.helloHeard(2)
         assertEquals(2, q.level(0, 0))
-        q.audioLost(30); q.audioHeard()
+        q.audioLost(30, 0); q.audioHeard(0)
         assertEquals(1, q.level(0, 0))
     }
 }

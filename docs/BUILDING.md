@@ -87,9 +87,10 @@ Plugin 9.4 and press Run.
 ./gradlew lintRelease              # report: app/build/reports/lint-results-release.html
 ```
 
-Both run in CI on every push and pull request, and `lintRelease` is a gate: `lint.abortOnError` is
-on, so an error fails the build. Warnings are reported, not fatal. Suppress an issue only inline,
-with a comment saying why.
+Both run in CI on every push and pull request, and `lintRelease` is a gate: `lint.abortOnError` and
+`lint.warningsAsErrors` are on, so an error fails the build and so does a warning. Suppress an issue
+only inline, with a comment saying why, and never a deprecation: where an old API level has only a
+deprecated form of something, write the small replacement by hand and unit-test it.
 
 The unit tests are pure Kotlin (JUnit 4) with no Android runtime, and cover the packet format and
 its replay window, the hello payload, the ingress pipeline, settings rules, the rate limiter,

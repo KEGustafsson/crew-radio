@@ -279,7 +279,6 @@
     <string name="ask_hint">Heading, speed, depth, wind, position…</string>
     <string name="ask_cancel">Cancel</string>
     <string name="ask_done">Done</string>
-    <string name="ask_send">Ask</string>
     <string name="ask_again">Ask again</string>
     <string name="ask_mode_just_me">Just me</string>
     <string name="ask_mode_crew">Whole crew</string>

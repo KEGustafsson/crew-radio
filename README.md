@@ -303,7 +303,7 @@ checksum: the Gradle distribution in `gradle/wrapper/gradle-wrapper.properties`,
 request included) regenerate that file, as `.github/dependabot.yml` describes, and commit it with
 the change. Release builds are shrunk by R8 with names kept, so a crash report from a phone reads
 without a mapping file. Pure-Kotlin unit tests: `./gradlew testDebugUnitTest`; Android Lint
-(`./gradlew lintRelease`) must pass without errors, as it does in CI; warnings are reported, not fatal.
+(`./gradlew lintRelease`) must pass without errors or warnings, as it does in CI: a warning fails it too.
 The APK lands in `app/build/outputs/apk/debug/app-debug.apk`, and
 `adb install -r app/build/outputs/apk/debug/app-debug.apk` puts it on a phone plugged in with USB
 debugging switched on. Real testing needs two or more phones; the emulator has neither Bluetooth

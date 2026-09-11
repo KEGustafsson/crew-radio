@@ -80,16 +80,21 @@ class StatusActivity : AppCompatActivity() {
      * The phone's link to the access point, in dBm, from the Wi-Fi network's capabilities: the one
      * radio level Android hands out (nothing of the kind exists for a Bluetooth Classic link, and
      * Aware gives a distance at best). Watched by transport, not the default network: a boat AP
-     * with no internet is often not the default. Null until heard, and again when Wi-Fi goes.
+     * with no internet is often not the default. Kept per network, because the callback can see
+     * more than one Wi-Fi network at a time and one going away must not blank the other: the
+     * strongest is shown. Null until heard, and again when the last one goes.
      */
-    @Volatile private var wifiRssi: Int? = null
+    private val rssiByNetwork = HashMap<Network, Int>()
+    private val wifiRssi: Int? get() = synchronized(rssiByNetwork) { rssiByNetwork.values.maxOrNull() }
     private val connectivity by lazy { getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager }
     private val wifiCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: Network, nc: NetworkCapabilities) {
             val rssi = nc.signalStrength
-            wifiRssi = if (rssi == Int.MIN_VALUE) null else rssi
+            synchronized(rssiByNetwork) {
+                if (rssi == Int.MIN_VALUE) rssiByNetwork.remove(network) else rssiByNetwork[network] = rssi
+            }
         }
-        override fun onLost(network: Network) { wifiRssi = null }
+        override fun onLost(network: Network) { synchronized(rssiByNetwork) { rssiByNetwork.remove(network) } }
     }
     private lateinit var packetsAside: TextView
     private lateinit var phoneAside: TextView
@@ -139,7 +144,7 @@ class StatusActivity : AppCompatActivity() {
     override fun onStop() {
         handler.removeCallbacks(tick)
         try { connectivity.unregisterNetworkCallback(wifiCallback) } catch (_: IllegalArgumentException) {}
-        wifiRssi = null
+        synchronized(rssiByNetwork) { rssiByNetwork.clear() }
         unbindService(connection)
         service = null
         super.onStop()

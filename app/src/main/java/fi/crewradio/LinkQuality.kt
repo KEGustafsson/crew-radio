@@ -18,7 +18,8 @@ package fi.crewradio
  * A hello that is overdue right now counts as missing too (one every second past a grace of
  * [HELLO_GRACE_MS]), so a node that has gone quiet loses a bar a second until the roster drops it
  * at four seconds. The audio window is set aside once a talker has been silent for
- * [AUDIO_MEMORY_MS], so one bad transmission does not mark a node for the rest of the day, and it
+ * [AUDIO_MEMORY_MS], so one bad transmission does not mark a node for the rest of the day, and
+ * emptied when the talker next speaks after such a silence, so it does not come back either; it
  * says nothing until [AUDIO_MIN] frames are in it: a talker's first few frames are no measure.
  *
  * Pure. The engine feeds it from several transport threads at once, hence synchronized.
@@ -35,12 +36,29 @@ class LinkQuality {
         hellos.heard()
     }
 
-    /** [n] audio frames were missing before the one being admitted; the frame itself is [audioHeard]. */
+    /**
+     * [n] audio frames were missing before the one being admitted at [nowMs]; the frame itself is
+     * [audioHeard]. A talker that has been quiet for [AUDIO_MEMORY_MS] starts with an empty window,
+     * so the losses of an earlier transmission do not colour the first second of the next one.
+     */
     @Synchronized
-    fun audioLost(n: Int) { audio.lost(n) }
+    fun audioLost(n: Int, nowMs: Long) {
+        freshen(nowMs)
+        audio.lost(n)
+    }
 
     @Synchronized
-    fun audioHeard() { audio.heard() }
+    fun audioHeard(nowMs: Long) {
+        freshen(nowMs)
+        audio.heard()
+    }
+
+    private fun freshen(nowMs: Long) {
+        if (lastAudioMs != NEVER && nowMs - lastAudioMs > AUDIO_MEMORY_MS) audio.clear()
+        lastAudioMs = nowMs
+    }
+
+    private var lastAudioMs = NEVER
 
     /**
      * The bars right now, 1 to [BARS]. [sinceHelloMs] is how long ago the last hello (or, before
@@ -74,6 +92,7 @@ class LinkQuality {
 
         fun heard() = push(false)
         fun lost(n: Int) { repeat(n.coerceIn(0, size)) { push(true) } }
+        fun clear() { ring.fill(false); next = 0; total = 0; lostCount = 0 }
 
         private fun push(lost: Boolean) {
             if (total == size && ring[next]) lostCount--
@@ -104,6 +123,7 @@ class LinkQuality {
         const val AUDIO_MIN = 50
         const val HELLO_GRACE_MS = 1_500L
         const val AUDIO_MEMORY_MS = 10_000L
+        private const val NEVER = Long.MIN_VALUE
         /** Loss above each step costs a bar: hellos, then audio. */
         private val HELLO_STEPS = doubleArrayOf(0.0, 0.1, 0.2)
         private val AUDIO_STEPS = doubleArrayOf(0.02, 0.08, 0.2)

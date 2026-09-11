@@ -6,6 +6,9 @@
 
     The answer is shown as well as spoken. In wind you will mishear "six point two", and a number
     you can glance at is the difference between an instrument and a party trick.
+
+    No background here: the bottom-sheet container paints surface_card with Material's rounded top
+    (Widget.PTT.BottomSheet in themes.xml), and painting it again would be overdraw.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -17,8 +20,7 @@
     android:paddingStart="20dp"
     android:paddingEnd="20dp"
     android:paddingTop="12dp"
-    android:paddingBottom="18dp"
-    android:background="@color/surface_card">
+    android:paddingBottom="18dp">
 
     <View
         android:layout_width="34dp"

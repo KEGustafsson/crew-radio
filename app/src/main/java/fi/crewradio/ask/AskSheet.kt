@@ -24,8 +24,10 @@ class AskSheet(
     private val controller: AskController,
 ) {
 
-    private val dialog = BottomSheetDialog(activity)
-    private val view: View = activity.layoutInflater.inflate(R.layout.sheet_ask, null)
+    // The dialog inflates the layout into its own bottom-sheet container, so the root's layout
+    // parameters resolve against a real parent.
+    private val dialog = BottomSheetDialog(activity).apply { setContentView(R.layout.sheet_ask) }
+    private val view: View = dialog.findViewById(R.id.askSheet)!!
 
     private val state: TextView = view.findViewById(R.id.askState)
     private val level: LevelBars = view.findViewById(R.id.askLevel)
@@ -45,7 +47,6 @@ class AskSheet(
     private var typedOnly = false
 
     init {
-        dialog.setContentView(view)
         dialog.setOnDismissListener { controller.finish() }
         action.setOnClickListener { dialog.dismiss() }
         // A second question in the sheet that is already open. Without it every question, answered

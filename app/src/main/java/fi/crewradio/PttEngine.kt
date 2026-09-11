@@ -822,10 +822,10 @@ class PttEngine(
         // with the admission, and the link meter is told. A late frame is dropped, its slot was
         // concealed already.
         if (!ingress.admitAudio(h.senderId, h.seq) { gap ->
-                node?.link?.audioLost(gap)
+                node?.link?.audioLost(gap, now)
                 if (playing && gap <= Conceal.MAX_FRAMES) mixer.conceal(h.senderId, gap)
             }) return
-        node?.link?.audioHeard()
+        node?.link?.audioHeard(now)
         if (!playing) return
 
         when (h.codec) {
