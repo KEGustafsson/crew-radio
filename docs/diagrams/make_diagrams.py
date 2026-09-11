@@ -423,6 +423,7 @@ def kv_rows(p, key, x, ytop, rows, cut=None):
 
 
 def status_screen(p, x, y):
+    """Draw the Status screen and return its nodes and the bottom of its scrollable content."""
     n = [phone_body(p + "f", x, y)]
     n += system_bar(p, x, y)
     n += toolbar(p, x, y, "Status")

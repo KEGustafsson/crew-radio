@@ -141,7 +141,7 @@ class Ingress(
      * Hellos number themselves too, one a second per node, so a gap in that sequence is a hello
      * that never arrived: the roster's link meter ([LinkQuality]). Nothing is gated here — the
      * seen-cache in [admit] has already passed the packet — it only says how many are missing
-     * before this one, or -1 for one that arrives after a later one.
+     * before this one, or -1 for a duplicate or one that arrives after a later one.
      */
     fun helloGap(senderId: Int, seq: Int): Int = helloSeq.admit(senderId, seq)
 
