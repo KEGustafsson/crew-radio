@@ -16,6 +16,7 @@ import java.net.InetSocketAddress
 import java.net.MulticastSocket
 import java.net.NetworkInterface
 import java.net.SocketAddress
+import java.nio.ByteBuffer
 
 /**
  * UDP on the local network. Every phone joins the same multicast group; whoever is
@@ -68,8 +69,11 @@ class LanTransport(
     @Volatile private var broadcastAddr: InetAddress? = null
     @Volatile private var wifi: WifiLink? = null         // the Wi-Fi network the callback last described
     @Volatile private var heard = false
-    @Volatile private var lastAudioMs = 0L               // when audio last went out, for the burst floor
-    @Volatile private var groupCopiesLeft = 0
+    /** Burst-floor state per sender id: relayed talk must not use up the floor of our own. */
+    private val bursts = object : LinkedHashMap<Int, Burst>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Burst>) = size > MAX_BURSTS
+    }
+    private class Burst(var lastAudioMs: Long, var groupCopiesLeft: Int)
     @Volatile private var running = false
     @Volatile private var stale = false                  // a rejoin() asked for while the socket was being opened
     @Volatile private var wasLost = false                // Wi-Fi went away: its return re-joins even at the same address
@@ -269,15 +273,18 @@ class LanTransport(
         // copy can still enter the table - and once the table is full of it, unicast-only audio
         // reaches nobody. This is the floor under that: the crew hears the start of every burst,
         // so the fault is audible rather than silent. Ten extra packets per burst, not per frame.
-        if (!hello) {
-            if (now - lastAudioMs > BURST_GAP_MS) groupCopiesLeft = BURST_GROUP_FRAMES
-            lastAudioMs = now
+        // Counted per sender and under a lock: a relaying phone sends several talkers' frames
+        // from several transport threads, and each burst deserves its own floor.
+        val floor = !hello && packet.size >= Packet.HEADER && synchronized(bursts) {
+            val sender = ByteBuffer.wrap(packet, 6, 4).int
+            val b = bursts.getOrPut(sender) { Burst(0L, 0) }
+            if (now - b.lastAudioMs > BURST_GAP_MS) b.groupCopiesLeft = BURST_GROUP_FRAMES
+            b.lastAudioMs = now
+            if (b.groupCopiesLeft > 0) { b.groupCopiesLeft--; true } else false
         }
-        val alsoGroup = hello || live.isEmpty() || groupCopiesLeft > 0
-        if (alsoGroup) {
+        if (hello || live.isEmpty() || floor) {
             sendTo(s, packet, groupAddr)
             broadcastAddr?.let { sendTo(s, packet, it) }
-            if (!hello && groupCopiesLeft > 0) groupCopiesLeft--
         }
         for (a in live) if (a != except) sendTo(s, packet, a)
         return true
@@ -355,5 +362,7 @@ class LanTransport(
         const val BURST_GAP_MS = 400L
         /** Frames at the start of a burst that keep the group and broadcast copies: 100 ms at 50 fps. */
         const val BURST_GROUP_FRAMES = 5
+        /** Senders whose burst state is kept; the crew is far smaller. */
+        private const val MAX_BURSTS = 32
     }
 }

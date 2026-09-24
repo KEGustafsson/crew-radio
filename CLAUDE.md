@@ -107,7 +107,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   wait with `transport/Backoff` (1 s doubling to 15 s). The side that dialled restores.
 - `LanTransport` sends unicast to every address heard from in the last `PEER_TTL_MS` (5 s, at
   most `MAX_PEERS`), and adds the multicast group and the interface's IPv4 broadcast address
-  only while no peer is known or the packet is a hello. APs deliver multicast and broadcast at
+  only while no peer is known, the packet is a hello, or it is one of the first
+  `BURST_GROUP_FRAMES` of a sender's talk burst (the floor under a poisoned peer table, counted
+  per sender so relayed talk does not spend our own). APs deliver multicast and broadcast at
   their lowest rate without acknowledgement, so unicast is what carries audio; sending all
   three left every frame leaving the phone 2 + N times, which is why audio drops the group
   copies once a peer is known. Hellos keep them whatever the table holds — one packet a second,
@@ -164,8 +166,8 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   counters: (1) the per-sender rate budget must be charged after the seen-cache, or the two WLAN
   copies of every frame spend it in ~6 s (fixed); (2) an access point delivers multicast and
   broadcast at its lowest rate, unacknowledged, and a phone in the same cabin loses a few percent,
-  audible as voids; unicast copies to each known peer fix it (the plugin does this; the app's
-  LanTransport could learn peers' addresses from hellos and do the same); (3) a sender whose timer
+  audible as voids; unicast copies to each known peer fix it (the plugin does this, and the app's
+  LanTransport learns peers from every packet that opened with the channel key); (3) a sender whose timer
   ticks at 15.6 ms (Node on Windows) needs a ~100 ms lead or the mixer, which drains after 40 ms
   of buffer, runs dry and conceals.
 - Bluetooth headsets: measured on a Jabra Evolve2 65 + S25. With SCO up and no call, a tap is
@@ -206,8 +208,8 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   key-repeat timeout makes a hold one press. Every hardware key change plays `audio/Tones`
   through the mixer's cue queue, on top of whatever is sounding. Setting `hw_button`.
 - `PttEngine.onPacket`: dedupe by (senderId, seq) seen-cache, relay to other
-  transports/links if `relay` is on and ttl > 1 (ttl clamped to our own `maxHops`, then
-  decremented in place), then decode and play unless half-duplex and transmitting. Opus
+  transports/links if `relay` is on and ttl > 1 (ttl clamped to the sender's signed `hops`,
+  forwarded only while within our own `maxHops` of the origin, then decremented in place), then decode and play unless half-duplex and transmitting. Opus
   decoders are per sender, created on demand, at most 8 at once (quietest evicted), released
   after 30 s of silence. Encoder failure falls back to PCM and reports it.
 - Wire format has no legacy mode: every phone must run the same build (README says so).
@@ -307,8 +309,7 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   directly (`hops - ttl == 0`), because access points drop a few percent of multicast even in the
   same cabin; the phones drop the copies they get twice. Measured with the app's Status counters.
 - Phase 2 (app changes, same wire version): an urgent announcement should play through a
-  half-duplex phone that is transmitting; acknowledgement from a phone; the app's LanTransport
-  could send unicast copies to known peers the same way.
+  half-duplex phone that is transmitting; acknowledgement from a phone.
 
 ## Licence
 - EUPL-1.2 (`LICENSE`, SPDX `EUPL-1.2`), declared in the README and in the SBOM's metadata. Keep

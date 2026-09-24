@@ -73,12 +73,17 @@ class Hello(val name: String, val transports: Int, val ttl: Int, val versionCode
         fun sanitise(name: String): String {
             val sb = StringBuilder(name.length)
             var space = false
-            for (c in name) {
-                if (c.isISOControl() || Character.getType(c) == Character.FORMAT.toInt()) continue
-                if (c.isWhitespace()) { space = true; continue }       // Unicode spaces too, as the plugin's \s
+            // By code point, not by char: a format character above U+FFFF (the TAG block, say)
+            // is a surrogate pair, and each half on its own reads as SURROGATE, never FORMAT.
+            var i = 0
+            while (i < name.length) {
+                val cp = name.codePointAt(i)
+                i += Character.charCount(cp)
+                if (Character.isISOControl(cp) || Character.getType(cp) == Character.FORMAT.toInt()) continue
+                if (Character.isWhitespace(cp) || Character.isSpaceChar(cp)) { space = true; continue }   // Unicode spaces too, as the plugin's \s
                 if (space && sb.isNotEmpty()) sb.append(' ')
                 space = false
-                sb.append(c)
+                sb.appendCodePoint(cp)
             }
             return sb.toString()
         }
