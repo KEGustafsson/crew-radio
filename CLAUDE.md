@@ -140,7 +140,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   ask the AOSP Opus decoder for PLC (an empty buffer yields empty output). Audio frames and hellos
   number themselves independently (two seen-caches), so a gap in a sender's audio sequence is lost
   audio: `SeqTracker` (pure, wrap-aware, tested) admits each frame and reports the gap, the engine
-  reserves that many slots in the mixer atomically with the admission, and the mixer fills them,
+  reserves that many slots in the mixer atomically with the admission (admission, reservation and
+  delivery run under one striped per-sender lock, because a sender's frames arrive on every
+  transport's thread at once), and the mixer fills them,
   and any queue that runs dry mid-talk, with the last frame fading over at most three slots.
 - Volume row (main screen, above the disc: mute glyph, slider, step number). The slider is the
   phone's call volume through `audio/CallVolume`: the voice-call stream (playback is
@@ -397,7 +399,12 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 - `lintRelease` is a CI gate with `abortOnError` and `warningsAsErrors`: no errors and no warnings,
   ever. Suppress an issue only inline, with a comment saying why. No `@Suppress("DEPRECATION")`
   either: where a platform API has only a deprecated form on an old API level, write the small
-  replacement by hand and unit-test it (`LinkQuality.wifiBars` is the pattern).
+  replacement by hand and unit-test it (`LinkQuality.wifiBars`, `audio/ScoBroadcast` and
+  `WifiLockModes` are the pattern; a constant's value is written out and pinned by its test). A
+  deprecated *call* that no hand-written code can replace (SCO and the speakerphone on API 29-30,
+  the pre-34 NSD resolve and `Connection.setAudioRoute`, the self-managed PhoneAccount capability)
+  goes in `LegacyPlatform.kt`, the only file with the suppression: a thin call, no policy, reached
+  only behind its caller's API check. Anything new there needs the same justification in its KDoc.
 - Anything blocking (sockets, AudioTrack.write) lives on its own named thread
   (`ptt-*`); never on the main thread.
 - Transport threads go through `transport/transportThread`: an uncaught throwable on a

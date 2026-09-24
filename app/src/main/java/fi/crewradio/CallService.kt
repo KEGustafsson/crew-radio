@@ -80,7 +80,6 @@ class CallService : ConnectionService() {
 
         /** Telecom's route below API 34; from 34 the endpoint callbacks below carry the same and this is left alone. */
         @Deprecated("Telecom reports CallEndpoints from API 34")
-        @Suppress("DEPRECATION")
         override fun onCallAudioStateChanged(state: CallAudioState) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
             val label = when (state.route) {
@@ -90,7 +89,7 @@ class CallService : ConnectionService() {
                 else -> res.getString(R.string.call_earpiece)
             }
             val wanted = CallBridge.wantedRoute(state)
-            if (wanted != null && wanted != state.route) setAudioRoute(wanted)
+            if (wanted != null && wanted != state.route) LegacyPlatform.setAudioRoute(this, wanted)
             CallBridge.listener?.onAudioRoute(label)
         }
 
@@ -177,7 +176,6 @@ object CallBridge {
     val active: Boolean get() = connection != null
 
     /** The route the policy wants (below API 34), or null to leave Telecom's choice alone. */
-    @Suppress("DEPRECATION")
     fun wantedRoute(state: CallAudioState): Int? {
         val mask = state.supportedRouteMask
         forcedRoute?.let { return if ((mask and it) != 0) it else null }
@@ -221,14 +219,10 @@ object CallBridge {
         val tm = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
         val handle = PhoneAccountHandle(ComponentName(context, CallService::class.java), ACCOUNT_ID)
         return try {
-            // CAPABILITY_SELF_MANAGED is deprecated in favour of the androidx.core:core-telecom
-            // Jetpack library, which this app does not depend on: a whole new dependency (and a
-            // verification-metadata regeneration) for the one self-managed call the headset
-            // setting places. The platform API still works and is what the setting is built on.
-            @Suppress("DEPRECATION")
+            // Self-managed, by the deprecated capability: see LegacyPlatform for why not core-telecom.
             tm.registerPhoneAccount(
                 PhoneAccount.builder(handle, context.getString(R.string.app_name))
-                    .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
+                    .setCapabilities(LegacyPlatform.CAPABILITY_SELF_MANAGED)
                     .addSupportedUriScheme(ADDRESS.scheme)
                     .build()
             )

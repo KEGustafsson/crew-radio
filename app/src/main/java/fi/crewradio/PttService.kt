@@ -568,9 +568,7 @@ class PttService : Service() {
             }
             if (wifiLocks.isEmpty()) {
                 val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                val modes = mutableListOf(WifiManager.WIFI_MODE_FULL_LOW_LATENCY)
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) modes += highPerfWifiMode()
-                for (mode in modes) {
+                for (mode in WifiLockModes.forSdk(Build.VERSION.SDK_INT)) {
                     wifiLocks += wm.createWifiLock(mode, "ptt:wifi:$mode").also {
                         it.setReferenceCounted(false)
                         it.acquire()
@@ -579,10 +577,6 @@ class PttService : Service() {
             }
         }
     }
-
-    /** Isolated so the deprecation (API 34, where it aliases LOW_LATENCY anyway) is suppressed in one place. */
-    @Suppress("DEPRECATION")
-    private fun highPerfWifiMode(): Int = WifiManager.WIFI_MODE_FULL_HIGH_PERF
 
     /** Releases whatever [acquireLocks] took, and the proximity lock with it; safe when nothing is held. */
     private fun releaseLocks() {

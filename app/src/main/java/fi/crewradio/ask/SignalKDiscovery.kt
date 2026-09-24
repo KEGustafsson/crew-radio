@@ -5,6 +5,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import androidx.annotation.RequiresApi
+import fi.crewradio.LegacyPlatform
 import java.net.Inet4Address
 import java.net.InetAddress
 
@@ -129,12 +130,12 @@ class SignalKDiscovery(context: Context) {
         }
     }
 
-    @Suppress("DEPRECATION")   // the callback above only exists from API 34; this is the path below it
+    /** Below API 34 the one-shot resolve is the only way, through [LegacyPlatform]. */
     private fun resolveLegacy(manager: NsdManager, info: NsdServiceInfo, onFound: (Found) -> Unit) {
-        manager.resolveService(info, object : NsdManager.ResolveListener {
+        LegacyPlatform.resolveService(manager, info, object : NsdManager.ResolveListener {
             override fun onResolveFailed(failed: NsdServiceInfo, errorCode: Int) = Unit
             override fun onServiceResolved(resolved: NsdServiceInfo) {
-                urlOf(listOfNotNull(resolved.host), resolved.port)?.let {
+                urlOf(listOfNotNull(LegacyPlatform.hostOf(resolved)), resolved.port)?.let {
                     onFound(Found(resolved.serviceName, it))
                 }
             }
