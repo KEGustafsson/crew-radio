@@ -238,6 +238,8 @@ class PttService : Service() {
      * until someone finds the Disconnect action.
      */
     private fun abandon(gen: Int) {
+        // A disconnect or a newer connect since this join began owns the foreground and the locks now.
+        if (joinGen.get() != gen) return
         joinDone(gen)
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         foregroundStarted = false
@@ -264,13 +266,16 @@ class PttService : Service() {
     /** Leaves the channel, releases the locks and drops the foreground; safe to call when already idle. */
     fun disconnect() {
         val wasConnected = engine.isConnected || joining     // a join cancelled half way still says so
-        joinGen.incrementAndGet()
+        val gen = joinGen.incrementAndGet()
         joining = false
         stopHardwareButtons()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         foregroundStarted = false
         session.execute {
             engine.disconnect()
+            // Off then on again before this ran: the newer connect() holds the locks (its own
+            // acquireLocks() found them still held) and wants the service kept; leave both to it.
+            if (joinGen.get() != gen) return@execute
             // A join that finished while this waited posted refreshHardwareButtons() while the
             // engine still read as connected; this runs after it on the main thread.
             mainHandler.post { stopHardwareButtons() }

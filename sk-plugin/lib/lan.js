@@ -186,7 +186,7 @@ function chooseInterface(name, all = os.networkInterfaces()) {
   return candidates[0] ?? null;
 }
 
-const VIRTUAL = /^(docker|veth|br-|virbr|cni|flannel|podman|lxc|lxd|vmnet|vboxnet|tun|tap|tailscale|zt|wg)/i;
+const VIRTUAL = /^(docker|veth|br-|br\d|virbr|cni|flannel|podman|lxc|lxd|vmnet|vboxnet|tun|tap|tailscale|zt|wg)/i;
 
 function broadcastOf(address, netmask) {
   const a = address.split(".").map(Number);

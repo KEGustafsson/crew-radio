@@ -158,6 +158,7 @@ test("checkInterface: a link whose interface changed or went away closes and say
 test("chooseInterface puts container, bridge and VPN interfaces last", () => {
   const v4 = (address) => [{ family: "IPv4", internal: false, address, netmask: "255.255.255.0" }];
   assert.equal(chooseInterface(null, { docker0: v4("172.17.0.1"), usb0: v4("192.168.7.2") }).name, "usb0");
+  assert.equal(chooseInterface(null, { br0: v4("192.168.50.1"), usb0: v4("192.168.7.2") }).name, "usb0");   // a br0-style bridge too
   assert.equal(chooseInterface(null, { "br-1a2b": v4("172.18.0.1"), tailscale0: v4("100.64.0.1") }).name, "br-1a2b", "still picked when nothing else is there");
   assert.equal(chooseInterface(null, { docker0: v4("172.17.0.1"), wlan0: v4("10.0.0.5") }).name, "wlan0");
 });

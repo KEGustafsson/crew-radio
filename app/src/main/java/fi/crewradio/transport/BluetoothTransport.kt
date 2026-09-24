@@ -85,6 +85,7 @@ class BluetoothTransport(
     /** One RFCOMM connection; the token the engine gets as `link`. */
     private class Link(val stream: StreamLink, val device: BluetoothDevice, val isDialed: Boolean) {
         @Volatile var superseded = false                          // closed by the tie-break, not by the peer
+        @Volatile var learned = false                             // its own first direct frame has named the peer
     }
 
     /** The adapter going off drops everything; coming back on wakes the listener and the dialler. */
@@ -289,8 +290,11 @@ class BluetoothTransport(
         transportThread("ptt-bt-rx-${dev.address}", { onStatus(str(R.string.status_bt_rx_stopped, it.message)) }) {
             try {
                 stream.readLoop { p ->
-                    if (!peerIds.containsKey(dev.address)) {
+                    // Every link learns the id from its own frames: a peer that came back as a new
+                    // engine may still have its old link open, whose id must not decide for the new one.
+                    if (!link.learned) {
                         BluetoothTieBreak.directSender(p)?.let { id ->
+                            link.learned = true
                             peerIds[dev.address] = id
                             reconcile(dev)
                         }
@@ -308,7 +312,6 @@ class BluetoothTransport(
                 if (running && peer != null && peer.address == dev.address) redial(peer)
             }
         }
-        if (peerIds.containsKey(dev.address)) reconcile(dev)
     }
 
     /** Both phones dialled each other: keep one link per [BluetoothTieBreak], close the other. */

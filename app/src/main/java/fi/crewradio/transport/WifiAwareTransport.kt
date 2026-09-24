@@ -105,6 +105,7 @@ class WifiAwareTransport(
     private val links = CopyOnWriteArrayList<Link>()
     /** Responder requests, one per key: [ANY_PEER] on API 31+, the initiator's node id below it. */
     private val responderCallbacks = ConcurrentHashMap<Any, ConnectivityManager.NetworkCallback>()
+    private val responderLock = Any()                             // orders a registration against clearResponders()
     private val peers = PeerTable<Int, PeerHandle>(PEER_TTL_MS, MAX_PEERS)   // what discovery has seen lately
     private val dials = ConcurrentHashMap<Int, Dial>()            // peers we are dialling or linked to
     private val backoffs = ConcurrentHashMap<Int, Backoff>()
@@ -244,7 +245,9 @@ class WifiAwareTransport(
 
     /** Responder requests belong to the publish session; drop them whenever it goes. */
     private fun clearResponders() {
-        for (key in responderCallbacks.keys) responderCallbacks.remove(key)?.let(::unregister)
+        synchronized(responderLock) {
+            for (key in responderCallbacks.keys) responderCallbacks.remove(key)?.let(::unregister)
+        }
     }
 
     /** Forgets peers, dials, discovery sessions and links: all of it hangs off the session. */
@@ -361,9 +364,19 @@ class WifiAwareTransport(
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) { noteInterface(lp) }
         }
-        responderCallbacks.put(key, cb)?.let(::unregister)
-        connectivity.requestNetwork(request(spec), cb)
-        if (!running && responderCallbacks.remove(key, cb)) unregister(cb)   // stop() cleared before we added it
+        // Registered under the same lock clearResponders() takes, so every request that is made is
+        // either in the map for it to release or never made: a teardown on ptt-aware-stop racing this
+        // (main thread) would otherwise clear the map between the put and the registration.
+        synchronized(responderLock) {
+            if (!running) return
+            responderCallbacks.put(key, cb)?.let(::unregister)
+            try {
+                connectivity.requestNetwork(request(spec), cb)
+            } catch (e: RuntimeException) {
+                responderCallbacks.remove(key, cb)
+                throw e                                   // reported by the caller's reporting()
+            }
+        }
     }
 
     /** Remembers the NAN interface a data path runs on, for [admit]. */

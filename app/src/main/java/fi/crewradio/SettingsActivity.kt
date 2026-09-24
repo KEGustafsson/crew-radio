@@ -295,6 +295,11 @@ class SettingsActivity : AppCompatActivity() {
             }
             val href = (requested as SignalKClient.Result.Ok).value.href
                 ?: return context.getString(R.string.pref_ask_pair_failed, "")
+            // An href pointing off the server fails every poll the same way: say so now, not after
+            // three minutes of polling, and let the loop below retry only what can pass.
+            if (SignalKUrl.resolve(base, href) == null) {
+                return context.getString(R.string.pref_ask_pair_failed, context.getString(R.string.pref_ask_pair_redirected))
+            }
             // Somebody has to walk to the chart table and press approve.
             var waited = 0L
             while (waited < PAIR_TIMEOUT_MS) {
