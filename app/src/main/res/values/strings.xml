@@ -28,6 +28,8 @@
     <string name="channel_off">OFF · TAP TO JOIN</string>
     <string name="channel_on">ON CHANNEL</string>
     <string name="channel_on_muted">ON CHANNEL · MUTED</string>
+    <!-- The second or two between Connect and the channel coming up, while the key is stretched. -->
+    <string name="channel_joining">JOINING…</string>
     <string name="volume_mute">Mute</string>
     <string name="volume_unmute">Unmute</string>
     <string name="volume_slider">Volume</string>
@@ -427,6 +429,7 @@
     <string name="pref_ask_pair_write">Paired · read and write</string>
     <string name="pref_ask_pair_denied">The server refused this phone. Tap to ask again.</string>
     <string name="pref_ask_pair_failed">Could not reach the server: %1$s</string>
+    <string name="pref_ask_pair_unreadable">The server\'s answer could not be read. Tap to try again.</string>
     <string name="pref_ask_speed_title">Speed unit</string>
     <string name="pref_ask_depth_title">Depth unit</string>
     <string name="pref_ask_privacy">Speech is recognised on this phone. Your question is never sent to the internet.</string>

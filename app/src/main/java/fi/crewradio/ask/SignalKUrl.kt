@@ -18,6 +18,9 @@ object SignalKUrl {
 
     const val DEFAULT_PORT = 3000
 
+    /** The highest TCP port. `URI` parses any number of digits as a port and checks none of them. */
+    const val MAX_PORT = 65535
+
     /**
      * `http://host:port` with no path, or null when this cannot be a server. Anything after the
      * authority is dropped — a pasted admin-UI link is still a perfectly good way to name a server.
@@ -37,6 +40,9 @@ object SignalKUrl {
         if (scheme != "http" && scheme != "https") return null
         val host = uri.host?.takeIf { it.isNotEmpty() } ?: return null
         if (host.any { it.isWhitespace() }) return null
+        // Refused here, not at the connection, which throws IllegalArgumentException rather than an
+        // IOException for it: past every catch in the client and, on a plain thread, out of the app.
+        if (uri.port > MAX_PORT) return null
         val port = when {
             uri.port > 0 -> uri.port
             scheme == "https" -> 443

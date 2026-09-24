@@ -48,6 +48,19 @@ class SignalKUrlTest {
         assertTrue(SignalKUrl.valid("northstar.local"))
     }
 
+    /**
+     * `URI` takes any run of digits for a port. A port past 65535 made the connection throw
+     * IllegalArgumentException, which no catch in the client expects, and on the pairing thread
+     * that ended the app; the address is refused where it is typed instead.
+     */
+    @Test
+    fun aPortPastTheLastOneIsRefused() {
+        assertNull(SignalKUrl.normalise("192.168.1.9:99999"))
+        assertNull(SignalKUrl.normalise("http://192.168.1.9:65536/admin"))
+        assertFalse(SignalKUrl.valid("northstar.local:100000"))
+        assertEquals("http://192.168.1.9:65535", SignalKUrl.normalise("192.168.1.9:65535"))
+    }
+
     @Test
     fun theSettingsRowShowsHostAndPortWithoutTheScheme() {
         assertEquals("northstar.local:3000", SignalKUrl.describe("northstar.local"))

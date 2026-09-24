@@ -31,13 +31,20 @@ object SettingsRules {
     fun validName(s: String): Boolean =
         s.trim().toByteArray(Charsets.UTF_8).size <= Hello.MAX_NAME_BYTES && s.none { it == '\r' || it == '\n' }
 
-    /** An IPv4 multicast address: dotted quad, first octet 224–239. */
+    /**
+     * An IPv4 multicast address: dotted quad, first octet 224–239. Each octet is plain decimal,
+     * as Android's parser reads one: `toIntOrNull` alone let `+239` and `0239` through, which
+     * `InetAddress.getByName` does not take for a number and sends to DNS as a host name instead.
+     */
     fun validGroup(s: String): Boolean {
         val parts = s.trim().split('.')
-        if (parts.size != 4) return false
-        val octets = parts.map { it.toIntOrNull() ?: return false }
+        if (parts.size != 4 || !parts.all { OCTET.matches(it) }) return false
+        val octets = parts.map { it.toInt() }
         return octets.all { it in 0..255 } && octets[0] in 224..239
     }
+
+    /** One decimal octet as the platform writes it: no sign, no leading zero, at most three digits. */
+    private val OCTET = Regex("0|[1-9][0-9]{0,2}")
 
     /** An unprivileged port. */
     fun validPort(s: String): Boolean = s.trim().toIntOrNull()?.let { it in 1024..65535 } == true
@@ -115,10 +122,10 @@ class Prefs(context: Context) {
         KEY_GROUP -> managedString(key)?.let { SettingsRules.validGroup(it) }
         KEY_PORT -> managedInt(key)?.let { SettingsRules.validPort(it.toString()) }
         KEY_HOPS -> managedInt(key)?.let { SettingsRules.validHops(it.toString()) }
-        KEY_AUDIO_ROUTE -> managedString(key)?.let { it == ROUTE_AUTO || it == ROUTE_SPEAKER || it == ROUTE_EARPIECE }
+        KEY_AUDIO_ROUTE -> managedString(key)?.let { validRoute(it) }
         KEY_RELAY, KEY_FULL_DUPLEX, KEY_OPUS, KEY_ASK_ENABLED -> managedBool(key) != null
         KEY_ASK_SERVER -> managedString(key)?.let { SignalKUrl.valid(it) }
-        KEY_ASK_MODE -> managedString(key)?.let { it == ASK_MODE_JUST_ME || it == ASK_MODE_CREW }
+        KEY_ASK_MODE -> managedString(key)?.let { validAskMode(it) }
         else -> false
     } == true
 
@@ -177,10 +184,16 @@ class Prefs(context: Context) {
     /** Which physical buttons key the mic while on channel: off, headset, volume or both. */
     val hwButton: String get() = sp.getString(KEY_HW_BUTTON, HW_BOTH) ?: HW_BOTH
     val keepScreenOn: Boolean get() = sp.getBoolean(KEY_KEEP_SCREEN_ON, true)
-    /** Where the voice goes: auto (headset, else loudspeaker), the loudspeaker, or the earpiece. */
+    /**
+     * Where the voice goes: auto (headset, else loudspeaker), the loudspeaker, or the earpiece.
+     * A managed value counts only when it is one of the three, like every other key here: one that
+     * is not leaves the row editable ([isManaged]), so the phone's own choice has to be what counts.
+     */
     val audioRoute: String
-        get() = (managedString(KEY_AUDIO_ROUTE) ?: sp.getString(KEY_AUDIO_ROUTE, ROUTE_AUTO))
-            ?.takeIf { it == ROUTE_SPEAKER || it == ROUTE_EARPIECE } ?: ROUTE_AUTO
+        get() = (managedString(KEY_AUDIO_ROUTE)?.takeIf { validRoute(it) } ?: sp.getString(KEY_AUDIO_ROUTE, ROUTE_AUTO))
+            ?.takeIf { validRoute(it) } ?: ROUTE_AUTO
+
+    private fun validRoute(s: String) = s == ROUTE_AUTO || s == ROUTE_SPEAKER || s == ROUTE_EARPIECE
     /** Register the session as a call while a Bluetooth headset is in use; for headsets whose button hangs up. */
     val headsetAsCall: Boolean get() = sp.getBoolean(KEY_HEADSET_CALL, false)
     /** With a Bluetooth headset, speech keys the mic (VOX). */
@@ -199,11 +212,16 @@ class Prefs(context: Context) {
 
     /** The boat's server as a base URL, or null when nothing usable is set. */
     val askServer: String?
-        get() = SignalKUrl.normalise(managedString(KEY_ASK_SERVER) ?: sp.getString(KEY_ASK_SERVER, null))
+        get() = SignalKUrl.normalise(askServerTyped)
 
-    /** What the crew typed, for the settings row to show back to them. */
+    /**
+     * What the crew typed, for the settings row to show back to them; the fleet's address instead
+     * when it sets a usable one. An unusable managed address is passed over, not obeyed: the row
+     * is then the crew's to edit ([isManaged]), and what they type there has to be what is dialled.
+     */
     val askServerTyped: String?
-        get() = (managedString(KEY_ASK_SERVER) ?: sp.getString(KEY_ASK_SERVER, null))?.takeIf { it.isNotBlank() }
+        get() = (managedString(KEY_ASK_SERVER)?.takeIf { SignalKUrl.valid(it) } ?: sp.getString(KEY_ASK_SERVER, null))
+            ?.takeIf { it.isNotBlank() }
 
     /**
      * The token the server issued to this phone. Excluded from cloud backup and device transfer
@@ -220,8 +238,10 @@ class Prefs(context: Context) {
      * talked into transmitting by a recognition misfire.
      */
     val askMode: String
-        get() = (managedString(KEY_ASK_MODE) ?: sp.getString(KEY_ASK_MODE, ASK_MODE_JUST_ME))
+        get() = (managedString(KEY_ASK_MODE)?.takeIf { validAskMode(it) } ?: sp.getString(KEY_ASK_MODE, ASK_MODE_JUST_ME))
             ?.takeIf { it == ASK_MODE_CREW } ?: ASK_MODE_JUST_ME
+
+    private fun validAskMode(s: String) = s == ASK_MODE_JUST_ME || s == ASK_MODE_CREW
 
     /** Knots or metres, as this crew reads them. */
     val askUnits: AskUnits.Prefs

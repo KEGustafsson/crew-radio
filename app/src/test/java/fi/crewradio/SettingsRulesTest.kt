@@ -25,6 +25,14 @@ class SettingsRulesTest {
         assertFalse(SettingsRules.validGroup("239.255.42"))
         assertFalse(SettingsRules.validGroup("239.255.42.256"))
         assertFalse(SettingsRules.validGroup("ff02::1"))              // IPv6 is not what LanTransport joins
+        // Only what InetAddress.getByName reads as a number; the rest it looks up in DNS instead.
+        assertTrue(SettingsRules.validGroup("239.0.0.1"))
+        assertFalse(SettingsRules.validGroup("+239.255.42.1"))
+        assertFalse(SettingsRules.validGroup("0239.255.42.1"))
+        assertFalse(SettingsRules.validGroup("239.255.042.1"))
+        assertFalse(SettingsRules.validGroup("239.255.-0.1"))
+        assertFalse(SettingsRules.validGroup("239.255. 42.1"))
+        assertFalse(SettingsRules.validGroup("239.255.0042.1"))
     }
 
     @Test
