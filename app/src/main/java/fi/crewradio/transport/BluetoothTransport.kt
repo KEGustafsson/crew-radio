@@ -304,11 +304,15 @@ class BluetoothTransport(
             } catch (e: IOException) {
                 if (running && !link.superseded) onStatus(str(R.string.status_bt_dropped, stream.label))
             } finally {
-                links.remove(link)
-                stream.close()
                 // The peer may come back as a new engine with a new id; a stale one here would
                 // make both sides keep their own dialled link and close each other's for ever.
-                if (links.none { it.device.address == dev.address }) peerIds.remove(dev.address)
+                // Under the lock addLink registers with, so a replacement link is either seen here
+                // (and keeps the id it learns) or arrives after the eviction.
+                synchronized(lifecycle) {
+                    links.remove(link)
+                    if (links.none { it.device.address == dev.address }) peerIds.remove(dev.address)
+                }
+                stream.close()
                 if (running && peer != null && peer.address == dev.address) redial(peer)
             }
         }

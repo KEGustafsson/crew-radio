@@ -182,18 +182,22 @@ class PttService : Service() {
      */
     fun connect(factory: (PttEngine) -> List<Transport>) {
         val connecting = getString(R.string.status_connecting)
-        try {
-            // Started + foreground so the service outlives the activity's unbind.
-            ContextCompat.startForegroundService(this, Intent(this, PttService::class.java))
-            showForeground(connecting)
-        } catch (e: Exception) {   // e.g. ForegroundServiceStartNotAllowedException when not in the foreground
-            stopSelf()
-            onStatus(getString(R.string.status_cant_start, e.message))
-            return
+        val gen: Int
+        // Taking the session over is one step against a teardown's check-and-release (see [ownership]).
+        synchronized(ownership) {
+            try {
+                // Started + foreground so the service outlives the activity's unbind.
+                ContextCompat.startForegroundService(this, Intent(this, PttService::class.java))
+                showForeground(connecting)
+            } catch (e: Exception) {   // e.g. ForegroundServiceStartNotAllowedException when not in the foreground
+                stopSelf()
+                onStatus(getString(R.string.status_cant_start, e.message))
+                return
+            }
+            acquireLocks()
+            gen = joinGen.incrementAndGet()
+            joining = true
         }
-        acquireLocks()
-        val gen = joinGen.incrementAndGet()
-        joining = true
         onStatus(connecting)
         val key = Prefs(this).channelKey
         session.execute {
@@ -238,14 +242,16 @@ class PttService : Service() {
      * until someone finds the Disconnect action.
      */
     private fun abandon(gen: Int) {
-        // A disconnect or a newer connect since this join began owns the foreground and the locks now.
-        if (joinGen.get() != gen) return
-        joinDone(gen)
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-        foregroundStarted = false
-        releaseLocks()
+        synchronized(ownership) {
+            // A disconnect or a newer connect since this join began owns the foreground and the locks now.
+            if (joinGen.get() != gen) return
+            joinDone(gen)
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            foregroundStarted = false
+            releaseLocks()
+            stopSelf()
+        }
         mainHandler.post { statusListener?.invoke(lastStatus) }
-        stopSelf()
     }
 
     /**
@@ -258,6 +264,13 @@ class PttService : Service() {
 
     /** Bumped by every [connect] and [disconnect]; a queued join whose number is no longer current does nothing. */
     private val joinGen = java.util.concurrent.atomic.AtomicInteger()
+
+    /**
+     * Held by [connect] while it takes the session over (promotion, locks, a new [joinGen]) and by a
+     * teardown or [abandon] while it checks its generation and gives the locks and the service up, so
+     * a connect on the main thread cannot land between an old session's check and its release.
+     */
+    private val ownership = Any()
 
     private fun joinDone(gen: Int) {
         if (joinGen.get() == gen) joining = false
@@ -275,14 +288,18 @@ class PttService : Service() {
             engine.disconnect()
             // Off then on again before this ran: the newer connect() holds the locks (its own
             // acquireLocks() found them still held) and wants the service kept; leave both to it.
-            if (joinGen.get() != gen) return@execute
+            val owned = synchronized(ownership) {
+                if (joinGen.get() != gen) false else { releaseLocks(); true }
+            }
+            if (!owned) return@execute
             // A join that finished while this waited posted refreshHardwareButtons() while the
             // engine still read as connected; this runs after it on the main thread.
             mainHandler.post { stopHardwareButtons() }
-            releaseLocks()
             if (wasConnected) onStatus(getString(R.string.status_disconnected))
             mainHandler.post { statusListener?.invoke(lastStatus) }
-            stopSelf()          // last, so the service is not destroyed out from under the teardown
+            // Last, so the service is not destroyed out from under the teardown; and not at all once
+            // a connect() has taken it over since the release above.
+            synchronized(ownership) { if (joinGen.get() == gen) stopSelf() }
         }
     }
 
