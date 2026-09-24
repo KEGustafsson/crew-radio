@@ -219,7 +219,7 @@ class AskController(
         match: AskIntents.Match,
     ) {
         run {
-            val client = SignalKClient(base, token)
+            val client = SignalKClient(context, base, token)
             when (val read = client.read(Quantity.subtreesOf(match.quantities))) {
                 is SignalKClient.Result.Failed -> deliver(gen, State.Failed(match.transcript, explain(read.failure)))
                 is SignalKClient.Result.Ok -> {

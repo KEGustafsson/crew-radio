@@ -111,7 +111,7 @@ class PttEngine(
             if (field != value) {
                 field = value
                 stopTalking()
-                onStatus("Mode: ${value.name.lowercase().replace('_', ' ')}")
+                onStatus(str(if (value == Mode.FULL_DUPLEX) R.string.status_mode_full_duplex else R.string.status_mode_half_duplex))
             }
         }
 
@@ -198,7 +198,7 @@ class PttEngine(
             if (near != atEar) {
                 atEar = near
                 route.atEar = near                                // AUTO: earpiece at the ear, loudspeaker away
-                onStatus(if (near) "At the ear: voice keys the mic" else "Away from the ear")
+                onStatus(str(if (near) R.string.status_at_ear else R.string.status_away_from_ear))
             }
         }
         override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) = Unit
@@ -265,6 +265,7 @@ class PttEngine(
                     preroll.clear()
                     lateinit var m: AudioCapture
                     m = AudioCapture(
+                        context,
                         onFrame = { pcm -> synchronized(monitorLock) { if (monitor === m) voiceFrame(pcm) } },
                         onError = { why -> monitorFailed(m, why) }
                     )
@@ -276,7 +277,7 @@ class PttEngine(
                     onAudioCtl { capture?.stop(); capture = null }
                     try {
                         m.start()
-                        onStatus(if (phoneMic && earWatched) "Voice keys the mic at the ear" else "Voice keys the mic")
+                        onStatus(str(if (phoneMic && earWatched) R.string.status_vox_at_ear else R.string.status_vox))
                     } catch (e: Exception) {
                         monitor = null
                         if (phoneMic) watchProximity(false)
@@ -284,7 +285,7 @@ class PttEngine(
                         // A talk handed over above has lost its own capture already: keyed with
                         // nothing feeding it, it would send nothing and, in half duplex, hear nothing.
                         if (talking) stopTalking()
-                        onStatus("Mic error: ${e.message}")
+                        onStatus(str(R.string.status_mic_error, e.message))
                     }
                     return
                 } else return
@@ -334,7 +335,7 @@ class PttEngine(
             // The gate stays open in its own view, so it must see quiet (CLOSE) before it can OPEN again.
             gateTalking = false
             stopTalking()
-            onStatus("Voice key timed out")
+            onStatus(str(R.string.status_vox_timed_out))
         }
         if (talking) sendFrame(pcm)
         else keepForPreroll(pcm)
@@ -389,11 +390,11 @@ class PttEngine(
             this@PttEngine.held = held
             if (held) stopTalking()
             mixer.muted = held
-            onStatus(if (held) "On hold: phone call" else "Back on channel")
+            onStatus(str(if (held) R.string.status_on_hold else R.string.status_back_on_channel))
             syncMonitorLater()
         }
         override fun onAudioRoute(label: String) {
-            if (label != route.current) { route.current = label; onStatus("Audio: $label") }
+            if (label != route.current) { route.current = label; onStatus(str(R.string.status_audio, label)) }
         }
     }
 
@@ -435,7 +436,7 @@ class PttEngine(
         }
         if (!ours) return
         stopTalking()
-        onStatus("Voice keying stopped: $message")
+        onStatus(str(R.string.status_vox_stopped, message))
         recovery.schedule({ failed.stop(); syncMonitor() }, MIC_RETRY_MS, TimeUnit.MILLISECONDS)
     }
 
@@ -462,7 +463,7 @@ class PttEngine(
     /** Where the voice is going right now, for the Status screen. */
     val audioRouteNow: String get() = route.current
     // A playback track that died and was rebuilt says so on the status line.
-    private val mixer = Mixer().also { it.onStatus = onStatus }
+    private val mixer = Mixer().also { it.onStatus = { id, args -> onStatus(context.getString(id, *args)) } }
 
     /**
      * The user's mute: received speech is silenced in the mixer (a gain of 0), the cue tones stay,
@@ -595,7 +596,7 @@ class PttEngine(
                 t.start(::onPacket, onStatus)
             } catch (e: Exception) {
                 // A transport that never started would silently swallow every frame we hand it.
-                onStatus("${t.name} failed: ${e.message}")
+                onStatus(str(R.string.status_transport_failed, t.name, e.message))
                 transports.remove(t)
                 try { t.stop() } catch (_: Exception) {}
             }
@@ -609,7 +610,7 @@ class PttEngine(
                 try {
                     tick()
                 } catch (e: Throwable) {
-                    if (!heartbeatFailed) { heartbeatFailed = true; onStatus("Heartbeat error: ${e.message}") }
+                    if (!heartbeatFailed) { heartbeatFailed = true; onStatus(str(R.string.status_heartbeat_error, e.message)) }
                 }
             }, 0, TICK_MS, TimeUnit.MILLISECONDS)
         }
@@ -680,17 +681,18 @@ class PttEngine(
             try {
                 OpusEncoder { broadcast(Packet.Codec.OPUS, it) }
             } catch (e: Exception) {
-                onStatus("Opus encoder unavailable, sending PCM")
+                onStatus(str(R.string.status_opus_encoder_unavailable))
                 null
             }
         } else null
         var cap: AudioCapture? = null
         if (monitor == null) {             // otherwise the always-on capture feeds sendFrame while talking
             cap = AudioCapture(
+                context,
                 onFrame = { pcm -> sendFrame(pcm) },
                 // Reported from the capture's own worker, so the un-key goes to another thread:
                 // stopTalking() ends with a join of exactly that worker.
-                onError = { why -> onStatus("Mic stopped: $why"); recovery.execute { stopTalking() } }
+                onError = { why -> onStatus(str(R.string.status_mic_stopped, why)); recovery.execute { stopTalking() } }
             )
             try {
                 cap.start()
@@ -700,7 +702,7 @@ class PttEngine(
                 synchronized(talkLock) {
                     if (talkGen == gen && talking) { talking = false; gateTalking = false; pending.clear() }
                 }
-                onStatus("Mic error: ${e.message}")
+                onStatus(str(R.string.status_mic_error, e.message))
                 return
             }
         }
@@ -715,7 +717,7 @@ class PttEngine(
             }
             for (f in drain) encodeAndSend(f)
         }
-        if (talking) onStatus(if (mode == Mode.FULL_DUPLEX) "Mic on" else "Transmitting")
+        if (talking) onStatus(str(if (mode == Mode.FULL_DUPLEX) R.string.status_duplex_mic_on else R.string.status_transmitting))
     }
 
     /**
@@ -747,7 +749,7 @@ class PttEngine(
             } catch (ex: Exception) {
                 encoder = null
                 e.release()
-                onStatus("Opus failed (${ex.message}), sending PCM")
+                onStatus(str(R.string.status_opus_failed, ex.message))
                 broadcast(Packet.Codec.PCM, pcm)
             }
         }
@@ -773,7 +775,7 @@ class PttEngine(
             encoder?.release()
             encoder = null
         }
-        onStatus(if (mode == Mode.FULL_DUPLEX) "Mic off" else "Listening")
+        onStatus(str(if (mode == Mode.FULL_DUPLEX) R.string.status_duplex_mic_off else R.string.status_listening))
     }
 
     /** Runs [work] on the audio-control thread and waits for it, bounded; a report if it did not finish in time. */
@@ -781,7 +783,7 @@ class PttEngine(
         try {
             audioCtl.submit(work).get(AUDIO_CTL_WAIT_MS, TimeUnit.MILLISECONDS)
         } catch (e: Exception) {
-            onStatus("Audio control slow: ${e.javaClass.simpleName}")
+            onStatus(str(R.string.status_audio_ctl_slow, e.javaClass.simpleName))
         }
     }
 
@@ -831,12 +833,15 @@ class PttEngine(
             Ingress.Result.Duplicate -> { c.duplicates.incrementAndGet(); return }
             Ingress.Result.Stale -> {
                 c.stale.incrementAndGet()
-                reportOnce(staleReportedAt, now) { "Clock: ${c.stale.get()} packets more than ${Packet.REPLAY_WINDOW_S} s off" }
+                reportOnce(staleReportedAt, now) {
+                    val n = c.stale.get()
+                    context.resources.getQuantityString(R.plurals.status_clock_off, n.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), n, Packet.REPLAY_WINDOW_S)
+                }
                 return
             }
             is Ingress.Result.Rejected -> {
                 c.rejected.incrementAndGet()
-                if (r.why == Ingress.Why.JUNK_FLOOD) reportOnce(junkReportedAt, now) { "Unreadable packets: another key, or a flood" }
+                if (r.why == Ingress.Why.JUNK_FLOOD) reportOnce(junkReportedAt, now) { str(R.string.status_junk_packets) }
                 return
             }
         }
@@ -861,16 +866,14 @@ class PttEngine(
         // admitted and delivered on another, and play behind it, or behind its own hole.
         synchronized(senderLock(h.senderId)) {
             // A gap before this frame is lost audio: its slots are reserved in the mixer atomically
-            // with the admission, and the link meter is told. A late frame is dropped, its slot was
-            // concealed already.
-            var lost = 0
-            if (!ingress.admitAudio(h.senderId, h.seq) { gap ->
-                    lost = gap
-                    if (playing && gap <= Conceal.MAX_FRAMES) mixer.conceal(h.senderId, gap)
-                }) return
+            // with the admission (this lock), and the link meter is told. A late frame is dropped,
+            // its slot was concealed already.
+            val gap = ingress.admitAudio(h.senderId, h.seq)
+            if (gap < 0) return
+            if (gap > 0 && playing && gap <= Conceal.MAX_FRAMES) mixer.conceal(h.senderId, gap)
             // Only an admitted frame is proof of life: one refused as late or replayed lights nobody.
             val node = heardAudio(h.senderId, from)
-            if (lost > 0) node?.link?.audioLost(lost, now)
+            if (gap > 0) node?.link?.audioLost(gap, now)
             node?.link?.audioHeard(now)
             if (!playing) return
 
@@ -907,6 +910,9 @@ class PttEngine(
     }
 
     /** A status line for a condition that recurs on every packet: at most once per [REPORT_INTERVAL_MS], whichever thread sees it. */
+    /** A status line from the string resources. */
+    private fun str(id: Int, vararg args: Any?): String = context.getString(id, *args)
+
     private fun reportOnce(last: AtomicLong, now: Long, message: () -> String) {
         val prev = last.get()
         if (now - prev >= REPORT_INTERVAL_MS && last.compareAndSet(prev, now)) onStatus(message())
@@ -923,7 +929,7 @@ class PttEngine(
         val up = healthy
         if (up != linksUp) {
             linksUp = up
-            onStatus(if (up) "Links up" else "No link is up: nobody can hear this phone")
+            onStatus(str(if (up) R.string.status_links_up else R.string.status_no_link))
         }
         val now = SystemClock.elapsedRealtime()
         var changed = false
@@ -1043,7 +1049,7 @@ class PttEngine(
             val dec = try {
                 decoderFor(sender) ?: return                 // over capacity and everyone is talking, or disconnecting: drop
             } catch (e: Exception) {
-                giveUp(sender, "Opus decoder unavailable")
+                giveUp(sender, str(R.string.status_opus_decoder_unavailable))
                 return
             }
             synchronized(dec) {
@@ -1058,7 +1064,7 @@ class PttEngine(
                     val n = (decodeFailures[sender] ?: 0) + 1
                     if (n >= MAX_DECODE_FAILURES) {
                         decodeFailures.remove(sender)
-                        giveUp(sender, "Opus decode error: ${e.message}")
+                        giveUp(sender, str(R.string.status_opus_decode_error, e.message))
                     } else decodeFailures[sender] = n
                 }
             }
@@ -1069,7 +1075,7 @@ class PttEngine(
     private fun giveUp(sender: Int, why: String) {
         if (undecodable.size >= MAX_UNDECODABLE) undecodable.clear()
         undecodable[sender] = SystemClock.elapsedRealtime() + UNDECODABLE_MS
-        onStatus("$why, ${sender.toUInt().toString(16)} muted ${UNDECODABLE_MS / 1000} s")
+        onStatus(str(R.string.status_sender_muted, why, sender.toUInt().toString(16), UNDECODABLE_MS / 1000))
     }
 
     /**

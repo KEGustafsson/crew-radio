@@ -113,7 +113,7 @@ class SettingsActivity : AppCompatActivity() {
                     row.summaryProvider is ListPreference.SimpleSummaryProvider -> {
                     val value = managedText(row, prefs).orEmpty()
                     row.summaryProvider = Preference.SummaryProvider<Preference> {
-                        if (value.isEmpty()) managed else "$managed · $value"
+                        if (value.isEmpty()) managed else getString(R.string.managed_value, managed, value)
                     }
                 }
                 // Preference.setSummary throws once a SummaryProvider is set, so a row with a
@@ -177,7 +177,7 @@ class SettingsActivity : AppCompatActivity() {
                     val typed = prefs.askServerTyped
                     when {
                         prefs.isManaged(Prefs.KEY_ASK_SERVER) ->
-                            getString(R.string.managed_by_org) + " · " + SignalKUrl.describe(typed)
+                            getString(R.string.managed_value, getString(R.string.managed_by_org), SignalKUrl.describe(typed))
                         typed.isNullOrBlank() -> getString(R.string.pref_ask_server_none)
                         typed == discovered -> getString(R.string.pref_ask_server_found, SignalKUrl.describe(typed))
                         else -> SignalKUrl.describe(typed)
@@ -269,7 +269,7 @@ class SettingsActivity : AppCompatActivity() {
             if (!PAIRING.compareAndSet(false, true)) return      // the row already says it is waiting
             val context = requireContext().applicationContext
             val clientId = prefs.pairingClientId
-            val description = context.getString(R.string.app_name) + " · " + prefs.speakerName
+            val description = context.getString(R.string.pref_ask_pair_description, context.getString(R.string.app_name), prefs.speakerName)
             Thread({
                 // Everything, not just what the client catches: this is a plain thread, where an
                 // escaping throwable ends the app, and the answer comes over cleartext from anyone
@@ -288,7 +288,7 @@ class SettingsActivity : AppCompatActivity() {
 
         /** The device flow itself, blocking: request, then poll until decided. Returns what the row should say. */
         private fun pair(context: Context, base: String, clientId: String, description: String): String {
-            val client = SignalKClient(base, null)
+            val client = SignalKClient(context, base, null)
             val requested = client.requestAccess(clientId, description)
             if (requested is SignalKClient.Result.Failed) {
                 return context.getString(R.string.pref_ask_pair_failed, requested.detail ?: "")
@@ -353,7 +353,7 @@ class SettingsActivity : AppCompatActivity() {
                     SettingsRules.KeyState.SHORT -> getString(R.string.key_masked_short, mask, getString(R.string.key_short))
                     SettingsRules.KeyState.OK -> mask
                 }
-                if (managedKey) getString(R.string.managed_by_org) + " · " + text else text
+                if (managedKey) getString(R.string.managed_value, getString(R.string.managed_by_org), text) else text
             }
 
             findPreference<Preference>(Prefs.KEY_CHANNEL_KEY_SHOW)?.setOnPreferenceClickListener {

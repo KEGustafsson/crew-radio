@@ -1,5 +1,6 @@
 package fi.crewradio.audio
 
+import fi.crewradio.R
 import fi.crewradio.transport.Backoff
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
@@ -61,8 +62,12 @@ class Mixer(
      */
     val underrunFrames = AtomicLong()
 
-    /** Told once when the track stops taking audio and once when it is back; shown on the status line. */
-    @Volatile var onStatus: ((String) -> Unit)? = null
+    /**
+     * Told once when the track stops taking audio and once when it is back; shown on the status
+     * line. A string resource and its format arguments: the caller resolves them, so the mixer
+     * needs no Context and the tests stay plain Kotlin.
+     */
+    @Volatile var onStatus: ((Int, Array<out Any?>) -> Unit)? = null
 
     /** Output silence (queues keep draining) - the channel is on hold behind a phone call. */
     @Volatile var muted = false
@@ -107,7 +112,7 @@ class Mixer(
                 // A bare thread here took the whole app with it: the loop calls into a vendor
                 // AudioTrack and, through onStatus, back into the service and the UI.
                 running = false
-                report("Audio out failed (${t.message})")
+                report(R.string.status_audio_out_failed, t.message)
             } finally {
                 closePlayback(gen)
             }
@@ -237,7 +242,7 @@ class Mixer(
         if (failedWrites < PERSISTENT_WRITES) return
         if (!failing) {
             failing = true
-            report("Playback failed ($code), restarting")
+            report(R.string.status_playback_failed, code)
         }
         if (now < retryAtNs) return
         retryAtNs = now + backoff.next() * 1_000_000L
@@ -254,7 +259,7 @@ class Mixer(
             failing = false
             backoff.reset()
             retryAtNs = 0L
-            report("Playback restored")
+            report(R.string.status_playback_restored)
         }
     }
 
@@ -332,9 +337,9 @@ class Mixer(
     }
 
     /** A status line that cannot take the mixer thread down: the listener is the service's and the UI's. */
-    private fun report(msg: String) {
+    private fun report(id: Int, vararg args: Any?) {
         try {
-            onStatus?.invoke(msg)
+            onStatus?.invoke(id, args)
         } catch (_: Throwable) {
         }
     }

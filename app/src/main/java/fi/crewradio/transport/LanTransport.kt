@@ -8,6 +8,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import fi.crewradio.Packet
+import fi.crewradio.R
 import java.io.IOException
 import java.net.DatagramPacket
 import java.net.Inet4Address
@@ -81,6 +82,8 @@ class LanTransport(
     private lateinit var onPacket: (ByteArray, Transport, Any?) -> Unit
     private lateinit var onStatus: (String) -> Unit
 
+    private fun str(id: Int, vararg args: Any?): String = appContext.getString(id, *args)
+
     private class WifiLink(val network: Network, val lp: LinkProperties)
 
     /** Where to open the socket: an interface with an IPv4 address, and its broadcast address if it has one. */
@@ -107,7 +110,7 @@ class LanTransport(
             wifi = null
             wasLost = true                                 // the enumeration fallback may reopen on the dying address
             if (!running) return
-            onStatus("LAN: Wi-Fi lost, waiting for it")
+            onStatus(str(R.string.status_lan_wifi_lost))
             rejoin()                                       // rx loop then waits in "no Wi-Fi" until it is back
         }
     }
@@ -121,7 +124,7 @@ class LanTransport(
             acquire()
         }
         running = true
-        transportThread("ptt-lan-rx", { onStatus("LAN rx stopped: ${it.message}") }) { rxLoop() }
+        transportThread("ptt-lan-rx", { onStatus(str(R.string.status_lan_rx_stopped, it.message)) }) { rxLoop() }
         connectivity.registerNetworkCallback(
             NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), wifiCallback
         )
@@ -135,12 +138,12 @@ class LanTransport(
                 pickTarget()
             } catch (e: Exception) {                   // enumerating interfaces can itself fail mid-change
                 val wait = backoff.next()
-                onStatus("LAN: can't list interfaces (${e.message}), retry in ${wait / 1000}s")
+                onStatus(str(R.string.status_lan_no_interfaces, e.message, wait / 1000))
                 waiter.await(wait)
                 continue
             }
             if (target == null) {
-                onStatus("LAN: no Wi-Fi, waiting")
+                onStatus(str(R.string.status_lan_no_wifi))
                 waiter.await(backoff.next())
                 continue
             }
@@ -148,7 +151,7 @@ class LanTransport(
                 openSocket(target.nic)
             } catch (e: Exception) {
                 val wait = backoff.next()
-                onStatus("LAN: can't open (${e.message}), retry in ${wait / 1000}s")
+                onStatus(str(R.string.status_lan_cant_open, e.message, wait / 1000))
                 waiter.await(wait)
                 continue
             }
@@ -163,8 +166,11 @@ class LanTransport(
             heard = false
             peers.clear()
             sources.clear()
-            val bc = target.broadcast?.hostAddress?.let { " + $it" } ?: " (multicast only)"
-            onStatus("LAN: $group:$port$bc via ${target.nic.name}")
+            val bc = target.broadcast?.hostAddress
+            onStatus(
+                if (bc != null) str(R.string.status_lan_open_broadcast, group, port, bc, target.nic.name)
+                else str(R.string.status_lan_open_multicast, group, port, target.nic.name)
+            )
             receiveUntilClosed(s)
             socket = null
             openedOn = null
@@ -213,10 +219,10 @@ class LanTransport(
                 try {
                     onPacket(buf.copyOf(p.length), this, from)
                 } catch (e: RuntimeException) {        // one bad packet must not end reception for the session
-                    onStatus("LAN: packet dropped (${e.message})")
+                    onStatus(str(R.string.status_lan_packet_dropped, e.message))
                 }
             } catch (e: IOException) {
-                if (running && !s.isClosed) onStatus("LAN: socket error (${e.message}), reopening")
+                if (running && !s.isClosed) onStatus(str(R.string.status_lan_socket_error, e.message))
                 return
             }
         }
@@ -236,7 +242,7 @@ class LanTransport(
         if (!heard) {
             heard = true
             backoff.reset()                                // a working network: the next reopen starts fast again
-            onStatus("LAN: hearing ${from.hostAddress}")
+            onStatus(str(R.string.status_lan_hearing, from.hostAddress))
         }
     }
 

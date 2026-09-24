@@ -1,5 +1,7 @@
 package fi.crewradio.ask
 
+import android.content.Context
+import fi.crewradio.R
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -19,6 +21,7 @@ import java.net.URL
  * not answer in a couple of seconds it is not there, and the crew would rather hear that than wait.
  */
 class SignalKClient(
+    private val context: Context,
     private val base: String,
     private val token: String?,
     private val connectTimeoutMs: Int = CONNECT_TIMEOUT_MS,
@@ -39,7 +42,8 @@ class SignalKClient(
 
     sealed interface Result<out T> {
         data class Ok<T>(val value: T) : Result<T>
-        data class Failed(val failure: Failure, val detail: String?) : Result<Nothing>
+        /** [detail] is shown to the crew as it is; [httpCode] is the status when the server answered with one. */
+        data class Failed(val failure: Failure, val detail: String?, val httpCode: Int = 0) : Result<Nothing>
     }
 
     /**
@@ -58,12 +62,12 @@ class SignalKClient(
                 is Result.Ok -> tree[branch] = toMap(response.value)
                 is Result.Failed -> {
                     // A branch this boat does not publish comes back 404: not an error, just absent.
-                    if (response.failure == Failure.BAD_RESPONSE && response.detail == NOT_FOUND) continue
+                    if (response.failure == Failure.BAD_RESPONSE && response.httpCode == HttpURLConnection.HTTP_NOT_FOUND) continue
                     if (firstFailure == null) firstFailure = response
                 }
             }
         }
-        if (tree.isEmpty()) return firstFailure ?: Result.Failed(Failure.BAD_RESPONSE, NOT_FOUND)
+        if (tree.isEmpty()) return firstFailure ?: http(Failure.BAD_RESPONSE, HttpURLConnection.HTTP_NOT_FOUND)
         return Result.Ok(SignalKTree(tree))
     }
 
@@ -109,7 +113,7 @@ class SignalKClient(
      * [SignalKUrl.resolve] for what concatenating it allowed.
      */
     fun pollAccess(href: String): Result<Access> {
-        val url = SignalKUrl.resolve(base, href) ?: return Result.Failed(Failure.BAD_RESPONSE, "the server pointed the request somewhere else")
+        val url = SignalKUrl.resolve(base, href) ?: return Result.Failed(Failure.BAD_RESPONSE, context.getString(R.string.pref_ask_pair_redirected))
         return when (val response = getJson(url)) {
             is Result.Ok -> {
                 val data = response.value.optJSONObject("accessRequest")
@@ -148,12 +152,11 @@ class SignalKClient(
             if (body != null) connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
             if (code == HttpURLConnection.HTTP_UNAUTHORIZED || code == HttpURLConnection.HTTP_FORBIDDEN) {
-                return Result.Failed(Failure.UNAUTHORIZED, "HTTP $code")
+                return http(Failure.UNAUTHORIZED, code)
             }
-            if (code == HttpURLConnection.HTTP_NOT_FOUND) return Result.Failed(Failure.BAD_RESPONSE, NOT_FOUND)
-            if (code !in 200..299) return Result.Failed(Failure.BAD_RESPONSE, "HTTP $code")
+            if (code !in 200..299) return http(Failure.BAD_RESPONSE, code)
             val text = readBounded(connection.inputStream)
-                ?: return Result.Failed(Failure.BAD_RESPONSE, "response too large")
+                ?: return Result.Failed(Failure.BAD_RESPONSE, context.getString(R.string.pref_ask_pair_too_large))
             return Result.Ok(if (text.isBlank()) JSONObject() else JSONObject(text))
         } catch (e: IOException) {
             // Wrong address, nothing listening, or this phone is not on the boat's network.
@@ -167,6 +170,10 @@ class SignalKClient(
             connection?.disconnect()
         }
     }
+
+    /** A server that answered with an HTTP error status. */
+    private fun http(failure: Failure, code: Int) =
+        Result.Failed(failure, context.getString(R.string.pref_ask_pair_http, code), code)
 
     /**
      * The body, or null once it passes [MAX_BODY]. The cap is applied while reading rather than
@@ -195,8 +202,6 @@ class SignalKClient(
 
         /** How much is read at a time while the cap is being counted. */
         private const val CHUNK_CHARS = 8 * 1024
-
-        private const val NOT_FOUND = "HTTP 404"
 
         /**
          * The platform parser's objects as the plain maps [SignalKTree] walks. `JSONObject.NULL`

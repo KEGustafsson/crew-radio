@@ -1,5 +1,6 @@
 package fi.crewradio.audio
 
+import fi.crewradio.R
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -35,7 +36,12 @@ class MixerTest {
     private val ms = 1_000_000L
     private val playback = FakePlayback()
     private val status = ArrayList<String>()
-    private val mixer = Mixer(playback) { now }.also { it.onStatus = { s -> status.add(s) }; it.open() }
+    private val mixer = Mixer(playback) { now }.also { it.onStatus = { id, args -> status.add(said(id, *args)) }; it.open() }
+
+    /** A status line as the mixer reports it: which string resource, with which arguments. */
+    private fun said(id: Int, vararg args: Any?) = "$id ${args.toList()}"
+    private fun failed(code: Int) = said(R.string.status_playback_failed, code)
+    private val restored = said(R.string.status_playback_restored)
 
     private fun frame(value: Int): ByteArray {
         val f = ByteArray(AudioConfig.FRAME_BYTES)
@@ -205,7 +211,7 @@ class MixerTest {
         slot()
         assertEquals(2, playback.starts)                 // the third is persistent: recreated at once
         assertEquals(1, playback.stops)
-        assertEquals(listOf("Playback failed (-6), restarting"), status)
+        assertEquals(listOf(failed(-6)), status)
         repeat(50) { slot() }                            // one second: within the first 2 s wait
         assertEquals(2, playback.starts)
         now += 1_100 * ms
@@ -220,7 +226,7 @@ class MixerTest {
         assertEquals(4, playback.starts)
         playback.result = null
         slot()
-        assertEquals(listOf("Playback failed (-6), restarting", "Playback restored"), status)
+        assertEquals(listOf(failed(-6), restored), status)
         playback.result = -6
         repeat(3) { slot() }
         assertEquals(5, playback.starts)                 // a new outage starts over: at once, and reported again
@@ -235,11 +241,11 @@ class MixerTest {
     fun aTrackThatCannotBeBuiltAtOpenIsRebuiltByTheWorker() {
         val pb = FakePlayback().apply { failStart = true; result = -3 }    // no track: every write refused
         val seen = ArrayList<String>()
-        val m = Mixer(pb) { now }.also { it.onStatus = { s -> seen.add(s) } }
+        val m = Mixer(pb) { now }.also { it.onStatus = { id, args -> seen.add(said(id, *args)) } }
         m.open()                                          // does not throw
         assertEquals(1, pb.starts)
         repeat(3) { m.tick(now); now += AudioConfig.FRAME_MS * ms }
-        assertEquals(listOf("Playback failed (-3), restarting"), seen)
+        assertEquals(listOf(failed(-3)), seen)
         assertEquals(2, pb.starts)                        // rebuilt at once; that one threw too, and is left to the backoff
         pb.failStart = false
         now += 2_100 * ms
@@ -247,14 +253,14 @@ class MixerTest {
         assertEquals(3, pb.starts)
         pb.result = null
         m.tick(now)
-        assertEquals(listOf("Playback failed (-3), restarting", "Playback restored"), seen)
+        assertEquals(listOf(failed(-3), restored), seen)
     }
 
     @Test
     fun aShortWriteCountsAsRefused() {
         playback.result = 0
         repeat(3) { slot() }
-        assertEquals(listOf("Playback failed (0), restarting"), status)
+        assertEquals(listOf(failed(0)), status)
     }
 
     @Test
