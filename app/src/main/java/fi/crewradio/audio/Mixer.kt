@@ -41,13 +41,14 @@ class Mixer(
         var primed = false
         var last: ByteArray? = null      // last real frame, what concealment repeats
         var concealed = 0                // consecutive concealed slots so far
+        var swept = false                // taken out of the map by tick(): a push that holds it looks again
     }
 
     private val streams = ConcurrentHashMap<Int, Stream>()
     private val cues = ArrayDeque<ByteArray>()              // tone frames, one per slot, on top of the streams
     @Volatile private var running = false
     private var worker: Thread? = null
-    private var generation = 0                       // which session owns the track
+    @Volatile private var generation = 0             // which session owns the track, and which worker may run
     private var closedGen = -1
 
     /** Slots filled by concealment since [start]; shown on the Status screen. */
@@ -93,12 +94,15 @@ class Mixer(
 
     fun start() {
         if (running) return
-        open()
+        // Before open(), which sets running again: a worker left behind by a stop() whose join timed
+        // out would otherwise read that as its own and run on beside the new one, two threads
+        // draining the same queues through the same buffers. Its generation is what stops it.
         val gen = synchronized(this) { ++generation }
+        open()
         worker = thread(name = "ptt-mixer") {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
             try {
-                while (running) if (!tick(clock())) pace()
+                while (running && gen == generation) if (!tick(clock())) pace()
             } catch (t: Throwable) {
                 // A bare thread here took the whole app with it: the loop calls into a vendor
                 // AudioTrack and, through onStatus, back into the service and the UI.
@@ -123,7 +127,10 @@ class Mixer(
         retryAtNs = 0L
         backoff.reset()
         synchronized(cues) { cues.clear() }
-        playback.start()
+        // A track the platform will not build (the audio server restarting, no tracks left) throws
+        // here, on the session thread, where nothing catches it. Without a track every write is
+        // refused, so the worker's own failed() path reports it and rebuilds it on the backoff.
+        try { playback.start() } catch (_: Exception) {}
     }
 
     /**
@@ -145,8 +152,10 @@ class Mixer(
                     acc[i] += (hi shl 8) or lo
                     i++
                 }
-            } else if (now - st.lastSeen > idleTimeoutNs) {
-                streams.remove(id)
+            } else if (now - st.lastSeen > idleTimeoutNs) synchronized(st) {
+                // Again under the lock: a push may have found this stream a moment ago and just
+                // queued on it. One swept here is marked, so a push still holding it starts a new one.
+                if (now - st.lastSeen > idleTimeoutNs) { st.swept = true; streams.remove(id, st) }
             }
         }
         // The user's volume and the crowd headroom scale the speech only; the cue is the phone's
@@ -264,19 +273,33 @@ class Mixer(
     fun push(senderId: Int, data: ByteArray, offset: Int, length: Int) {
         if (!running || length != AudioConfig.FRAME_BYTES) return
         val now = clock()
-        val st = streams.getOrPut(senderId) { Stream(now) }
-        synchronized(st) {
-            st.lastSeen = now
-            st.frames.addLast(data.copyOfRange(offset, offset + length))
-            while (st.frames.size > maxQueuedFrames) st.frames.pollFirst()
+        while (true) {
+            val st = streams.getOrPut(senderId) { Stream(now) }
+            val queued = synchronized(st) {
+                if (st.swept) false                  // swept as idle between the lookup and the lock: look again
+                else {
+                    st.lastSeen = now
+                    st.frames.addLast(data.copyOfRange(offset, offset + length))
+                    while (st.frames.size > maxQueuedFrames) st.frames.pollFirst()
+                    true
+                }
+            }
+            if (queued) return
         }
     }
 
-    /** Reserves [count] slots for frames the engine knows were lost, so timing holds and each is concealed in turn. */
+    /**
+     * Reserves [count] slots for frames the engine knows were lost, so timing holds and each is
+     * concealed in turn. Not for a stream at rest (between talk bursts, nothing queued): the frames
+     * lost there are the tail of the last burst or the head of the next, there is nothing to repeat,
+     * and holes queued there would count towards the next burst's prefill and start it with no
+     * jitter buffer at all.
+     */
     fun conceal(senderId: Int, count: Int) {
         if (!running) return                          // as in push(): nothing is queued for a stopped mixer
         val st = streams[senderId] ?: return          // nothing heard from them yet: nothing to repeat either
         synchronized(st) {
+            if (st.swept || (!st.primed && st.frames.isEmpty())) return
             repeat(count.coerceAtMost(Conceal.MAX_FRAMES)) { st.frames.addLast(HOLE) }
             while (st.frames.size > maxQueuedFrames) st.frames.pollFirst()
         }

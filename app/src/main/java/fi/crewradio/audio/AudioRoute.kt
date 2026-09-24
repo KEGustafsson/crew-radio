@@ -150,8 +150,21 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
         apply(announce = false)
     }
 
+    /**
+     * Under the same lock as [apply], and [apply] checks [active] again inside it: a device event
+     * or a setting that passed its own check just before this ran would otherwise set the
+     * communication device again after it was cleared here, holding a headset's SCO link open
+     * after the session and leaving [bluetoothPresent] set, so the next session never asks for its call.
+     * The engine is told about the headset after the lock is let go, since that call reaches Telecom.
+     */
     fun stop() {
-        if (!active) return
+        val hadBluetooth = synchronized(this) { teardown() } ?: return
+        if (hadBluetooth) onBluetoothHeadset?.invoke(false)
+    }
+
+    /** [stop] under the lock: null when there was nothing to stop, else whether a Bluetooth headset was wanted. */
+    private fun teardown(): Boolean? {
+        if (!active) return null
         active = false
         handler.removeCallbacks(healRunnable)
         handler.removeCallbacks(retryRunnable)
@@ -160,7 +173,8 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
         audioManager.unregisterAudioDeviceCallback(deviceCallback)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) commDeviceListener?.let { audioManager.removeOnCommunicationDeviceChangedListener(it) }
         else try { context.unregisterReceiver(scoReceiver) } catch (e: Exception) { onStatus("Audio route: ${e.message}") }
-        if (bluetoothWanted) { bluetoothWanted = false; onBluetoothHeadset?.invoke(false) }
+        val hadBluetooth = bluetoothWanted
+        bluetoothWanted = false
         headset = false
         bluetoothHeadset = false
         passive = false
@@ -179,6 +193,7 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
         scoDevice = null
         audioManager.mode = AudioManager.MODE_NORMAL
         current = context.getString(R.string.call_speaker)
+        return hadBluetooth
     }
 
     /** Re-evaluates the route, e.g. when Telecom hands it back. */
@@ -187,6 +202,7 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
     /** Picks the best available device under [policy] and switches to it if it is not the one in use. */
     @Synchronized
     private fun apply(announce: Boolean) {
+        if (!active) return                                   // stopped since the caller looked: see stop()
         val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         val headset = if (policy == Policy.AUTO) pickHeadset(outputs) else null
         val bluetooth = headset?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO

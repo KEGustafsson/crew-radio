@@ -170,6 +170,7 @@ class PttService : Service() {
         if (done) engine.disconnect()
         stopHardwareButtons()       // a session left holding the volume keys would outlive us
         releaseLocks()
+        if (done) engine.shutdown() // its threads; a session thread still inside it keeps them
         super.onDestroy()
     }
 

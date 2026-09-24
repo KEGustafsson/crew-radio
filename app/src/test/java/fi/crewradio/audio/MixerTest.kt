@@ -18,7 +18,11 @@ class MixerTest {
         var stops = 0
         var result: Int? = null          // null: take the frame; else the code to return instead
         var underruns = 0
-        override fun start() { starts++ }
+        var failStart = false            // start() throws, as AudioTrack.Builder.build() does when no track can be made
+        override fun start() {
+            starts++
+            if (failStart) throw UnsupportedOperationException("Cannot create AudioTrack")
+        }
         override fun write(data: ByteArray, offset: Int, length: Int): Int {
             written.add(data.copyOfRange(offset, offset + length))
             return result ?: length
@@ -153,6 +157,27 @@ class MixerTest {
         assertEquals(0L, mixer.concealedFrames.get())    // the pause was never mistaken for loss
     }
 
+    /**
+     * Frames lost at the end of one burst are reported when the next one begins, against a stream
+     * that has come to rest. Holes queued there would fill the next burst's prefill and start it
+     * with no jitter buffer, playing silence for them first.
+     */
+    @Test
+    fun aGapReportedAgainstAStreamAtRestReservesNothing() {
+        push(1, 1000); push(1, 2000)
+        assertEquals(1000, slot())
+        assertEquals(2000, slot())
+        now += 200 * ms
+        assertEquals(0, slot())                          // at rest
+        mixer.conceal(1, 2)                              // the gap before the next burst's first frame
+        push(1, 5000)
+        assertEquals(0, slot())                          // still waiting for a real second frame
+        push(1, 6000)
+        assertEquals(5000, slot())
+        assertEquals(6000, slot())
+        assertEquals(0L, mixer.concealedFrames.get())
+    }
+
     @Test
     fun twoTalkersShareTheHeadroom() {
         push(1, 10000); push(1, 10000)
@@ -200,6 +225,29 @@ class MixerTest {
         repeat(3) { slot() }
         assertEquals(5, playback.starts)                 // a new outage starts over: at once, and reported again
         assertEquals(3, status.size)
+    }
+
+    /**
+     * The first track of a session is built on the session thread, where nothing catches a throw:
+     * a track that cannot be built there took the app down. It is the worker's failure now.
+     */
+    @Test
+    fun aTrackThatCannotBeBuiltAtOpenIsRebuiltByTheWorker() {
+        val pb = FakePlayback().apply { failStart = true; result = -3 }    // no track: every write refused
+        val seen = ArrayList<String>()
+        val m = Mixer(pb) { now }.also { it.onStatus = { s -> seen.add(s) } }
+        m.open()                                          // does not throw
+        assertEquals(1, pb.starts)
+        repeat(3) { m.tick(now); now += AudioConfig.FRAME_MS * ms }
+        assertEquals(listOf("Playback failed (-3), restarting"), seen)
+        assertEquals(2, pb.starts)                        // rebuilt at once; that one threw too, and is left to the backoff
+        pb.failStart = false
+        now += 2_100 * ms
+        m.tick(now)                                       // still refused; the backoff has run out: built
+        assertEquals(3, pb.starts)
+        pb.result = null
+        m.tick(now)
+        assertEquals(listOf("Playback failed (-3), restarting", "Playback restored"), seen)
     }
 
     @Test

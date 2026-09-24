@@ -149,6 +149,11 @@ class CallService : ConnectionService() {
 /**
  * Glue between the engine and the system-created [CallService.ChannelConnection]: places
  * and ends the call, and forwards its events to whoever is listening (the engine).
+ *
+ * The engine places and ends the call from the main thread and its session thread, and Telecom
+ * answers on the main thread, so the placement state changes under this object's lock. The
+ * listener and the connection are called after it is let go: both reach back into the engine and
+ * its audio route, which take locks of their own.
  */
 object CallBridge {
     interface Listener {
@@ -162,6 +167,7 @@ object CallBridge {
     val ADDRESS: Uri = Uri.fromParts("crewradio", "channel", null)
     private const val ACCOUNT_ID = "crewradio"
 
+    /** The session's engine. Cleared before the session's call is ended, so a placement still on its way is refused. */
     @Volatile var listener: Listener? = null
     /** The route policy while Telecom is routing: null = headset first, else the given CallAudioState route. */
     @Volatile var forcedRoute: Int? = null
@@ -199,13 +205,18 @@ object CallBridge {
         else -> CallEndpoint.TYPE_BLUETOOTH
     }
 
-    /** Places the call; [Listener.onCallActive] or [Listener.onCallEnded] follows on the main thread. */
+    /**
+     * Places the call; [Listener.onCallActive] or [Listener.onCallEnded] follows on the main thread.
+     * Refused with no [listener]: a start that raced the session's end would otherwise place a call
+     * after [stop] had run, and nothing would end it - SCO held open, and the phone's media keys
+     * refused, until the next session's teardown.
+     */
     // MANAGE_OWN_CALLS is a normal permission, declared in the manifest and granted at install;
     // placeCall for a self-managed account needs nothing else, and the catch below covers the
     // case where an OEM refuses anyway.
     @SuppressLint("MissingPermission")
     fun start(context: Context): Boolean {
-        if (connection != null || placing) return true
+        synchronized(this) { if (connection != null || placing) return true }
         if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELECOM)) return false
         val tm = context.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
         val handle = PhoneAccountHandle(ComponentName(context, CallService::class.java), ACCOUNT_ID)
@@ -223,11 +234,14 @@ object CallBridge {
             )
             if (!tm.isOutgoingCallPermitted(handle)) return false      // a phone call is in progress
             val extras = Bundle().apply { putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle) }
-            placing = true
+            synchronized(this) {
+                if (listener == null) return false                 // the session has ended meanwhile
+                placing = true
+            }
             tm.placeCall(ADDRESS, extras)
             true
         } catch (e: Exception) {
-            placing = false
+            synchronized(this) { placing = false }
             listener?.onCallEnded(context.getString(R.string.call_failed, e.message))
             false
         }
@@ -235,26 +249,31 @@ object CallBridge {
 
     /** Ends the call, or cancels a placement Telecom has not answered yet: its connection is refused in [attached]. */
     fun stop() {
-        placing = false
-        connection?.end(DisconnectCause.LOCAL)
+        val c = synchronized(this) { placing = false; connection }
+        c?.end(DisconnectCause.LOCAL)
     }
 
     /** The connection Telecom created for the current placement; false if that placement was cancelled meanwhile. */
     internal fun attached(c: CallService.ChannelConnection): Boolean {
-        if (!placing) return false
-        placing = false
-        connection?.takeIf { it !== c }?.end(DisconnectCause.LOCAL)
-        connection = c
+        val old: CallService.ChannelConnection?
+        synchronized(this) {
+            if (!placing) return false
+            placing = false
+            old = connection?.takeIf { it !== c }
+            connection = c
+        }
+        old?.end(DisconnectCause.LOCAL)
         listener?.onCallActive()
         return true
     }
 
     internal fun detached(c: CallService.ChannelConnection) {
-        if (connection === c) { connection = null; listener?.onCallEnded(null) }
+        val ours = synchronized(this) { (connection === c).also { if (it) connection = null } }
+        if (ours) listener?.onCallEnded(null)
     }
 
     internal fun failed(reason: String) {
-        placing = false
+        synchronized(this) { placing = false }
         listener?.onCallEnded(reason)
     }
 }

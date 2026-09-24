@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -157,7 +158,7 @@ class PttEngine(
      * line, and the gate has to close on quiet before it keys the mic again.
      */
     @Volatile var headsetVox = false
-        set(value) { if (field != value) { field = value; syncMonitor() } }
+        set(value) { if (field != value) { field = value; syncMonitorLater() } }
 
     // Written under monitorLock, but read without it by the audio-control thread (openTalk) and by
     // the main thread (voiceArmed, micPeakNow): volatile is what gives those reads the writer's edge.
@@ -188,7 +189,7 @@ class PttEngine(
             if (field == v) return
             field = v
             synchronized(monitorLock) { if (monitor != null && phoneMic) watchProximity(true) }
-            syncMonitor()
+            syncMonitorLater()
         }
     private val sensors = context.getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
     private val proximity = object : android.hardware.SensorEventListener {
@@ -280,12 +281,29 @@ class PttEngine(
                         monitor = null
                         if (phoneMic) watchProximity(false)
                         m.stop()                                  // start() threw, so no worker exists; frees the record
+                        // A talk handed over above has lost its own capture already: keyed with
+                        // nothing feeding it, it would send nothing and, in half duplex, hear nothing.
+                        if (talking) stopTalking()
                         onStatus("Mic error: ${e.message}")
                     }
                     return
                 } else return
             }
             toStop?.stop()                                        // outside the lock: its worker may be waiting for it
+        }
+    }
+
+    /**
+     * [syncMonitor] for a caller on the main thread: settings pushed on resume, a headset that
+     * came or went, Telecom's hold. A pass can wait up to [AUDIO_CTL_WAIT_MS] for the audio-control
+     * thread, open an AudioRecord and join the old capture, which is seconds the UI would freeze
+     * for, so it runs on the mic thread instead; passes are serialised there, and each one works
+     * from the state as it is when it runs. Nothing is left to do once the engine is shut down.
+     */
+    private fun syncMonitorLater() {
+        try {
+            recovery.execute { syncMonitor() }
+        } catch (_: RejectedExecutionException) {
         }
     }
 
@@ -341,8 +359,12 @@ class PttEngine(
 
     fun setAsking(on: Boolean) {
         asking = on
-        if (on) stopTalking()
-        syncMonitor()
+        if (on) {
+            stopTalking()
+            // Here and now, though the caller is the main thread: the recogniser opens the mic as
+            // soon as this returns, and letting go of it is only a stop and a short join.
+            syncMonitor()
+        } else syncMonitorLater()
     }
 
     /**
@@ -355,7 +377,12 @@ class PttEngine(
         override fun onCallEnded(reason: String?) {
             route.passive = false
             if (reason != null) onStatus(reason)
-            if (isConnected) route.reapply()
+            if (!isConnected) return                      // disconnect() clears the hold itself
+            // A call that ends while held (the headset gone during a phone call, the setting turned
+            // off, an abort) never hears onUnhold: the hold goes with it, or the channel stays
+            // silent and the mic unkeyable for the rest of the session.
+            if (this@PttEngine.held) onHold(false)
+            route.reapply()
         }
         override fun onHeadsetButton() { onTalkKey?.invoke() }
         override fun onHold(held: Boolean) {
@@ -363,7 +390,7 @@ class PttEngine(
             if (held) stopTalking()
             mixer.muted = held
             onStatus(if (held) "On hold: phone call" else "Back on channel")
-            syncMonitor()
+            syncMonitorLater()
         }
         override fun onAudioRoute(label: String) {
             if (label != route.current) { route.current = label; onStatus("Audio: $label") }
@@ -384,13 +411,14 @@ class PttEngine(
 
     init {
         route.onBluetoothHeadset = { present -> syncCall(present) }
-        route.onHeadsetChanged = { syncMonitor() }
+        route.onHeadsetChanged = { syncMonitorLater() }
     }
 
     /**
      * Off-thread recovery from a mic that stopped under us. The capture reports its failure from
      * its own worker, which must not be joined from inside itself, so the release and the retry
      * happen here instead; [syncMonitor] then starts a fresh capture if the session still wants one.
+     * Also where the main thread's monitor passes run ([syncMonitorLater]).
      */
     private val recovery: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { Thread(it, "ptt-mic-retry") }
@@ -429,7 +457,7 @@ class PttEngine(
                 AudioRoute.Policy.EARPIECE -> android.telecom.CallAudioState.ROUTE_EARPIECE
                 AudioRoute.Policy.AUTO -> null
             }
-            syncMonitor()
+            syncMonitorLater()
         }
     /** Where the voice is going right now, for the Status screen. */
     val audioRouteNow: String get() = route.current
@@ -510,8 +538,6 @@ class PttEngine(
     @Volatile private var counters = Counters()
 
     private val nodes = ConcurrentHashMap<Int, Node>()
-    /** The receive pipeline: budgets, AEAD, timestamp, seen-caches, sequence marks. Lives with the engine, not the session. */
-    private val ingress = Ingress()
     private val staleReportedAt = AtomicLong(-REPORT_INTERVAL_MS)
     private val junkReportedAt = AtomicLong(-REPORT_INTERVAL_MS)
     @Volatile private var heartbeatFailed = false
@@ -609,14 +635,24 @@ class PttEngine(
         releaseDecoders()
         nodes.clear()
         publishRoster()
+        CallBridge.listener = null                      // first: a placement still on its way is refused
         CallBridge.stop()                               // end the Telecom call before the route it was using goes
         route.stop()
-        CallBridge.listener = null
         mixer.muted = false
         held = false
         asking = false
         muted = false
         ducked = false
+    }
+
+    /**
+     * Ends the engine's own threads for good, after its last [disconnect]. The service is created
+     * again every time the screen comes back off channel, each time with a new engine, and every
+     * one of them used to leave its audio-control thread behind. The engine is not usable afterwards.
+     */
+    fun shutdown() {
+        audioCtl.shutdown()
+        recovery.shutdownNow()                          // a pending mic retry has no session left to serve
     }
 
     fun stats(): Stats = counters.snapshot(mixer.concealedFrames.get(), mixer.underrunFrames.get())
@@ -816,27 +852,43 @@ class PttEngine(
             Hello.decode(plain, 0, plain.size)?.let { heardHello(h.senderId, it, from, h.ttl, gap) }
             return
         }
-        val node = heardAudio(h.senderId, from)
-
         if ((packetCount.incrementAndGet() and 0xFF) == 0) pruneDecoders()
         val playing = !(mode == Mode.HALF_DUPLEX && talking)   // radio semantics: not while we transmit
 
-        // A gap before this frame is lost audio: its slots are reserved in the mixer atomically
-        // with the admission, and the link meter is told. A late frame is dropped, its slot was
-        // concealed already.
-        if (!ingress.admitAudio(h.senderId, h.seq) { gap ->
-                node?.link?.audioLost(gap, now)
-                if (playing && gap <= Conceal.MAX_FRAMES) mixer.conceal(h.senderId, gap)
-            }) return
-        node?.link?.audioHeard(now)
-        if (!playing) return
+        // Admission and delivery under the sender's lock. Ingress admits one sender's frames in
+        // order, but the same stream arrives on every transport, each on its own thread: without
+        // this, a frame admitted on one could reach the mixer (or the decoder) after the next one,
+        // admitted and delivered on another, and play behind it, or behind its own hole.
+        synchronized(senderLock(h.senderId)) {
+            // A gap before this frame is lost audio: its slots are reserved in the mixer atomically
+            // with the admission, and the link meter is told. A late frame is dropped, its slot was
+            // concealed already.
+            var lost = 0
+            if (!ingress.admitAudio(h.senderId, h.seq) { gap ->
+                    lost = gap
+                    if (playing && gap <= Conceal.MAX_FRAMES) mixer.conceal(h.senderId, gap)
+                }) return
+            // Only an admitted frame is proof of life: one refused as late or replayed lights nobody.
+            val node = heardAudio(h.senderId, from)
+            if (lost > 0) node?.link?.audioLost(lost, now)
+            node?.link?.audioHeard(now)
+            if (!playing) return
 
-        when (h.codec) {
-            Packet.Codec.PCM -> mixer.push(h.senderId, plain, 0, plain.size)
-            Packet.Codec.OPUS -> decodeOpus(h.senderId, plain)
-            Packet.Codec.HELLO -> Unit                        // handled above
+            when (h.codec) {
+                Packet.Codec.PCM -> mixer.push(h.senderId, plain, 0, plain.size)
+                Packet.Codec.OPUS -> decodeOpus(h.senderId, plain)
+                Packet.Codec.HELLO -> Unit                    // handled above
+            }
         }
     }
+
+    /**
+     * The lock one sender's audio is admitted and delivered under ([onPacket]); striped, so there
+     * is nothing per sender to grow or sweep. Taken before the decoder's own lock and never while
+     * holding one, and nothing under it waits for another stripe, so it cannot close a cycle.
+     */
+    private fun senderLock(id: Int): Any = senderLocks[(id xor (id ushr 16)) and (SENDER_STRIPES - 1)]
+    private val senderLocks = Array(SENDER_STRIPES) { Any() }
 
     /**
      * Forwards an authenticated packet with the ttl [Ingress] worked out, to every other transport
@@ -984,26 +1036,33 @@ class PttEngine(
             if (SystemClock.elapsedRealtime() < until) return
             undecodable.remove(sender, until)
         }
-        val dec = try {
-            decoderFor(sender) ?: return                     // over capacity and everyone is talking, or disconnecting: drop
-        } catch (e: Exception) {
-            giveUp(sender, "Opus decoder unavailable")
-            return
-        }
-        synchronized(dec) {
-            try {
-                dec.decode(p, 0, p.size) { frame ->
-                    mixer.push(sender, frame, 0, frame.size)
-                }
-                decodeFailures.remove(sender)
+        // Twice at most: a decoder pruned, evicted or dropped by disconnect() between the lookup and
+        // its lock is out of the map before it is released under that lock, so one still mapped is
+        // live. A released one would only fail the decode and count against the sender: look again.
+        repeat(2) {
+            val dec = try {
+                decoderFor(sender) ?: return                 // over capacity and everyone is talking, or disconnecting: drop
             } catch (e: Exception) {
-                if (decoders.remove(sender, dec)) dec.release()   // only ours: another thread may have replaced it
-                val n = (decodeFailures[sender] ?: 0) + 1
-                if (n >= MAX_DECODE_FAILURES) {
-                    decodeFailures.remove(sender)
-                    giveUp(sender, "Opus decode error: ${e.message}")
-                } else decodeFailures[sender] = n
+                giveUp(sender, "Opus decoder unavailable")
+                return
             }
+            synchronized(dec) {
+                if (decoders[sender] !== dec) return@repeat
+                try {
+                    dec.decode(p, 0, p.size) { frame ->
+                        mixer.push(sender, frame, 0, frame.size)
+                    }
+                    decodeFailures.remove(sender)
+                } catch (e: Exception) {
+                    if (decoders.remove(sender, dec)) dec.release()   // only ours: another thread may have replaced it
+                    val n = (decodeFailures[sender] ?: 0) + 1
+                    if (n >= MAX_DECODE_FAILURES) {
+                        decodeFailures.remove(sender)
+                        giveUp(sender, "Opus decode error: ${e.message}")
+                    } else decodeFailures[sender] = n
+                }
+            }
+            return
         }
     }
 
@@ -1060,6 +1119,14 @@ class PttEngine(
 
     private companion object {
         /**
+         * The receive pipeline's seen-caches and sequence marks belong to the process, not to an
+         * engine: the service, and with it the engine, is created again whenever the screen comes
+         * back off channel, and a cache that died with it would let a recording of the last session
+         * in again inside its replay window.
+         */
+        val ingress = Ingress()
+
+        /**
          * How far the channel is turned down while this phone is being answered: quiet enough to
          * hear the answer over, loud enough that a call for help on the channel still gets through.
          */
@@ -1086,6 +1153,7 @@ class PttEngine(
         const val PEER_TIMEOUT_MS = 4_000L    // three missed hellos and a bit
         const val TALK_HOLD_MS = 400L         // how long after the last frame a peer still shows as talking
         const val MAX_NODES = 64              // far more than a crew; a ceiling, not a target
+        const val SENDER_STRIPES = 16         // a power of two; see senderLock
 
         /** The name Android shows in Settings > About, which the user can change; the model otherwise. */
         fun deviceName(context: Context): String =
