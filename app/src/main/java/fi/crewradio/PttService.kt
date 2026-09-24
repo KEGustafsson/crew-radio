@@ -168,6 +168,7 @@ class PttService : Service() {
             Thread.currentThread().interrupt(); false
         }
         if (done) engine.disconnect()
+        stopHardwareButtons()       // a session left holding the volume keys would outlive us
         releaseLocks()
         super.onDestroy()
     }
@@ -179,10 +180,10 @@ class PttService : Service() {
      * [PttEngine.crypto] is ready, and [PttEngine.connect] itself.
      */
     fun connect(factory: (PttEngine) -> List<Transport>) {
-        // Started + foreground so the service outlives the activity's unbind.
-        ContextCompat.startForegroundService(this, Intent(this, PttService::class.java))
         val connecting = getString(R.string.status_connecting)
         try {
+            // Started + foreground so the service outlives the activity's unbind.
+            ContextCompat.startForegroundService(this, Intent(this, PttService::class.java))
             showForeground(connecting)
         } catch (e: Exception) {   // e.g. ForegroundServiceStartNotAllowedException when not in the foreground
             stopSelf()
@@ -190,14 +191,19 @@ class PttService : Service() {
             return
         }
         acquireLocks()
+        val gen = joinGen.incrementAndGet()
+        joining = true
         onStatus(connecting)
         val key = Prefs(this).channelKey
         session.execute {
+            // A disconnect or a newer connect since this was queued owns the session now: the
+            // teardown queued behind this gives the locks back, the newer join does its own work.
+            if (joinGen.get() != gen) return@execute
             try {
                 engine.channelKey = key
             } catch (e: Exception) {
                 onStatus(getString(R.string.status_key_failed, e.message))
-                abandon()
+                abandon(gen)
                 return@execute
             }
             val list = try {
@@ -208,11 +214,14 @@ class PttService : Service() {
             }
             if (list.isEmpty()) {
                 onStatus(getString(R.string.status_no_transport))
-                abandon()
+                abandon(gen)
                 return@execute
             }
+            // The key took a second: a Disconnect pressed meanwhile should not see the channel come up first.
+            if (joinGen.get() != gen) return@execute
             synchronized(reportedBuilds) { reportedBuilds.clear() }   // onRoster adds under the same monitor
             engine.connect(list)
+            joinDone(gen)
             mainHandler.post {
                 refreshHardwareButtons()
                 statusListener?.invoke(lastStatus)
@@ -227,7 +236,8 @@ class PttService : Service() {
      * radio out of power save, with a "connecting" notification that nothing will ever refresh,
      * until someone finds the Disconnect action.
      */
-    private fun abandon() {
+    private fun abandon(gen: Int) {
+        joinDone(gen)
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         foregroundStarted = false
         releaseLocks()
@@ -235,14 +245,34 @@ class PttService : Service() {
         stopSelf()
     }
 
+    /**
+     * True from [connect] until its join has reached [PttEngine.connect], given up, or been cancelled
+     * by [disconnect]. The engine reads as not connected for the second the key takes, and the
+     * channel switch shows this so it neither snaps back to off nor starts a second join.
+     */
+    @Volatile var joining = false
+        private set
+
+    /** Bumped by every [connect] and [disconnect]; a queued join whose number is no longer current does nothing. */
+    private val joinGen = java.util.concurrent.atomic.AtomicInteger()
+
+    private fun joinDone(gen: Int) {
+        if (joinGen.get() == gen) joining = false
+    }
+
     /** Leaves the channel, releases the locks and drops the foreground; safe to call when already idle. */
     fun disconnect() {
-        val wasConnected = engine.isConnected
+        val wasConnected = engine.isConnected || joining     // a join cancelled half way still says so
+        joinGen.incrementAndGet()
+        joining = false
         stopHardwareButtons()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         foregroundStarted = false
         session.execute {
             engine.disconnect()
+            // A join that finished while this waited posted refreshHardwareButtons() while the
+            // engine still read as connected; this runs after it on the main thread.
+            mainHandler.post { stopHardwareButtons() }
             releaseLocks()
             if (wasConnected) onStatus(getString(R.string.status_disconnected))
             mainHandler.post { statusListener?.invoke(lastStatus) }
