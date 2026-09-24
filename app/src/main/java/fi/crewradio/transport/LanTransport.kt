@@ -71,6 +71,8 @@ class LanTransport(
     @Volatile private var lastAudioMs = 0L               // when audio last went out, for the burst floor
     @Volatile private var groupCopiesLeft = 0
     @Volatile private var running = false
+    @Volatile private var stale = false                  // a rejoin() asked for while the socket was being opened
+    @Volatile private var wasLost = false                // Wi-Fi went away: its return re-joins even at the same address
     private var lock: WifiManager.MulticastLock? = null
     private lateinit var onPacket: (ByteArray, Transport, Any?) -> Unit
     private lateinit var onStatus: (String) -> Unit
@@ -92,11 +94,14 @@ class LanTransport(
             val cur = wifi
             if (cur != null && cur.network != network) return       // a second Wi-Fi network: not the one in use
             wifi = WifiLink(network, lp)
-            if (running && describe(lp) != openedOn) rejoin()
+            if (!running) return
+            if (wasLost && describe(lp) != null) { wasLost = false; rejoin() }
+            else if (describe(lp) != openedOn) rejoin()
         }
         override fun onLost(network: Network) {
             if (wifi?.network != network) return
             wifi = null
+            wasLost = true                                 // the enumeration fallback may reopen on the dying address
             if (!running) return
             onStatus("LAN: Wi-Fi lost, waiting for it")
             rejoin()                                       // rx loop then waits in "no Wi-Fi" until it is back
@@ -121,6 +126,7 @@ class LanTransport(
     /** Opens the socket, receives until it breaks, waits, repeats — for as long as the session runs. */
     private fun rxLoop() {
         while (running) {
+            stale = false
             val target = try {
                 pickTarget()
             } catch (e: Exception) {                   // enumerating interfaces can itself fail mid-change
@@ -144,10 +150,11 @@ class LanTransport(
             }
             synchronized(lifecycle) {
                 if (!running) { s.close(); return }   // stop() ran while we were opening
+                openedOn = "${target.nic.name}/${target.address.hostAddress}"
                 socket = s
             }
+            if (stale) s.close()                       // Wi-Fi changed mid-open: rejoin() had no socket to close
             ownAddr = target.address
-            openedOn = "${target.nic.name}/${target.address.hostAddress}"
             broadcastAddr = target.broadcast
             heard = false
             peers.clear()
@@ -199,7 +206,11 @@ class LanTransport(
                 // before the AEAD and so cannot tell a crew frame from a stranger's, and one host
                 // asking faster than the crew would take all of it.
                 if (!sources.allow(from.hashCode(), System.currentTimeMillis())) continue
-                onPacket(buf.copyOf(p.length), this, from)
+                try {
+                    onPacket(buf.copyOf(p.length), this, from)
+                } catch (e: RuntimeException) {        // one bad packet must not end reception for the session
+                    onStatus("LAN: packet dropped (${e.message})")
+                }
             } catch (e: IOException) {
                 if (running && !s.isClosed) onStatus("LAN: socket error (${e.message}), reopening")
                 return
@@ -227,6 +238,7 @@ class LanTransport(
 
     /** Closes the current socket so [rxLoop] re-opens on whatever Wi-Fi now offers, without the usual wait. */
     private fun rejoin() {
+        stale = true
         backoff.reset()
         waiter.wake()
         socket?.close()

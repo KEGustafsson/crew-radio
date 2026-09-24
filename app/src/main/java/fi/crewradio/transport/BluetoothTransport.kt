@@ -292,6 +292,9 @@ class BluetoothTransport(
             } finally {
                 links.remove(link)
                 stream.close()
+                // The peer may come back as a new engine with a new id; a stale one here would
+                // make both sides keep their own dialled link and close each other's for ever.
+                if (links.none { it.device.address == dev.address }) peerIds.remove(dev.address)
                 if (running && peer != null && peer.address == dev.address) redial(peer)
             }
         }

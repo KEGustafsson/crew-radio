@@ -102,7 +102,8 @@ class WifiAwareTransport(
     @Volatile private var subscribe: SubscribeDiscoverySession? = null
     @Volatile private var server: ServerSocket? = null
     private val links = CopyOnWriteArrayList<Link>()
-    private val responderCallbacks = CopyOnWriteArrayList<ConnectivityManager.NetworkCallback>()
+    /** Responder requests, one per key: [ANY_PEER] on API 31+, the initiator's node id below it. */
+    private val responderCallbacks = ConcurrentHashMap<Any, ConnectivityManager.NetworkCallback>()
     private val peers = PeerTable<Int, PeerHandle>(PEER_TTL_MS, MAX_PEERS)   // what discovery has seen lately
     private val dials = ConcurrentHashMap<Int, Dial>()            // peers we are dialling or linked to
     private val backoffs = ConcurrentHashMap<Int, Backoff>()
@@ -195,9 +196,12 @@ class WifiAwareTransport(
 
                 override fun onAttached(s: WifiAwareSession) {
                     attaching.set(false)
-                    if (!running || session != null) { s.close(); return }   // stopped, or another attach won
-                    mine = s
-                    session = s
+                    // Under the lock stop() clears `running` with, so its dropSession() sees this session.
+                    synchronized(lifecycle) {
+                        if (!running || session != null) { s.close(); return }   // stopped, or another attach won
+                        mine = s
+                        session = s
+                    }
                     attachBackoff.reset()
                     startPublish(s)
                     startSubscribe(s)
@@ -234,8 +238,7 @@ class WifiAwareTransport(
 
     /** Responder requests belong to the publish session; drop them whenever it goes. */
     private fun clearResponders() {
-        for (cb in responderCallbacks) unregister(cb)
-        responderCallbacks.clear()
+        for (key in responderCallbacks.keys) responderCallbacks.remove(key)?.let(::unregister)
     }
 
     /** Forgets peers, dials, discovery sessions and links: all of it hangs off the session. */
@@ -258,6 +261,7 @@ class WifiAwareTransport(
         try {
             s.publish(cfg, object : DiscoverySessionCallback() {
                 override fun onPublishStarted(ps: PublishDiscoverySession) {
+                    if (!running || session !== s) { ps.close(); return }   // dropped meanwhile: nothing to clear it later
                     publish = ps
                     publishBackoff.reset()
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -266,7 +270,7 @@ class WifiAwareTransport(
                         reporting(onStatus, "Aware responder") {
                             val spec = WifiAwareNetworkSpecifier.Builder(ps)
                                 .setPskPassphrase(passphrase).setPort(localPort).build()
-                            requestResponder(spec)
+                            requestResponder(ANY_PEER, spec)
                         }
                     }
                 }
@@ -275,12 +279,13 @@ class WifiAwareTransport(
                 }
                 override fun onMessageReceived(peer: PeerHandle, message: ByteArray) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return
-                    if (AwareSsi.decode(message, idTag) == null) return   // not one of ours: no path for it
+                    if (!running || session !== s) return
+                    val from = AwareSsi.decode(message, idTag) ?: return   // not one of ours: no path for it
                     reporting(onStatus, "Aware responder") {
                         val ps = publish ?: return@reporting
                         val spec = WifiAwareNetworkSpecifier.Builder(ps, peer)
                             .setPskPassphrase(passphrase).setPort(localPort).build()
-                        requestResponder(spec)
+                        requestResponder(from, spec)             // the peer redials: replaces its last request
                     }
                 }
                 override fun onSessionTerminated() {
@@ -341,13 +346,18 @@ class WifiAwareTransport(
             .setNetworkSpecifier(spec)
             .build()
 
-    /** Responder side: keep the request registered; peers dial our [server] when their path is up. */
-    private fun requestResponder(spec: WifiAwareNetworkSpecifier) {
+    /**
+     * Responder side: keep the request registered; peers dial our [server] when their path is up.
+     * One per [key], the older one released: below API 31 every dial attempt of a peer asks for a
+     * fresh request, and piling them up reaches the framework's cap of about a hundred.
+     */
+    private fun requestResponder(key: Any, spec: WifiAwareNetworkSpecifier) {
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) { noteInterface(lp) }
         }
-        responderCallbacks.add(cb)
+        responderCallbacks.put(key, cb)?.let(::unregister)
         connectivity.requestNetwork(request(spec), cb)
+        if (!running && responderCallbacks.remove(key, cb)) unregister(cb)   // stop() cleared before we added it
     }
 
     /** Remembers the NAN interface a data path runs on, for [admit]. */
@@ -539,10 +549,18 @@ class WifiAwareTransport(
         val label = socket.inetAddress.hostAddress ?: "?"
         val stream = StreamLink(label, socket.getInputStream(), socket.getOutputStream()) { socket.close() }
         val link = Link(stream)
+        val full: Boolean
         synchronized(lifecycle) {
-            if (!running || dial?.finished?.get() == true || links.size >= MAX_LINKS) { stream.close(); return }
-            dial?.link = stream
-            links.add(link)
+            full = links.size >= MAX_LINKS
+            if (!running || dial?.finished?.get() == true || full) { stream.close() } else {
+                dial?.link = stream
+                links.add(link)
+            }
+        }
+        if (!links.contains(link)) {
+            // Turned away at the cap: end the dial, or it holds its request and never retries.
+            if (full && running) dial?.fail("Aware: link limit reached")
+            return
         }
         onStatus("Aware: $why (${links.size} link${if (links.size == 1) "" else "s"})")
         val peer = dial?.let { hex(it.peerId) } ?: label
@@ -605,6 +623,8 @@ class WifiAwareTransport(
 
     companion object {
         const val SERVICE_NAME = "crew_radio"
+        /** [requestResponder] key of the API 31+ accept-any request. */
+        private const val ANY_PEER = "any"
         /** Concurrent links, dialled and accepted together. */
         const val MAX_LINKS = 16
         /** Data-path requests in flight at once; the framework refuses past a hundred outstanding. */
