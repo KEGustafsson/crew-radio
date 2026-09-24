@@ -23,7 +23,11 @@ import java.util.concurrent.Executors
  */
 class AskController(
     private val context: Context,
-    private val prefs: Prefs,
+    /**
+     * The screen's settings, looked up each time like the engine: the screen builds a fresh
+     * [Prefs] on every resume, because that is when a fleet's managed configuration is re-read.
+     */
+    private val prefsOf: () -> Prefs,
     /**
      * The engine, looked up when it is needed rather than held: the screen is built before the
      * service binds, and the session can end under an open sheet.
@@ -61,6 +65,8 @@ class AskController(
 
     /** Who hears it. The setting's two values, overridable for one question from the sheet. */
     enum class Mode { JUST_ME, CREW }
+
+    private val prefs: Prefs get() = prefsOf()
 
     private val main = Handler(Looper.getMainLooper())
     private val work = Executors.newSingleThreadExecutor { r -> Thread(r, "ptt-ask") }
@@ -213,7 +219,7 @@ class AskController(
         match: AskIntents.Match,
     ) {
         run {
-            val client = SignalKClient(base, token)
+            val client = SignalKClient(context, base, token)
             when (val read = client.read(Quantity.subtreesOf(match.quantities))) {
                 is SignalKClient.Result.Failed -> deliver(gen, State.Failed(match.transcript, explain(read.failure)))
                 is SignalKClient.Result.Ok -> {

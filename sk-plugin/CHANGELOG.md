@@ -26,6 +26,31 @@ All notable changes to signalk-crewradio. The format follows
   being typed in) and the schema carries them, so a one-character key is refused by the admin UI
   and a short one is said out loud in the settings warnings rather than silently stretched.
 
+### Fixed
+
+- A roster name cut to 32 bytes could split an emoji and reach the phones ending in "�": the name
+  is now cut between code points, as the app's `Hello` does.
+- An alarm the crew silenced went on being announced every 30 s. Silencing takes "sound" out of the
+  notification's method and leaves the state; the bridge now forgets it (and one that stops
+  matching the include/exclude globs), and says it again only when it is raised with sound anew.
+- An urgent announcement could fail to cut a normal one short: a cancel that landed between
+  `speak()` and the first frame found nothing speaking yet (seen with two notifications in one
+  delta and no wait for a gap). The queue's own flag now goes into `speak()` and is checked before
+  every frame, the first included.
+- An announcement waiting for a gap in talk was thrown away ("Cannot read properties of null") when
+  the network link dropped meanwhile; it now goes back to waiting for the link, as the comment
+  always promised.
+- After a sentence timed out, the stuck speech worker ending late failed the next sentence on its
+  replacement; only the current worker's end fails what is in flight now, and a worker with
+  nothing left to answer no longer holds the process open.
+- `POST /say`: a body cut short by the client going away was spoken as far as it had arrived ("Do
+  not start the engine" is a different order cut short). Only a complete body is said now; an
+  incomplete one is neither answered nor said.
+- The network interface was chosen once, at open. A server that started before its Wi-Fi had a
+  lease stayed on whatever else had an address (docker0, a VPN) for good, and a new DHCP address
+  left the group joined on the old one. The link now looks again every 5 s and reopens on a change,
+  as the app's LanTransport does, and container, bridge and VPN interfaces rank last in `auto`.
+
 ## 0.1.0 - 2026-09-06
 
 First release.

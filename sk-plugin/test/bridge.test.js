@@ -146,3 +146,19 @@ test("the spoken form names the state and the path, unless sayPath is off", asyn
   await h.flush();
   assert.equal(h.said[0].text, "No contact with sensor");
 });
+
+test("an alarm the crew silences (sound taken out of its method) is forgotten, not repeated", async () => {
+  const { bridge, said, delta, flush, advance } = harness({ repeatSec: 30 });
+  delta("notifications.depth", { state: "alarm", method: ["visual", "sound"], message: "shallow" });
+  await flush();
+  assert.equal(said.length, 1);
+  delta("notifications.depth", { state: "alarm", method: ["visual"], message: "shallow" });
+  advance(31_000); bridge.repeatDue(); advance(31_000); bridge.repeatDue();
+  await flush();
+  assert.equal(said.length, 1, "silenced: said no more");
+  assert.equal(bridge.active.size, 0);
+  delta("notifications.depth", { state: "alarm", method: ["visual", "sound"], message: "shallow" });
+  await flush();
+  assert.equal(said.length, 2, "raised with sound again: said again");
+  bridge.stop();
+});

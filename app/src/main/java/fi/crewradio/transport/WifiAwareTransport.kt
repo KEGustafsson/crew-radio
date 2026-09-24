@@ -25,6 +25,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import fi.crewradio.R
 import java.io.IOException
 import java.net.Inet6Address
 import java.net.InetSocketAddress
@@ -102,7 +103,9 @@ class WifiAwareTransport(
     @Volatile private var subscribe: SubscribeDiscoverySession? = null
     @Volatile private var server: ServerSocket? = null
     private val links = CopyOnWriteArrayList<Link>()
-    private val responderCallbacks = CopyOnWriteArrayList<ConnectivityManager.NetworkCallback>()
+    /** Responder requests, one per key: [ANY_PEER] on API 31+, the initiator's node id below it. */
+    private val responderCallbacks = ConcurrentHashMap<Any, ConnectivityManager.NetworkCallback>()
+    private val responderLock = Any()                             // orders a registration against clearResponders()
     private val peers = PeerTable<Int, PeerHandle>(PEER_TTL_MS, MAX_PEERS)   // what discovery has seen lately
     private val dials = ConcurrentHashMap<Int, Dial>()            // peers we are dialling or linked to
     private val backoffs = ConcurrentHashMap<Int, Backoff>()
@@ -117,6 +120,11 @@ class WifiAwareTransport(
     private lateinit var onPacket: (ByteArray, Transport, Any?) -> Unit
     private lateinit var onStatus: (String) -> Unit
 
+    private fun str(id: Int, vararg args: Any?): String = appContext.getString(id, *args)
+
+    /** A responder request the framework refused, from a discovery callback on the main thread. */
+    private fun responderFailed(t: Throwable) = onStatus(str(R.string.status_aware_responder_error, t.message))
+
     /** One TCP data-path connection; the token the engine gets as `link`. */
     private class Link(val stream: StreamLink) {
         @Volatile var heard = false
@@ -130,7 +138,7 @@ class WifiAwareTransport(
                 if (session == null) attach()
             } else if (session != null) {
                 dropSession()
-                onStatus("Aware: unavailable (Wi-Fi off?), waiting")
+                onStatus(str(R.string.status_aware_unavailable))
             }
         }
     }
@@ -144,7 +152,7 @@ class WifiAwareTransport(
             for (id in peers.expire(now)) {
                 dials.remove(id)?.abandon()
                 backoffs.remove(id)
-                onStatus("Aware: ${hex(id)} not seen for ${PEER_TTL_MS / 60_000} min, forgotten")
+                onStatus(str(R.string.status_aware_forgotten, hex(id), PEER_TTL_MS / 60_000))
             }
             backoffs.keys.retainAll(peers.keys.toSet())
             handler.postDelayed(this, SWEEP_MS)
@@ -155,7 +163,7 @@ class WifiAwareTransport(
         this.onPacket = onPacket
         this.onStatus = onStatus
         if (manager == null) {
-            onStatus("Aware: not supported on this phone")
+            onStatus(str(R.string.status_aware_unsupported))
             return
         }
         ssi = AwareSsi.encode(localId, idTag)
@@ -163,7 +171,7 @@ class WifiAwareTransport(
         running = true
         localPort = srv.localPort
         server = srv
-        transportThread("ptt-aware-accept", { onStatus("Aware accept stopped: ${it.message}") }) { acceptLoop(srv) }
+        transportThread("ptt-aware-accept", { onStatus(str(R.string.status_aware_accept_stopped, it.message)) }) { acceptLoop(srv) }
         ContextCompat.registerReceiver(
             appContext, stateReceiver,
             IntentFilter(WifiAwareManager.ACTION_WIFI_AWARE_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED
@@ -186,7 +194,7 @@ class WifiAwareTransport(
         val m = manager
         if (m == null || !m.isAvailable) {
             attaching.set(false)
-            if (m != null) retryAttach("Aware: unavailable (Wi-Fi off?), waiting")
+            if (m != null) retryAttach(str(R.string.status_aware_unavailable))
             return
         }
         try {
@@ -195,27 +203,30 @@ class WifiAwareTransport(
 
                 override fun onAttached(s: WifiAwareSession) {
                     attaching.set(false)
-                    if (!running || session != null) { s.close(); return }   // stopped, or another attach won
-                    mine = s
-                    session = s
+                    // Under the lock stop() clears `running` with, so its dropSession() sees this session.
+                    synchronized(lifecycle) {
+                        if (!running || session != null) { s.close(); return }   // stopped, or another attach won
+                        mine = s
+                        session = s
+                    }
                     attachBackoff.reset()
                     startPublish(s)
                     startSubscribe(s)
-                    onStatus("Aware: attached, discovering…")
+                    onStatus(str(R.string.status_aware_attached))
                 }
                 override fun onAttachFailed() {
                     attaching.set(false)
-                    retryAttach("Aware: attach failed, retrying")
+                    retryAttach(str(R.string.status_aware_attach_failed))
                 }
                 override fun onAwareSessionTerminated() {
                     if (!running || mine == null || session !== mine) return   // stale: not the session in use
                     dropSession()
-                    retryAttach("Aware: session ended, re-attaching")
+                    retryAttach(str(R.string.status_aware_session_ended))
                 }
             }, handler)
         } catch (t: Throwable) {                                  // SecurityException: terminal, reported once
             attaching.set(false)
-            onStatus("Aware attach: ${t.message}")
+            onStatus(str(R.string.status_aware_attach_error, t.message))
         }
     }
 
@@ -234,8 +245,9 @@ class WifiAwareTransport(
 
     /** Responder requests belong to the publish session; drop them whenever it goes. */
     private fun clearResponders() {
-        for (cb in responderCallbacks) unregister(cb)
-        responderCallbacks.clear()
+        synchronized(responderLock) {
+            for (key in responderCallbacks.keys) responderCallbacks.remove(key)?.let(::unregister)
+        }
     }
 
     /** Forgets peers, dials, discovery sessions and links: all of it hangs off the session. */
@@ -258,39 +270,41 @@ class WifiAwareTransport(
         try {
             s.publish(cfg, object : DiscoverySessionCallback() {
                 override fun onPublishStarted(ps: PublishDiscoverySession) {
+                    if (!running || session !== s) { ps.close(); return }   // dropped meanwhile: nothing to clear it later
                     publish = ps
                     publishBackoff.reset()
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         // Responder accepting any initiator: one request covers all peers, and it
                         // survives individual data paths coming and going.
-                        reporting(onStatus, "Aware responder") {
+                        reporting(::responderFailed) {
                             val spec = WifiAwareNetworkSpecifier.Builder(ps)
                                 .setPskPassphrase(passphrase).setPort(localPort).build()
-                            requestResponder(spec)
+                            requestResponder(ANY_PEER, spec)
                         }
                     }
                 }
                 override fun onSessionConfigFailed() {
-                    retryDiscovery(s, publishBackoff, "Aware: publish failed, retrying") { startPublish(it) }
+                    retryDiscovery(s, publishBackoff, str(R.string.status_aware_publish_failed)) { startPublish(it) }
                 }
                 override fun onMessageReceived(peer: PeerHandle, message: ByteArray) {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return
-                    if (AwareSsi.decode(message, idTag) == null) return   // not one of ours: no path for it
-                    reporting(onStatus, "Aware responder") {
+                    if (!running || session !== s) return
+                    val from = AwareSsi.decode(message, idTag) ?: return   // not one of ours: no path for it
+                    reporting(::responderFailed) {
                         val ps = publish ?: return@reporting
                         val spec = WifiAwareNetworkSpecifier.Builder(ps, peer)
                             .setPskPassphrase(passphrase).setPort(localPort).build()
-                        requestResponder(spec)
+                        requestResponder(from, spec)             // the peer redials: replaces its last request
                     }
                 }
                 override fun onSessionTerminated() {
                     publish = null
                     clearResponders()                   // the restart registers fresh ones
-                    retryDiscovery(s, publishBackoff, "Aware: publish ended, restarting") { startPublish(it) }
+                    retryDiscovery(s, publishBackoff, str(R.string.status_aware_publish_ended)) { startPublish(it) }
                 }
             }, handler)
         } catch (t: Throwable) {
-            retryDiscovery(s, publishBackoff, "Aware publish: ${t.message}") { startPublish(it) }
+            retryDiscovery(s, publishBackoff, str(R.string.status_aware_publish_error, t.message)) { startPublish(it) }
         }
     }
 
@@ -316,20 +330,20 @@ class WifiAwareTransport(
                     val id = peers.keyWhere { it == peer } ?: return
                     peers.remove(id)
                     dials.remove(id)?.abandon()
-                    if (running) onStatus("Aware: lost ${hex(id)}")
+                    if (running) onStatus(str(R.string.status_aware_lost, hex(id)))
                 }
 
                 override fun onSessionConfigFailed() {
-                    retryDiscovery(s, subscribeBackoff, "Aware: subscribe failed, retrying") { startSubscribe(it) }
+                    retryDiscovery(s, subscribeBackoff, str(R.string.status_aware_subscribe_failed)) { startSubscribe(it) }
                 }
 
                 override fun onSessionTerminated() {
                     subscribe = null
-                    retryDiscovery(s, subscribeBackoff, "Aware: subscribe ended, restarting") { startSubscribe(it) }
+                    retryDiscovery(s, subscribeBackoff, str(R.string.status_aware_subscribe_ended)) { startSubscribe(it) }
                 }
             }, handler)
         } catch (t: Throwable) {
-            retryDiscovery(s, subscribeBackoff, "Aware subscribe: ${t.message}") { startSubscribe(it) }
+            retryDiscovery(s, subscribeBackoff, str(R.string.status_aware_subscribe_error, t.message)) { startSubscribe(it) }
         }
     }
 
@@ -341,13 +355,28 @@ class WifiAwareTransport(
             .setNetworkSpecifier(spec)
             .build()
 
-    /** Responder side: keep the request registered; peers dial our [server] when their path is up. */
-    private fun requestResponder(spec: WifiAwareNetworkSpecifier) {
+    /**
+     * Responder side: keep the request registered; peers dial our [server] when their path is up.
+     * One per [key], the older one released: below API 31 every dial attempt of a peer asks for a
+     * fresh request, and piling them up reaches the framework's cap of about a hundred.
+     */
+    private fun requestResponder(key: Any, spec: WifiAwareNetworkSpecifier) {
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) { noteInterface(lp) }
         }
-        responderCallbacks.add(cb)
-        connectivity.requestNetwork(request(spec), cb)
+        // Registered under the same lock clearResponders() takes, so every request that is made is
+        // either in the map for it to release or never made: a teardown on ptt-aware-stop racing this
+        // (main thread) would otherwise clear the map between the put and the registration.
+        synchronized(responderLock) {
+            if (!running) return
+            responderCallbacks.put(key, cb)?.let(::unregister)
+            try {
+                connectivity.requestNetwork(request(spec), cb)
+            } catch (e: RuntimeException) {
+                responderCallbacks.remove(key, cb)
+                throw e                                   // reported by the caller's reporting()
+            }
+        }
     }
 
     /** Remembers the NAN interface a data path runs on, for [admit]. */
@@ -370,13 +399,13 @@ class WifiAwareTransport(
         }
         val d = Dial(peerId)
         if (dials.putIfAbsent(peerId, d) != null) return
-        onStatus("Aware: connecting to ${hex(peerId)}")
+        onStatus(str(R.string.status_aware_connecting, hex(peerId)))
         try {
             ss.sendMessage(peer, 0, ssi)                  // wakes pre-Android-12 publishers
             val spec = WifiAwareNetworkSpecifier.Builder(ss, peer).setPskPassphrase(passphrase).build()
             connectivity.requestNetwork(request(spec), d, DIAL_TIMEOUT_MS)
         } catch (e: Exception) {
-            d.fail("Aware: request for ${hex(peerId)} failed (${e.message})")
+            d.fail(str(R.string.status_aware_request_failed, hex(peerId), e.message))
         }
     }
 
@@ -403,22 +432,22 @@ class WifiAwareTransport(
             val info = caps.transportInfo as? WifiAwareNetworkInfo ?: return
             val addr = info.peerIpv6Addr ?: return
             if (finished.get() || !dialing.compareAndSet(false, true)) return
-            if (info.port <= 0) { fail("Aware: ${hex(peerId)} advertises no port"); return }
-            transportThread("ptt-aware-dial-${hex(peerId)}", { fail("Aware: dial died (${it.message})") }) {
+            if (info.port <= 0) { fail(str(R.string.status_aware_no_port, hex(peerId))); return }
+            transportThread("ptt-aware-dial-${hex(peerId)}", { fail(str(R.string.status_aware_dial_died, it.message)) }) {
                 var sock: Socket? = null
                 try {
                     sock = network.socketFactory.createSocket()
                     sock.connect(InetSocketAddress(addr, info.port), DIAL_TIMEOUT_MS)
                     backoffFor(peerId).reset()
-                    addLink(sock, "connected to ${hex(peerId)}", this)
+                    addLink(sock, str(R.string.status_link_connected, hex(peerId)), this)
                 } catch (e: IOException) {
                     try { sock?.close() } catch (_: IOException) {}
-                    fail("Aware: dial ${hex(peerId)} failed (${e.message})")
+                    fail(str(R.string.status_aware_dial_failed, hex(peerId), e.message))
                 }
             }
         }
-        override fun onLost(network: Network) = fail("Aware: path to ${hex(peerId)} lost")
-        override fun onUnavailable() = fail("Aware: ${hex(peerId)} did not answer")
+        override fun onLost(network: Network) = fail(str(R.string.status_aware_path_lost, hex(peerId)))
+        override fun onUnavailable() = fail(str(R.string.status_aware_no_answer, hex(peerId)))
 
         /** Ends this attempt and, while discovery still sees the peer, schedules the next one. */
         fun fail(why: String) {
@@ -464,11 +493,11 @@ class WifiAwareTransport(
                 srv = try {
                     listen()
                 } catch (e: SecurityException) {
-                    onStatus("Aware: no permission to listen (${e.message})")
+                    onStatus(str(R.string.status_aware_no_listen_permission, e.message))
                     return
                 } catch (e: IOException) {
                     val wait = backoff.next()
-                    onStatus("Aware: can't listen on $localPort (${e.message}), retry in ${wait / 1000}s")
+                    onStatus(str(R.string.status_aware_cant_listen, localPort, e.message, wait / 1000))
                     if (!sleepQuietly(wait)) return
                     continue
                 }
@@ -485,7 +514,7 @@ class WifiAwareTransport(
                         admit(s)
                     } catch (e: Exception) {            // the peer reset between accept and setup; keep serving
                         try { s.close() } catch (_: IOException) {}
-                        onStatus("Aware: accept failed (${e.message})")
+                        onStatus(str(R.string.status_aware_accept_failed, e.message))
                     }
                 }
             } finally {
@@ -505,16 +534,16 @@ class WifiAwareTransport(
      */
     private fun admit(s: Socket) {
         val why = when {
-            !onAwarePath(s) -> "not an Aware path"
-            links.size >= MAX_LINKS -> "link limit"
+            !onAwarePath(s) -> str(R.string.status_aware_not_aware_path)
+            links.size >= MAX_LINKS -> str(R.string.status_aware_link_limit)
             else -> null
         }
         if (why != null) {
             s.close()
-            onStatus("Aware: refused ${s.inetAddress.hostAddress} ($why)")
+            onStatus(str(R.string.status_aware_refused, s.inetAddress.hostAddress, why))
             return
         }
-        addLink(s, "accepted ${s.inetAddress.hostAddress}", null)
+        addLink(s, str(R.string.status_link_accepted, s.inetAddress.hostAddress), null)
     }
 
     /** Both ends link-local IPv6, and ours on an interface a data path reported (or one named like one). */
@@ -539,15 +568,24 @@ class WifiAwareTransport(
         val label = socket.inetAddress.hostAddress ?: "?"
         val stream = StreamLink(label, socket.getInputStream(), socket.getOutputStream()) { socket.close() }
         val link = Link(stream)
+        val full: Boolean
         synchronized(lifecycle) {
-            if (!running || dial?.finished?.get() == true || links.size >= MAX_LINKS) { stream.close(); return }
-            dial?.link = stream
-            links.add(link)
+            full = links.size >= MAX_LINKS
+            if (!running || dial?.finished?.get() == true || full) { stream.close() } else {
+                dial?.link = stream
+                links.add(link)
+            }
         }
-        onStatus("Aware: $why (${links.size} link${if (links.size == 1) "" else "s"})")
+        if (!links.contains(link)) {
+            // Turned away at the cap: end the dial, or it holds its request and never retries.
+            if (full && running) dial?.fail(str(R.string.status_aware_link_limit_reached))
+            return
+        }
+        val n = links.size
+        onStatus(appContext.resources.getQuantityString(R.plurals.status_aware_link, n, why, n))
         val peer = dial?.let { hex(it.peerId) } ?: label
-        transportThread("ptt-aware-tx-$peer", { onStatus("Aware tx stopped: ${it.message}") }) { stream.sendLoop() }
-        transportThread("ptt-aware-rx-$peer", { onStatus("Aware rx stopped: ${it.message}") }) {
+        transportThread("ptt-aware-tx-$peer", { onStatus(str(R.string.status_aware_tx_stopped, it.message)) }) { stream.sendLoop() }
+        transportThread("ptt-aware-rx-$peer", { onStatus(str(R.string.status_aware_rx_stopped, it.message)) }) {
             try {
                 stream.readLoop { p ->
                     if (!link.heard) {
@@ -557,13 +595,13 @@ class WifiAwareTransport(
                     onPacket(p, this, link)
                 }
             } catch (e: SocketTimeoutException) {
-                if (running && dial == null) onStatus("Aware: $label silent, dropped")
+                if (running && dial == null) onStatus(str(R.string.status_aware_silent, label))
             } catch (e: IOException) {
-                if (running && dial == null) onStatus("Aware: $label dropped")
+                if (running && dial == null) onStatus(str(R.string.status_aware_dropped, label))
             } finally {
                 links.remove(link)
                 stream.close()
-                dial?.fail("Aware: ${hex(dial.peerId)} dropped, reconnecting")
+                dial?.fail(str(R.string.status_aware_reconnecting, hex(dial.peerId)))
             }
         }
     }
@@ -605,6 +643,8 @@ class WifiAwareTransport(
 
     companion object {
         const val SERVICE_NAME = "crew_radio"
+        /** [requestResponder] key of the API 31+ accept-any request. */
+        private const val ANY_PEER = "any"
         /** Concurrent links, dialled and accepted together. */
         const val MAX_LINKS = 16
         /** Data-path requests in flight at once; the framework refuses past a hundred outstanding. */

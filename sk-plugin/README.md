@@ -97,7 +97,7 @@ The same works as a PUT to `vessels.self.communication.crewradio.say` with a str
 | Chime | on | Two notes before an announcement, three quick ones before an urgent one. |
 | Wait for a gap in talk | 2000 ms | An announcement waits this long at most before cutting in. |
 | Multicast group, UDP port | 239.255.42.1, 47474 | Must match the phones' WLAN settings. |
-| Network interface | auto | The server's interface on the boat network, wired (eth0) or WLAN (wlan0). auto: wlan first, then eth/en, then anything with an IPv4 address. |
+| Network interface | auto | The server's interface on the boat network, wired (eth0) or WLAN (wlan0). auto: wlan first, then eth/en, then anything with an IPv4 address, container/bridge/VPN interfaces last; looked at again every 5 s. |
 | Hop budget | 4 | How far phones may relay the server's packets. |
 | Announce from state | alarm | alert, warn, alarm or emergency. |
 | Say the state and the path first | on | "Alarm, navigation position: no contact with sensor for 70 seconds" rather than the message alone, so the crew hears where it comes from. |

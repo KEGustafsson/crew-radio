@@ -24,11 +24,16 @@ interface Playback {
     fun underrunCount(): Int
 }
 
-/** Streaming PCM16 playback through an AudioTrack. write() is blocking; call it from the mixer thread. */
+/**
+ * Streaming PCM16 playback through an AudioTrack. write() is blocking; call it from the mixer thread.
+ * start() and stop() are serialised: a mixer worker winding down after a timed-out stop may still be
+ * rebuilding the track while the next session's start() opens it, and two builds would leak one.
+ */
 class AudioPlayback : Playback {
 
-    private var track: AudioTrack? = null
+    @Volatile private var track: AudioTrack? = null
 
+    @Synchronized
     override fun start() {
         if (track != null) return
         val minBuf = AudioTrack.getMinBufferSize(
@@ -66,6 +71,7 @@ class AudioPlayback : Playback {
 
     override fun underrunCount(): Int = track?.underrunCount ?: 0
 
+    @Synchronized
     override fun stop() {
         track?.let {
             try { it.stop() } catch (_: Exception) {}

@@ -5,6 +5,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import androidx.annotation.RequiresApi
+import fi.crewradio.LegacyPlatform
 import java.net.Inet4Address
 import java.net.InetAddress
 
@@ -26,6 +27,14 @@ class SignalKDiscovery(context: Context) {
 
     private val nsd = context.applicationContext.getSystemService(Context.NSD_SERVICE) as? NsdManager
     private var listener: NsdManager.DiscoveryListener? = null
+
+    /**
+     * Resolutions still registered (API 34+). Each unregisters itself once it has an address, but
+     * one for a server that goes quiet first never does, and it holds the caller's [start]
+     * callbacks — the settings screen — and an mDNS socket until the process ends. [stop] ends them.
+     * Touched from binder threads as well as the caller's, hence the synchronized set.
+     */
+    private val resolving: MutableSet<Any> = java.util.Collections.synchronizedSet(HashSet())
 
     /** True when this phone has no mDNS at all; the caller then shows the manual row only. */
     val available: Boolean get() = nsd != null
@@ -67,6 +76,19 @@ class SignalKDiscovery(context: Context) {
                 // Already stopped by the framework; nothing to undo.
             }
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) stopResolving(manager)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    private fun stopResolving(manager: NsdManager) {
+        val pending = synchronized(resolving) { resolving.toList().also { resolving.clear() } }
+        for (callback in pending) {
+            try {
+                manager.unregisterServiceInfoCallback(callback as NsdManager.ServiceInfoCallback)
+            } catch (_: IllegalArgumentException) {
+                // Already unregistered by the framework.
+            }
+        }
     }
 
     /**
@@ -85,6 +107,8 @@ class SignalKDiscovery(context: Context) {
         val callback = object : NsdManager.ServiceInfoCallback {
             override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) = Unit
             override fun onServiceUpdated(updated: NsdServiceInfo) {
+                // Stopped meanwhile: the screen that asked has gone, and stop() is unregistering this.
+                if (!resolving.remove(this)) return
                 urlOf(updated.hostAddresses, updated.port)?.let { onFound(Found(updated.serviceName, it)) }
                 // One address is all the settings row needs; a callback left registered holds a
                 // socket open for a server that has already been listed.
@@ -97,19 +121,21 @@ class SignalKDiscovery(context: Context) {
             override fun onServiceLost() = Unit
             override fun onServiceInfoCallbackUnregistered() = Unit
         }
+        resolving.add(callback)
         try {
             manager.registerServiceInfoCallback(info, { it.run() }, callback)
         } catch (_: IllegalArgumentException) {
             // The service went away between being found and being resolved.
+            resolving.remove(callback)
         }
     }
 
-    @Suppress("DEPRECATION")   // the callback above only exists from API 34; this is the path below it
+    /** Below API 34 the one-shot resolve is the only way, through [LegacyPlatform]. */
     private fun resolveLegacy(manager: NsdManager, info: NsdServiceInfo, onFound: (Found) -> Unit) {
-        manager.resolveService(info, object : NsdManager.ResolveListener {
+        LegacyPlatform.resolveService(manager, info, object : NsdManager.ResolveListener {
             override fun onResolveFailed(failed: NsdServiceInfo, errorCode: Int) = Unit
             override fun onServiceResolved(resolved: NsdServiceInfo) {
-                urlOf(listOfNotNull(resolved.host), resolved.port)?.let {
+                urlOf(listOfNotNull(LegacyPlatform.hostOf(resolved)), resolved.port)?.let {
                     onFound(Found(resolved.serviceName, it))
                 }
             }

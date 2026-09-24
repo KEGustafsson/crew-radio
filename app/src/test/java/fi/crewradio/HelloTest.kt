@@ -94,6 +94,13 @@ class HelloTest {
     }
 
     @Test
+    fun stripsFormatCharactersAboveTheBasicPlane() {
+        // TAG characters (U+E0001, U+E0041) are surrogate pairs; judged char by char they survived.
+        assertEquals("Skipper", Hello.sanitise("Skipper\uDB40\uDC01\uDB40\uDC41"))
+        assertEquals("Skipper \uD83D\uDEA4", Hello.sanitise("Skipper \uD83D\uDEA4"))   // an emoji is not a format character
+    }
+
+    @Test
     fun collapsesWhitespaceAndTrims() {
         assertEquals("Skipper S25", Hello.sanitise("  Skipper \t  S25 "))
         assertEquals("Skipper S25", Hello.sanitise("Skipper\u00A0\u2003S25"))   // no-break and em spaces

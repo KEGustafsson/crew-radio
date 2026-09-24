@@ -34,14 +34,15 @@ internal fun sleepQuietly(ms: Long): Boolean =
     }
 
 /**
- * Runs [block] and turns anything it throws into a status line. For calls made from
- * framework callbacks on the main thread, where an exception would otherwise crash the app.
+ * Runs [block] and hands anything it throws to [onError], which makes it a status line. For
+ * calls made from framework callbacks on the main thread, where an exception would otherwise
+ * crash the app.
  */
-internal inline fun reporting(onStatus: (String) -> Unit, what: String, block: () -> Unit) {
+internal inline fun reporting(onError: (Throwable) -> Unit, block: () -> Unit) {
     try {
         block()
     } catch (t: Throwable) {
-        onStatus("$what: ${t.message}")
+        onError(t)
     }
 }
 

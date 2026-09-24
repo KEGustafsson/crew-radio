@@ -234,6 +234,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       if (kind === "text" && typeof body === "string") return done(body);
       if (Buffer.isBuffer(body) && body.length > 0) return handleRaw(body.toString("utf8"));
       readBody(req, MAX_BODY).then((raw) => {
+        if (raw === undefined) return;             // the client went away mid-body: nothing to answer, nothing said
         if (raw === null) {
           res.status(413).json({ ok: false, error: `body over ${MAX_BODY} characters` });
           if (typeof res.once === "function") res.once("finish", () => req.destroy?.());   // answered first, then cut off
@@ -315,14 +316,21 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     // The link reconnects on its own (1 s doubling to 15 s); an announcement made while it is
     // down waits for it at the head of the queue instead of being thrown away.
     const t0 = Date.now();
-    while (!node) {
+    for (;;) {
+      while (!node) {
+        if (!running || cancelled()) return;
+        if (Date.now() - t0 > LINK_WAIT_MS) throw new Error("not on the channel (network link down)");
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      // The node is held here: the link may drop (and the node with it) during the wait for a
+      // gap in talk, and the announcement then goes back to waiting for the link.
+      const n = node;
+      if (cfg.waitForSilenceMs > 0) await n.waitForSilence(300, cfg.waitForSilenceMs);
       if (!running || cancelled()) return;
-      if (Date.now() - t0 > LINK_WAIT_MS) throw new Error("not on the channel (network link down)");
-      await new Promise((r) => setTimeout(r, 100));
+      if (node !== n) continue;
+      await n.speak(pcm, cancelled);   // the queue's own flag: an urgent one may cut in before the first frame
+      return;
     }
-    if (cfg.waitForSilenceMs > 0) await node.waitForSilence(300, cfg.waitForSilenceMs);
-    if (cancelled()) return;
-    await node.speak(pcm);
   }
 
   /** The plugin's state for the web page: link, roster, queue, voice, counters, limits. */
@@ -456,19 +464,25 @@ function contentKind(req) {
   return ct === "application/json" ? "json" : ct.startsWith("text/") ? "text" : null;
 }
 
-/** The request body as text, or null once it passes `limit` characters (the rest is left unread). */
+/**
+ * The request body as text, null once it passes `limit` characters (the rest is left unread), or
+ * undefined when it never arrived whole: a client that drops mid-body must not have the part that
+ * did arrive said on the channel ("Do not start the engine" is a different order cut short).
+ */
 function readBody(req, limit) {
   return new Promise((resolve) => {
     let raw = "";
-    let over = false;
+    let settled = false;
+    const settle = (v) => { if (!settled) { settled = true; resolve(v); } };
     if (typeof req.setEncoding === "function") req.setEncoding("utf8");
     req.on("data", (c) => {
-      if (over) return;
+      if (settled) return;
       raw += c;
-      if (raw.length > limit) { over = true; resolve(null); }
+      if (raw.length > limit) settle(null);
     });
-    req.on("end", () => { if (!over) resolve(raw); });
-    req.on("error", () => { if (!over) resolve(raw); });
+    req.on("end", () => settle(req.complete === false ? undefined : raw));
+    req.on("error", () => settle(undefined));
+    req.on("close", () => settle(req.complete === false || !req.readableEnded ? undefined : raw));
   });
 }
 
@@ -513,7 +527,7 @@ function schema(app) {
       waitForSilenceMs: { type: "integer", title: "Wait for a gap in talk (ms)", default: 2000, minimum: 0, maximum: 30000, description: "An announcement waits this long at most for the crew to stop talking before it cuts in." },
       group: { type: "string", title: "Multicast group", default: "239.255.42.1", description: "Must match the phones' WLAN setting (Settings › WLAN group and port)." },
       port: { type: "integer", title: "UDP port", default: 47474, minimum: 1024, maximum: 65535 },
-      iface: { type: "string", title: "Network interface", default: "auto", description: "The server's interface on the boat network: wired LAN (eth0) or WLAN (wlan0), as long as it is the same network the phones' WLAN is on. auto: a wlan interface, else eth/en, else the first with an IPv4 address." },
+      iface: { type: "string", title: "Network interface", default: "auto", description: "The server's interface on the boat network: wired LAN (eth0) or WLAN (wlan0), as long as it is the same network the phones' WLAN is on. auto: a wlan interface, else eth/en, else the first with an IPv4 address (container, bridge and VPN interfaces last); looked at again every 5 s." },
       hops: { type: "integer", title: "Hop budget", default: 4, minimum: 1, maximum: 16, description: "How far phones may relay the server's packets over Bluetooth and Wi-Fi Aware." },
       bridge: {
         type: "object",

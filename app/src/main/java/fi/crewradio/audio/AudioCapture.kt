@@ -1,11 +1,13 @@
 package fi.crewradio.audio
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
+import fi.crewradio.R
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -20,12 +22,13 @@ import kotlin.concurrent.thread
  * down the same way as a good one, and [start] after a failure first clears the old record.
  */
 class AudioCapture(
+    private val context: Context,
     private val onFrame: (ByteArray) -> Unit,
     private val onError: (String) -> Unit = {},
 ) {
 
-    /** `AudioCapture { frame -> ... }`: the trailing lambda is the frame sink, the failure goes unreported. */
-    constructor(onFrame: (ByteArray) -> Unit) : this(onFrame, {})
+    /** `AudioCapture(context) { frame -> ... }`: the trailing lambda is the frame sink, the failure goes unreported. */
+    constructor(context: Context, onFrame: (ByteArray) -> Unit) : this(context, onFrame, {})
 
     /**
      * One capture, and the token that says who releases it.
@@ -62,7 +65,7 @@ class AudioCapture(
         )
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
             rec.release()
-            throw IllegalStateException("AudioRecord init failed")
+            throw IllegalStateException(context.getString(R.string.status_mic_init_failed))   // shown after status_mic_error
         }
         val mine = Session(rec)
         session = mine
@@ -81,7 +84,7 @@ class AudioCapture(
                 capture(rec)
             } catch (t: Throwable) {
                 running = false
-                report { onError("mic failed (${t.message})") }
+                report { onError(context.getString(R.string.status_mic_failed, t.message)) }
             } finally {
                 release(mine)                      // this session's record, whoever gets here first
             }
@@ -118,7 +121,7 @@ class AudioCapture(
                     // gone. An urgent-audio thread must not spin on it, so this is the end of the
                     // worker; stop() (ours or the engine's) releases the record.
                     running = false
-                    report { onError("mic read failed ($n)") }
+                    report { onError(context.getString(R.string.status_mic_read_failed, n)) }
                 }
             }
     }

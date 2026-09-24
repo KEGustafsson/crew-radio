@@ -14,6 +14,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
+import fi.crewradio.R
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -79,9 +80,12 @@ class BluetoothTransport(
     private lateinit var onPacket: (ByteArray, Transport, Any?) -> Unit
     private lateinit var onStatus: (String) -> Unit
 
+    private fun str(id: Int, vararg args: Any?): String = appContext.getString(id, *args)
+
     /** One RFCOMM connection; the token the engine gets as `link`. */
     private class Link(val stream: StreamLink, val device: BluetoothDevice, val isDialed: Boolean) {
         @Volatile var superseded = false                          // closed by the tie-break, not by the peer
+        @Volatile var learned = false                             // its own first direct frame has named the peer
     }
 
     /** The adapter going off drops everything; coming back on wakes the listener and the dialler. */
@@ -90,13 +94,13 @@ class BluetoothTransport(
             if (!running) return
             when (i.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
                 BluetoothAdapter.STATE_ON -> {
-                    onStatus("BT: adapter on")
+                    onStatus(str(R.string.status_bt_adapter_on))
                     listenWaiter.wake()
                     dialWaiter.wake()
                     peer?.let { redial(it) }
                 }
                 BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
-                    onStatus("BT: adapter off, waiting")
+                    onStatus(str(R.string.status_bt_adapter_off))
                     closeSockets(links.toList(), server, dialing)
                 }
             }
@@ -107,7 +111,7 @@ class BluetoothTransport(
         this.onPacket = onPacket
         this.onStatus = onStatus
         if (adapter == null) {
-            onStatus("BT: not supported on this phone")
+            onStatus(str(R.string.status_bt_unsupported))
             return
         }
         running = true
@@ -115,9 +119,15 @@ class BluetoothTransport(
             appContext, stateReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED
         )
         receiverRegistered = true
-        transportThread("ptt-bt-listen", { onStatus("BT listener stopped: ${it.message}") }) { listenLoop(adapter) }
+        transportThread("ptt-bt-listen", { onStatus(str(R.string.status_bt_listener_stopped, it.message)) }) { listenLoop(adapter) }
         peer?.let { redial(it) }
-        onStatus(if (adapter.isEnabled) "BT: starting" + (peerLabel?.let { ", connecting to $it" } ?: "") else "BT: adapter off, waiting")
+        onStatus(
+            when {
+                !adapter.isEnabled -> str(R.string.status_bt_adapter_off)
+                peerLabel != null -> str(R.string.status_bt_starting_dial, peerLabel)
+                else -> str(R.string.status_bt_starting)
+            }
+        )
     }
 
     /**
@@ -135,12 +145,12 @@ class BluetoothTransport(
             val srv = try {
                 adapter.listenUsingRfcommWithServiceRecord("PTT", SERVICE_UUID)
             } catch (e: SecurityException) {
-                onStatus("BT: no permission to listen (${e.message})")
+                onStatus(str(R.string.status_bt_no_listen_permission, e.message))
                 return
             } catch (e: Exception) {
                 if (!running) return
                 val wait = backoff.next()
-                onStatus("BT: can't listen (${e.message}), retry in ${wait / 1000}s")
+                onStatus(str(R.string.status_bt_cant_listen, e.message, wait / 1000))
                 listenWaiter.await(wait)
                 continue
             }
@@ -149,20 +159,20 @@ class BluetoothTransport(
                 server = srv
             }
             backoff.reset()
-            onStatus("BT: listening")
+            onStatus(str(R.string.status_bt_listening))
             while (running) {
                 val s = try { srv.accept() } catch (_: Exception) { break }
                 try {
-                    addLink(s, "accepted ${label(s.remoteDevice)}", isDialed = false)
+                    addLink(s, str(R.string.status_link_accepted, label(s.remoteDevice)), isDialed = false)
                 } catch (e: Exception) {                // the peer hung up before we got its streams; keep serving
                     try { s.close() } catch (_: Exception) {}
-                    onStatus("BT: accept failed (${e.message})")
+                    onStatus(str(R.string.status_bt_accept_failed, e.message))
                 }
             }
             server = null
             closeQuietly(srv)
             if (!running) return
-            if (adapter.isEnabled) onStatus("BT: listener dropped, restarting")
+            if (adapter.isEnabled) onStatus(str(R.string.status_bt_listener_dropped))
             listenWaiter.await(backoff.next())
         }
     }
@@ -184,7 +194,7 @@ class BluetoothTransport(
             dialActive = true
             dialWanted = false
         }
-        transportThread("ptt-bt-connect", { onStatus("BT connect stopped: ${it.message}") }) {
+        transportThread("ptt-bt-connect", { onStatus(str(R.string.status_bt_connect_stopped, it.message)) }) {
             try {
                 dialLoop(dev)
             } finally {
@@ -221,19 +231,19 @@ class BluetoothTransport(
                 if (!running) return                     // stop() ran before it could see this socket
                 socket.connect()
                 dialing = null
-                addLink(socket, "connected to ${peerLabel ?: label(dev)}", isDialed = true)
+                addLink(socket, str(R.string.status_link_connected, peerLabel ?: label(dev)), isDialed = true)
                 return
             } catch (e: SecurityException) {
                 dialing = null
                 try { socket?.close() } catch (_: Exception) {}
-                onStatus("BT: no permission to connect (${e.message})")
+                onStatus(str(R.string.status_bt_no_connect_permission, e.message))
                 return
             } catch (e: Exception) {
                 dialing = null
                 try { socket?.close() } catch (_: Exception) {}
                 if (!running) return
                 val wait = backoff.next()
-                onStatus("BT: ${peerLabel ?: label(dev)} not answering, retry in ${wait / 1000}s")
+                onStatus(str(R.string.status_bt_not_answering, peerLabel ?: label(dev), wait / 1000))
                 dialWaiter.await(wait)
             } finally {
                 if (!running) { dialing = null; try { socket?.close() } catch (_: Exception) {} }
@@ -274,13 +284,17 @@ class BluetoothTransport(
             if (isDialed && links.any { it.isDialed && it.device.address == dev.address }) { stream.close(); return }
             links.add(link)
         }
-        onStatus("BT: $why (${links.size} link${if (links.size == 1) "" else "s"})")
-        transportThread("ptt-bt-tx-${dev.address}", { onStatus("BT tx stopped: ${it.message}") }) { stream.sendLoop() }
-        transportThread("ptt-bt-rx-${dev.address}", { onStatus("BT rx stopped: ${it.message}") }) {
+        val n = links.size
+        onStatus(appContext.resources.getQuantityString(R.plurals.status_bt_link, n, why, n))
+        transportThread("ptt-bt-tx-${dev.address}", { onStatus(str(R.string.status_bt_tx_stopped, it.message)) }) { stream.sendLoop() }
+        transportThread("ptt-bt-rx-${dev.address}", { onStatus(str(R.string.status_bt_rx_stopped, it.message)) }) {
             try {
                 stream.readLoop { p ->
-                    if (!peerIds.containsKey(dev.address)) {
+                    // Every link learns the id from its own frames: a peer that came back as a new
+                    // engine may still have its old link open, whose id must not decide for the new one.
+                    if (!link.learned) {
                         BluetoothTieBreak.directSender(p)?.let { id ->
+                            link.learned = true
                             peerIds[dev.address] = id
                             reconcile(dev)
                         }
@@ -288,14 +302,20 @@ class BluetoothTransport(
                     onPacket(p, this, link)
                 }
             } catch (e: IOException) {
-                if (running && !link.superseded) onStatus("BT: ${stream.label} dropped")
+                if (running && !link.superseded) onStatus(str(R.string.status_bt_dropped, stream.label))
             } finally {
-                links.remove(link)
+                // The peer may come back as a new engine with a new id; a stale one here would
+                // make both sides keep their own dialled link and close each other's for ever.
+                // Under the lock addLink registers with, so a replacement link is either seen here
+                // (and keeps the id it learns) or arrives after the eviction.
+                synchronized(lifecycle) {
+                    links.remove(link)
+                    if (links.none { it.device.address == dev.address }) peerIds.remove(dev.address)
+                }
                 stream.close()
                 if (running && peer != null && peer.address == dev.address) redial(peer)
             }
         }
-        if (peerIds.containsKey(dev.address)) reconcile(dev)
     }
 
     /** Both phones dialled each other: keep one link per [BluetoothTieBreak], close the other. */
@@ -310,7 +330,7 @@ class BluetoothTransport(
             l.superseded = true
             l.stream.close()
         }
-        onStatus("BT: one link to ${label(dev)} kept")
+        onStatus(str(R.string.status_bt_one_link_kept, label(dev)))
     }
 
     override fun send(packet: ByteArray, except: Any?): Boolean {

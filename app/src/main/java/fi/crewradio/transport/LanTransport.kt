@@ -8,6 +8,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import fi.crewradio.Packet
+import fi.crewradio.R
 import java.io.IOException
 import java.net.DatagramPacket
 import java.net.Inet4Address
@@ -16,6 +17,7 @@ import java.net.InetSocketAddress
 import java.net.MulticastSocket
 import java.net.NetworkInterface
 import java.net.SocketAddress
+import java.nio.ByteBuffer
 
 /**
  * UDP on the local network. Every phone joins the same multicast group; whoever is
@@ -68,12 +70,19 @@ class LanTransport(
     @Volatile private var broadcastAddr: InetAddress? = null
     @Volatile private var wifi: WifiLink? = null         // the Wi-Fi network the callback last described
     @Volatile private var heard = false
-    @Volatile private var lastAudioMs = 0L               // when audio last went out, for the burst floor
-    @Volatile private var groupCopiesLeft = 0
+    /** Burst-floor state per sender id: relayed talk must not use up the floor of our own. */
+    private val bursts = object : LinkedHashMap<Int, Burst>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, Burst>) = size > MAX_BURSTS
+    }
+    private class Burst(var lastAudioMs: Long, var groupCopiesLeft: Int)
     @Volatile private var running = false
+    @Volatile private var stale = false                  // a rejoin() asked for while the socket was being opened
+    @Volatile private var wasLost = false                // Wi-Fi went away: its return re-joins even at the same address
     private var lock: WifiManager.MulticastLock? = null
     private lateinit var onPacket: (ByteArray, Transport, Any?) -> Unit
     private lateinit var onStatus: (String) -> Unit
+
+    private fun str(id: Int, vararg args: Any?): String = appContext.getString(id, *args)
 
     private class WifiLink(val network: Network, val lp: LinkProperties)
 
@@ -92,13 +101,16 @@ class LanTransport(
             val cur = wifi
             if (cur != null && cur.network != network) return       // a second Wi-Fi network: not the one in use
             wifi = WifiLink(network, lp)
-            if (running && describe(lp) != openedOn) rejoin()
+            if (!running) return
+            if (wasLost && describe(lp) != null) { wasLost = false; rejoin() }
+            else if (describe(lp) != openedOn) rejoin()
         }
         override fun onLost(network: Network) {
             if (wifi?.network != network) return
             wifi = null
+            wasLost = true                                 // the enumeration fallback may reopen on the dying address
             if (!running) return
-            onStatus("LAN: Wi-Fi lost, waiting for it")
+            onStatus(str(R.string.status_lan_wifi_lost))
             rejoin()                                       // rx loop then waits in "no Wi-Fi" until it is back
         }
     }
@@ -112,7 +124,7 @@ class LanTransport(
             acquire()
         }
         running = true
-        transportThread("ptt-lan-rx", { onStatus("LAN rx stopped: ${it.message}") }) { rxLoop() }
+        transportThread("ptt-lan-rx", { onStatus(str(R.string.status_lan_rx_stopped, it.message)) }) { rxLoop() }
         connectivity.registerNetworkCallback(
             NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), wifiCallback
         )
@@ -121,16 +133,17 @@ class LanTransport(
     /** Opens the socket, receives until it breaks, waits, repeats — for as long as the session runs. */
     private fun rxLoop() {
         while (running) {
+            stale = false
             val target = try {
                 pickTarget()
             } catch (e: Exception) {                   // enumerating interfaces can itself fail mid-change
                 val wait = backoff.next()
-                onStatus("LAN: can't list interfaces (${e.message}), retry in ${wait / 1000}s")
+                onStatus(str(R.string.status_lan_no_interfaces, e.message, wait / 1000))
                 waiter.await(wait)
                 continue
             }
             if (target == null) {
-                onStatus("LAN: no Wi-Fi, waiting")
+                onStatus(str(R.string.status_lan_no_wifi))
                 waiter.await(backoff.next())
                 continue
             }
@@ -138,22 +151,26 @@ class LanTransport(
                 openSocket(target.nic)
             } catch (e: Exception) {
                 val wait = backoff.next()
-                onStatus("LAN: can't open (${e.message}), retry in ${wait / 1000}s")
+                onStatus(str(R.string.status_lan_cant_open, e.message, wait / 1000))
                 waiter.await(wait)
                 continue
             }
             synchronized(lifecycle) {
                 if (!running) { s.close(); return }   // stop() ran while we were opening
+                openedOn = "${target.nic.name}/${target.address.hostAddress}"
                 socket = s
             }
+            if (stale) s.close()                       // Wi-Fi changed mid-open: rejoin() had no socket to close
             ownAddr = target.address
-            openedOn = "${target.nic.name}/${target.address.hostAddress}"
             broadcastAddr = target.broadcast
             heard = false
             peers.clear()
             sources.clear()
-            val bc = target.broadcast?.hostAddress?.let { " + $it" } ?: " (multicast only)"
-            onStatus("LAN: $group:$port$bc via ${target.nic.name}")
+            val bc = target.broadcast?.hostAddress
+            onStatus(
+                if (bc != null) str(R.string.status_lan_open_broadcast, group, port, bc, target.nic.name)
+                else str(R.string.status_lan_open_multicast, group, port, target.nic.name)
+            )
             receiveUntilClosed(s)
             socket = null
             openedOn = null
@@ -199,9 +216,13 @@ class LanTransport(
                 // before the AEAD and so cannot tell a crew frame from a stranger's, and one host
                 // asking faster than the crew would take all of it.
                 if (!sources.allow(from.hashCode(), System.currentTimeMillis())) continue
-                onPacket(buf.copyOf(p.length), this, from)
+                try {
+                    onPacket(buf.copyOf(p.length), this, from)
+                } catch (e: RuntimeException) {        // one bad packet must not end reception for the session
+                    onStatus(str(R.string.status_lan_packet_dropped, e.message))
+                }
             } catch (e: IOException) {
-                if (running && !s.isClosed) onStatus("LAN: socket error (${e.message}), reopening")
+                if (running && !s.isClosed) onStatus(str(R.string.status_lan_socket_error, e.message))
                 return
             }
         }
@@ -221,12 +242,13 @@ class LanTransport(
         if (!heard) {
             heard = true
             backoff.reset()                                // a working network: the next reopen starts fast again
-            onStatus("LAN: hearing ${from.hostAddress}")
+            onStatus(str(R.string.status_lan_hearing, from.hostAddress))
         }
     }
 
     /** Closes the current socket so [rxLoop] re-opens on whatever Wi-Fi now offers, without the usual wait. */
     private fun rejoin() {
+        stale = true
         backoff.reset()
         waiter.wake()
         socket?.close()
@@ -257,15 +279,18 @@ class LanTransport(
         // copy can still enter the table - and once the table is full of it, unicast-only audio
         // reaches nobody. This is the floor under that: the crew hears the start of every burst,
         // so the fault is audible rather than silent. Ten extra packets per burst, not per frame.
-        if (!hello) {
-            if (now - lastAudioMs > BURST_GAP_MS) groupCopiesLeft = BURST_GROUP_FRAMES
-            lastAudioMs = now
+        // Counted per sender and under a lock: a relaying phone sends several talkers' frames
+        // from several transport threads, and each burst deserves its own floor.
+        val floor = !hello && packet.size >= Packet.HEADER && synchronized(bursts) {
+            val sender = ByteBuffer.wrap(packet, 6, 4).int
+            val b = bursts.getOrPut(sender) { Burst(0L, 0) }
+            if (now - b.lastAudioMs > BURST_GAP_MS) b.groupCopiesLeft = BURST_GROUP_FRAMES
+            b.lastAudioMs = now
+            if (b.groupCopiesLeft > 0) { b.groupCopiesLeft--; true } else false
         }
-        val alsoGroup = hello || live.isEmpty() || groupCopiesLeft > 0
-        if (alsoGroup) {
+        if (hello || live.isEmpty() || floor) {
             sendTo(s, packet, groupAddr)
             broadcastAddr?.let { sendTo(s, packet, it) }
-            if (!hello && groupCopiesLeft > 0) groupCopiesLeft--
         }
         for (a in live) if (a != except) sendTo(s, packet, a)
         return true
@@ -343,5 +368,7 @@ class LanTransport(
         const val BURST_GAP_MS = 400L
         /** Frames at the start of a burst that keep the group and broadcast copies: 100 ms at 50 fps. */
         const val BURST_GROUP_FRAMES = 5
+        /** Senders whose burst state is kept; the crew is far smaller. */
+        private const val MAX_BURSTS = 32
     }
 }

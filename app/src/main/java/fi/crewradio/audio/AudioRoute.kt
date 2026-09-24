@@ -10,6 +10,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import fi.crewradio.LegacyPlatform
 import fi.crewradio.R
 
 /**
@@ -91,10 +92,9 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
         // The SCO broadcast is deprecated in favour of OnCommunicationDeviceChangedListener, which
         // is API 31+; this receiver is the fallback for 29 and 30, where the replacement does not
         // exist. It is registered only on those levels (see [start]).
-        @Suppress("DEPRECATION")
         override fun onReceive(c: Context, i: Intent) {
-            val st = i.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1)
-            if (active && !passive && bluetoothWanted && st == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) heal()
+            val st = i.getIntExtra(ScoBroadcast.EXTRA_STATE, -1)
+            if (active && !passive && bluetoothWanted && ScoBroadcast.dropped(st)) heal()
         }
     }
 
@@ -144,14 +144,26 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             commDeviceListener?.let { audioManager.addOnCommunicationDeviceChangedListener({ r -> handler.post(r) }, it) }
         } else {
-            @Suppress("DEPRECATION")
-            context.registerReceiver(scoReceiver, IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED))
+            context.registerReceiver(scoReceiver, IntentFilter(ScoBroadcast.ACTION))
         }
         apply(announce = false)
     }
 
+    /**
+     * Under the same lock as [apply], and [apply] checks [active] again inside it: a device event
+     * or a setting that passed its own check just before this ran would otherwise set the
+     * communication device again after it was cleared here, holding a headset's SCO link open
+     * after the session and leaving [bluetoothPresent] set, so the next session never asks for its call.
+     * The engine is told about the headset after the lock is let go, since that call reaches Telecom.
+     */
     fun stop() {
-        if (!active) return
+        val hadBluetooth = synchronized(this) { teardown() } ?: return
+        if (hadBluetooth) onBluetoothHeadset?.invoke(false)
+    }
+
+    /** [stop] under the lock: null when there was nothing to stop, else whether a Bluetooth headset was wanted. */
+    private fun teardown(): Boolean? {
+        if (!active) return null
         active = false
         handler.removeCallbacks(healRunnable)
         handler.removeCallbacks(retryRunnable)
@@ -159,8 +171,9 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
         heals = 0
         audioManager.unregisterAudioDeviceCallback(deviceCallback)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) commDeviceListener?.let { audioManager.removeOnCommunicationDeviceChangedListener(it) }
-        else try { context.unregisterReceiver(scoReceiver) } catch (e: Exception) { onStatus("Audio route: ${e.message}") }
-        if (bluetoothWanted) { bluetoothWanted = false; onBluetoothHeadset?.invoke(false) }
+        else try { context.unregisterReceiver(scoReceiver) } catch (e: Exception) { onStatus(context.getString(R.string.status_route_error, e.message)) }
+        val hadBluetooth = bluetoothWanted
+        bluetoothWanted = false
         headset = false
         bluetoothHeadset = false
         passive = false
@@ -168,17 +181,16 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 audioManager.clearCommunicationDevice()
             } else {
-                @Suppress("DEPRECATION")
-                if (scoDevice != null) { audioManager.stopBluetoothSco(); audioManager.isBluetoothScoOn = false }
-                @Suppress("DEPRECATION")
-                audioManager.isSpeakerphoneOn = false
+                if (scoDevice != null) LegacyPlatform.stopBluetoothSco(audioManager)
+                LegacyPlatform.setSpeakerphone(audioManager, false)
             }
         } catch (e: Exception) {
-            onStatus("Audio route reset failed: ${e.message}")     // the old route may linger; teardown goes on
+            onStatus(context.getString(R.string.status_route_reset_failed, e.message))     // the old route may linger; teardown goes on
         }
         scoDevice = null
         audioManager.mode = AudioManager.MODE_NORMAL
         current = context.getString(R.string.call_speaker)
+        return hadBluetooth
     }
 
     /** Re-evaluates the route, e.g. when Telecom hands it back. */
@@ -187,6 +199,7 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
     /** Picks the best available device under [policy] and switches to it if it is not the one in use. */
     @Synchronized
     private fun apply(announce: Boolean) {
+        if (!active) return                                   // stopped since the caller looked: see stop()
         val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         val headset = if (policy == Policy.AUTO) pickHeadset(outputs) else null
         val bluetooth = headset?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
@@ -235,33 +248,31 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
                     }
                 } else {
                     // API 29 and 30 have no setCommunicationDevice: the SCO and speakerphone switches
-                    // below are the platform's only way, deprecated by 31 but kept here for those phones.
-                    @Suppress("DEPRECATION")
+                    // in LegacyPlatform are the platform's only way there, deprecated from 31.
                     when {
                         headset == null -> {   // speakerphone on, or off for the earpiece
-                            if (scoDevice != null) { audioManager.stopBluetoothSco(); audioManager.isBluetoothScoOn = false; scoDevice = null }
-                            audioManager.isSpeakerphoneOn = !earpiece
+                            if (scoDevice != null) { LegacyPlatform.stopBluetoothSco(audioManager); scoDevice = null }
+                            LegacyPlatform.setSpeakerphone(audioManager, !earpiece)
                         }
                         bluetooth -> {
-                            audioManager.isSpeakerphoneOn = false
+                            LegacyPlatform.setSpeakerphone(audioManager, false)
                             if (scoDevice?.id != headset.id) {
-                                audioManager.startBluetoothSco()
-                                audioManager.isBluetoothScoOn = true
+                                LegacyPlatform.startBluetoothSco(audioManager)
                                 scoDevice = headset
                             }
                         }
                         else -> {   // wired: the platform routes to it once the speakerphone is off
-                            if (scoDevice != null) { audioManager.stopBluetoothSco(); audioManager.isBluetoothScoOn = false; scoDevice = null }
-                            audioManager.isSpeakerphoneOn = false
+                            if (scoDevice != null) { LegacyPlatform.stopBluetoothSco(audioManager); scoDevice = null }
+                            LegacyPlatform.setSpeakerphone(audioManager, false)
                         }
                     }
                 }
             } catch (e: Exception) {
-                onStatus("Audio route failed: ${e.message}")
+                onStatus(context.getString(R.string.status_route_failed, e.message))
                 applied = false
                 current = before
             }
-            if (announce && current != before) onStatus("Audio: $current")
+            if (announce && current != before) onStatus(context.getString(R.string.status_audio, current))
         }
         routed(applied, applied && bluetooth)
     }

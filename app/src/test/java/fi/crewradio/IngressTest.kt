@@ -145,26 +145,24 @@ class IngressTest {
         val i = Ingress(audioCache = 8)                           // a tiny cache, to show the sequence mark holding on its own
         for (seq in 0 until 100) {
             assertTrue(i.admit(header(seq = seq), seq * 20L, now, 4, opens).accepted())
-            assertTrue(i.admitAudio(1, seq) {})
+            assertTrue(i.admitAudio(1, seq) >= 0)
         }
         // ... the sender goes quiet for longer than the roster keeps it; nothing is forgotten ...
         assertEquals(Ingress.Result.Duplicate, i.admit(header(seq = 99), 60_000, now, 4, opens))   // still in the cache
         val r = i.admit(header(seq = 3), 60_000, now, 4, opens)   // long fallen out of the 8-entry cache
         assertTrue(r.accepted())                                   // the cache cannot say, so it passes to the audio admission
-        assertFalse(i.admitAudio(1, 3) {})                         // which knows it is late
-        assertTrue(i.admitAudio(1, 100) {})                        // the sender's next real frame is fine
+        assertEquals(-1, i.admitAudio(1, 3))                       // which knows it is late
+        assertEquals(0, i.admitAudio(1, 100))                      // the sender's next real frame is fine
     }
 
     @Test
-    fun sequenceGapsAreReportedAtomicallyWithTheAdmission() {
+    fun sequenceGapsAreReportedWithTheAdmission() {
         val i = Ingress()
-        val gaps = mutableListOf<Int>()
-        assertTrue(i.admitAudio(1, 10) { gaps += it })
-        assertTrue(i.admitAudio(1, 11) { gaps += it })
-        assertTrue(i.admitAudio(1, 14) { gaps += it })            // 12 and 13 never came
-        assertFalse(i.admitAudio(1, 12) { gaps += it })           // and here is 12, late: its slot was concealed already
-        assertTrue(i.admitAudio(2, 5) { gaps += it })             // another sender starts fresh
-        assertEquals(listOf(2), gaps)
+        assertEquals(0, i.admitAudio(1, 10))
+        assertEquals(0, i.admitAudio(1, 11))
+        assertEquals(2, i.admitAudio(1, 14))                      // 12 and 13 never came
+        assertEquals(-1, i.admitAudio(1, 12))                     // and here is 12, late: its slot was concealed already
+        assertEquals(0, i.admitAudio(2, 5))                       // another sender starts fresh
     }
 
     @Test

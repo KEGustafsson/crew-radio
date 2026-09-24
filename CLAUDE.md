@@ -107,7 +107,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   wait with `transport/Backoff` (1 s doubling to 15 s). The side that dialled restores.
 - `LanTransport` sends unicast to every address heard from in the last `PEER_TTL_MS` (5 s, at
   most `MAX_PEERS`), and adds the multicast group and the interface's IPv4 broadcast address
-  only while no peer is known or the packet is a hello. APs deliver multicast and broadcast at
+  only while no peer is known, the packet is a hello, or it is one of the first
+  `BURST_GROUP_FRAMES` of a sender's talk burst (the floor under a poisoned peer table, counted
+  per sender so relayed talk does not spend our own). APs deliver multicast and broadcast at
   their lowest rate without acknowledgement, so unicast is what carries audio; sending all
   three left every frame leaving the phone 2 + N times, which is why audio drops the group
   copies once a peer is known. Hellos keep them whatever the table holds — one packet a second,
@@ -138,7 +140,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   ask the AOSP Opus decoder for PLC (an empty buffer yields empty output). Audio frames and hellos
   number themselves independently (two seen-caches), so a gap in a sender's audio sequence is lost
   audio: `SeqTracker` (pure, wrap-aware, tested) admits each frame and reports the gap, the engine
-  reserves that many slots in the mixer atomically with the admission, and the mixer fills them,
+  reserves that many slots in the mixer atomically with the admission (admission, reservation and
+  delivery run under one striped per-sender lock, because a sender's frames arrive on every
+  transport's thread at once), and the mixer fills them,
   and any queue that runs dry mid-talk, with the last frame fading over at most three slots.
 - Volume row (main screen, above the disc: mute glyph, slider, step number). The slider is the
   phone's call volume through `audio/CallVolume`: the voice-call stream (playback is
@@ -164,8 +168,8 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   counters: (1) the per-sender rate budget must be charged after the seen-cache, or the two WLAN
   copies of every frame spend it in ~6 s (fixed); (2) an access point delivers multicast and
   broadcast at its lowest rate, unacknowledged, and a phone in the same cabin loses a few percent,
-  audible as voids; unicast copies to each known peer fix it (the plugin does this; the app's
-  LanTransport could learn peers' addresses from hellos and do the same); (3) a sender whose timer
+  audible as voids; unicast copies to each known peer fix it (the plugin does this, and the app's
+  LanTransport learns peers from every packet that opened with the channel key); (3) a sender whose timer
   ticks at 15.6 ms (Node on Windows) needs a ~100 ms lead or the mixer, which drains after 40 ms
   of buffer, runs dry and conceals.
 - Bluetooth headsets: measured on a Jabra Evolve2 65 + S25. With SCO up and no call, a tap is
@@ -206,8 +210,8 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   key-repeat timeout makes a hold one press. Every hardware key change plays `audio/Tones`
   through the mixer's cue queue, on top of whatever is sounding. Setting `hw_button`.
 - `PttEngine.onPacket`: dedupe by (senderId, seq) seen-cache, relay to other
-  transports/links if `relay` is on and ttl > 1 (ttl clamped to our own `maxHops`, then
-  decremented in place), then decode and play unless half-duplex and transmitting. Opus
+  transports/links if `relay` is on and ttl > 1 (ttl clamped to the sender's signed `hops`,
+  forwarded only while within our own `maxHops` of the origin, then decremented in place), then decode and play unless half-duplex and transmitting. Opus
   decoders are per sender, created on demand, at most 8 at once (quietest evicted), released
   after 30 s of silence. Encoder failure falls back to PCM and reports it.
 - Wire format has no legacy mode: every phone must run the same build (README says so).
@@ -307,8 +311,7 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   directly (`hops - ttl == 0`), because access points drop a few percent of multicast even in the
   same cabin; the phones drop the copies they get twice. Measured with the app's Status counters.
 - Phase 2 (app changes, same wire version): an urgent announcement should play through a
-  half-duplex phone that is transmitting; acknowledgement from a phone; the app's LanTransport
-  could send unicast copies to known peers the same way.
+  half-duplex phone that is transmitting; acknowledgement from a phone.
 
 ## Licence
 - EUPL-1.2 (`LICENSE`, SPDX `EUPL-1.2`), declared in the README and in the SBOM's metadata. Keep
@@ -396,7 +399,12 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 - `lintRelease` is a CI gate with `abortOnError` and `warningsAsErrors`: no errors and no warnings,
   ever. Suppress an issue only inline, with a comment saying why. No `@Suppress("DEPRECATION")`
   either: where a platform API has only a deprecated form on an old API level, write the small
-  replacement by hand and unit-test it (`LinkQuality.wifiBars` is the pattern).
+  replacement by hand and unit-test it (`LinkQuality.wifiBars`, `audio/ScoBroadcast` and
+  `WifiLockModes` are the pattern; a constant's value is written out and pinned by its test). A
+  deprecated *call* that no hand-written code can replace (SCO and the speakerphone on API 29-30,
+  the pre-34 NSD resolve and `Connection.setAudioRoute`, the self-managed PhoneAccount capability)
+  goes in `LegacyPlatform.kt`, the only file with the suppression: a thin call, no policy, reached
+  only behind its caller's API check. Anything new there needs the same justification in its KDoc.
 - Anything blocking (sockets, AudioTrack.write) lives on its own named thread
   (`ptt-*`); never on the main thread.
 - Transport threads go through `transport/transportThread`: an uncaught throwable on a

@@ -114,14 +114,20 @@ function decodeHello(p) {
   return { name: sanitiseName(name), transports: p[1], ttl: p[2], versionCode: p.readUInt16BE(3) };
 }
 
+/**
+ * The longest prefix of `s` whose UTF-8 form fits in `max` bytes, cut between code points: one
+ * UTF-16 unit at a time would split a surrogate pair and send a lone half as U+FFFD.
+ */
 function utf8Prefix(s, max) {
-  let str = String(s);
-  let b = Buffer.from(str, "utf8");
-  while (b.length > max) {
-    str = str.slice(0, -1);
-    b = Buffer.from(str, "utf8");
+  let bytes = 0;
+  let end = 0;
+  for (const ch of String(s)) {
+    const size = Buffer.byteLength(ch, "utf8");
+    if (bytes + size > max) break;
+    bytes += size;
+    end += ch.length;
   }
-  return b;
+  return Buffer.from(String(s).slice(0, end), "utf8");
 }
 
 module.exports = {

@@ -273,7 +273,7 @@ class MainActivity : AppCompatActivity() {
             tile.root.alpha = if (tile.available) 1f else 0.4f
             tile.root.setOnClickListener {
                 if (!tile.available) { snack(getString(R.string.aware_unavailable), null) {}; return@setOnClickListener }
-                if (engine?.isConnected == true) return@setOnClickListener   // takes effect on the next Connect anyway
+                if (onChannel()) return@setOnClickListener   // takes effect on the next Connect anyway
                 tile.on = !tile.on
                 prefs.put(tile.key, tile.on)
                 // Ask for what this transport needs, now, rather than at Connect on the water.
@@ -295,8 +295,10 @@ class MainActivity : AppCompatActivity() {
                 // phone that granted those through a tile would never be asked for POST_NOTIFICATIONS
                 // and would lose the status line and the Disconnect action. It connects straight away
                 // when nothing is missing, so this is the same for a phone that has everything.
-                on && !s.engine.isConnected -> { askPermissions(thenConnect = true); syncUi() }
-                !on && s.engine.isConnected -> { s.disconnect(); syncUi() }
+                // A join still stretching the key counts as on: pressing again would start a
+                // second one, and pressing off is how that join is called off.
+                on && !onChannel() -> { askPermissions(thenConnect = true); syncUi() }
+                !on && onChannel() -> { s.disconnect(); syncUi() }
             }
         }
 
@@ -363,9 +365,15 @@ class MainActivity : AppCompatActivity() {
         bindService(Intent(this, PttService::class.java), connection, Context.BIND_AUTO_CREATE)
     }
 
-    /** Coming back from the settings screen: push the live-applicable settings into the engine. */
+    /**
+     * Coming back from the settings screen: push the live-applicable settings into the engine.
+     * [Prefs] reads the managed configuration once, when it is built, so a fresh one here is what
+     * lets a fleet's change reach this screen (PttService re-reads it on the broadcast; this is the
+     * "next resume" it leaves the rest to).
+     */
     override fun onResume() {
         super.onResume()
+        prefs = Prefs(this)
         crewName.text = prefs.crewName.uppercase(Locale.getDefault())
         engine?.let { applySettings(it) }
         refreshPttLabel()
@@ -389,6 +397,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun tileOn(key: String) = tiles.first { it.key == key }.on
+
+    /** On channel, or on the way there: the engine reads as not connected until its join has finished. */
+    private fun onChannel(): Boolean = engine?.isConnected == true || service?.joining == true
 
     /**
      * Hands the service a factory for the selected transports. The factory runs on the service's
@@ -454,11 +465,15 @@ class MainActivity : AppCompatActivity() {
      */
     private fun syncUi() {
         val connected = engine?.isConnected == true
+        val joining = !connected && service?.joining == true
         val muted = connected && engine?.muted == true
         syncingSwitch = true
-        channelSwitch.isChecked = connected
+        channelSwitch.isChecked = connected || joining
         syncingSwitch = false
-        val state = getString(if (muted) R.string.channel_on_muted else if (connected) R.string.channel_on else R.string.channel_off)
+        val state = getString(
+            if (muted) R.string.channel_on_muted else if (connected) R.string.channel_on
+            else if (joining) R.string.channel_joining else R.string.channel_off
+        )
         channelState.text = state
         ViewCompat.setStateDescription(channelRow, state)
         channelState.setTextColor(ContextCompat.getColor(this, if (muted) R.color.error else if (connected) R.color.primary else R.color.text_dim))
@@ -604,7 +619,7 @@ class MainActivity : AppCompatActivity() {
      * Signal K never sees it.
      */
     private fun refreshAsk() {
-        val controller = askController ?: AskController(this, prefs) { engine }.also { askController = it }
+        val controller = askController ?: AskController(this, { prefs }) { engine }.also { askController = it }
         askRow.visibility = if (controller.offered()) View.VISIBLE else View.GONE
     }
 

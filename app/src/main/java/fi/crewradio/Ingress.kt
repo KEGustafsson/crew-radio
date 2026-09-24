@@ -124,18 +124,13 @@ class Ingress(
     }
 
     /**
-     * Audio frames number themselves consecutively, so a gap is lost audio: admits the frame
-     * and calls [onGap] with the count of frames missing before it, inside the same lock, so the
-     * caller can reserve their slots atomically with the admission (the same sender's frames
-     * arrive on several transport threads at once). False for a late frame: its slot has been
-     * concealed already, and a replay of it is refused the same way.
+     * Audio frames number themselves consecutively, so a gap is lost audio: admits the frame and
+     * returns the count of frames missing before it, or -1 for a late frame (its slot has been
+     * concealed already, and a replay of it is refused the same way). The same sender's frames
+     * arrive on several transport threads at once, so a caller that acts on the gap (reserving its
+     * slots in the mixer) does so under its own per-sender lock around this call and that action.
      */
-    fun admitAudio(senderId: Int, seq: Int, onGap: (Int) -> Unit): Boolean = synchronized(this.seq) {
-        val gap = this.seq.admit(senderId, seq)
-        if (gap < 0) return false
-        if (gap > 0) onGap(gap)
-        true
-    }
+    fun admitAudio(senderId: Int, seq: Int): Int = synchronized(this.seq) { this.seq.admit(senderId, seq) }
 
     /**
      * Hellos number themselves too, one a second per node, so a gap in that sequence is a hello

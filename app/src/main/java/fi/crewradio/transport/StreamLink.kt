@@ -50,12 +50,18 @@ class StreamLink(
         }
     }
 
-    /** One framed write, synchronous. */
+    /**
+     * One framed write, synchronous. Prefix and packet go down in a single write: on an
+     * unbuffered socket stream three writes are three TCP segments (Aware sets no-delay) or
+     * three RFCOMM stack calls.
+     */
     fun write(packet: ByteArray) {
+        val frame = ByteArray(2 + packet.size)
+        frame[0] = (packet.size ushr 8).toByte()
+        frame[1] = packet.size.toByte()
+        packet.copyInto(frame, 2)
         synchronized(output) {
-            output.write(packet.size ushr 8)
-            output.write(packet.size and 0xFF)
-            output.write(packet)
+            output.write(frame)
             output.flush()
         }
     }

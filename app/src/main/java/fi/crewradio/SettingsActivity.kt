@@ -1,5 +1,6 @@
 package fi.crewradio
 
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
@@ -10,8 +11,10 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
 import androidx.core.view.WindowCompat
 import androidx.preference.EditTextPreference
+import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
+import androidx.preference.TwoStatePreference
 import fi.crewradio.ask.AskRecognizer
 import fi.crewradio.ask.SignalKClient
 import fi.crewradio.ask.SignalKDiscovery
@@ -80,19 +83,69 @@ class SettingsActivity : AppCompatActivity() {
             ask(prefs)
 
             // Managed configuration: the administrator's value is what the app uses, so the row
-            // says so and cannot be typed over.
+            // says so, shows that value rather than the phone's own, and cannot be typed over.
             for (key in MANAGED_KEYS) {
                 if (!prefs.isManaged(key)) continue
-                findPreference<Preference>(key)?.apply {
-                    isEnabled = false
-                    // Preference.setSummary throws once a SummaryProvider is set, so a row that
-                    // has one keeps it and says who set it from inside the provider. Asking the
-                    // row rather than naming the keys: the server address and the channel key
-                    // both have providers today, and a third would otherwise crash the screen
-                    // the first time a fleet set it.
-                    if (summaryProvider == null) summary = getString(R.string.managed_by_org)
-                }
+                findPreference<Preference>(key)?.let { managedRow(it, prefs) }
             }
+        }
+
+        /**
+         * A row the fleet sets. Its widget and its stock summary both read the phone's own stored
+         * value, which the app is not using, so both are replaced by the managed one — and nothing
+         * of it is written back to the phone's storage.
+         */
+        private fun managedRow(row: Preference, prefs: Prefs) {
+            row.isEnabled = false
+            val managed = getString(R.string.managed_by_org)
+            val flag = managedFlag(row.key, prefs)
+            when {
+                // A switch shows its own checked state, and its on/off texts win over the summary.
+                row is TwoStatePreference && flag != null -> {
+                    row.isPersistent = false
+                    row.isChecked = flag
+                    row.summaryOn = null
+                    row.summaryOff = null
+                    row.summary = managed
+                }
+                // The stock providers print the stored text or choice: the value in force instead.
+                row.summaryProvider is EditTextPreference.SimpleSummaryProvider ||
+                    row.summaryProvider is ListPreference.SimpleSummaryProvider -> {
+                    val value = managedText(row, prefs).orEmpty()
+                    row.summaryProvider = Preference.SummaryProvider<Preference> {
+                        if (value.isEmpty()) managed else getString(R.string.managed_value, managed, value)
+                    }
+                }
+                // Preference.setSummary throws once a SummaryProvider is set, so a row with a
+                // provider of its own (the server address, the channel key) says who set it from
+                // inside that provider.
+                row.summaryProvider == null -> row.summary = managed
+            }
+        }
+
+        /** The managed value of a switch row, as [Prefs] uses it; null for anything else. */
+        private fun managedFlag(key: String, prefs: Prefs): Boolean? = when (key) {
+            Prefs.KEY_RELAY -> prefs.relay
+            Prefs.KEY_FULL_DUPLEX -> prefs.fullDuplex
+            Prefs.KEY_OPUS -> prefs.opus
+            Prefs.KEY_ASK_ENABLED -> prefs.askEnabled
+            else -> null
+        }
+
+        /** The managed value of a text or choice row as the crew reads it: a choice by its label. */
+        private fun managedText(row: Preference, prefs: Prefs): String? {
+            val raw = when (row.key) {
+                Prefs.KEY_CREW_NAME -> prefs.crewName
+                Prefs.KEY_NAME -> prefs.name
+                Prefs.KEY_GROUP -> prefs.group
+                Prefs.KEY_PORT -> prefs.port.toString()
+                Prefs.KEY_HOPS -> prefs.hops.toString()
+                Prefs.KEY_AUDIO_ROUTE -> prefs.audioRoute
+                Prefs.KEY_ASK_MODE -> prefs.askMode
+                else -> null
+            } ?: return null
+            if (row !is ListPreference) return raw
+            return row.entries?.getOrNull(row.findIndexOfValue(raw))?.toString() ?: raw
         }
 
         /**
@@ -124,7 +177,7 @@ class SettingsActivity : AppCompatActivity() {
                     val typed = prefs.askServerTyped
                     when {
                         prefs.isManaged(Prefs.KEY_ASK_SERVER) ->
-                            getString(R.string.managed_by_org) + " · " + SignalKUrl.describe(typed)
+                            getString(R.string.managed_value, getString(R.string.managed_by_org), SignalKUrl.describe(typed))
                         typed.isNullOrBlank() -> getString(R.string.pref_ask_server_none)
                         typed == discovered -> getString(R.string.pref_ask_server_found, SignalKUrl.describe(typed))
                         else -> SignalKUrl.describe(typed)
@@ -209,60 +262,63 @@ class SettingsActivity : AppCompatActivity() {
         /**
          * Asks the server for a token and waits for somebody to approve it, on a worker thread.
          * The fragment may go away while this runs, so every result is dropped unless it is still
-         * added; nothing here touches a view off the main thread.
+         * added; nothing here touches a view off the main thread. One request at a time: a second
+         * tap while one is waiting would only file a second request for the admin to wade through.
          */
         private fun startPairing(base: String, prefs: Prefs, row: Preference) {
+            if (!PAIRING.compareAndSet(false, true)) return      // the row already says it is waiting
             val context = requireContext().applicationContext
             val clientId = prefs.pairingClientId
-            val description = context.getString(R.string.app_name) + " · " + prefs.speakerName
+            val description = context.getString(R.string.pref_ask_pair_description, context.getString(R.string.app_name), prefs.speakerName)
             Thread({
-                val client = SignalKClient(base, null)
-                var summary = context.getString(R.string.pref_ask_pair_none)
-                var token: String? = null
-                var scope = Prefs.ASK_SCOPE_NONE
-                when (val requested = client.requestAccess(clientId, description)) {
-                    is SignalKClient.Result.Failed ->
-                        summary = context.getString(R.string.pref_ask_pair_failed, requested.detail ?: "")
-
-                    is SignalKClient.Result.Ok -> {
-                        val href = requested.value.href
-                        if (href == null) {
-                            summary = context.getString(R.string.pref_ask_pair_failed, "")
-                        } else {
-                            // Somebody has to walk to the chart table and press approve.
-                            var waited = 0L
-                            while (waited < PAIR_TIMEOUT_MS) {
-                                if (!sleepQuietly(PAIR_POLL_MS)) break
-                                waited += PAIR_POLL_MS
-                                val polled = client.pollAccess(href)
-                                if (polled !is SignalKClient.Result.Ok) continue
-                                val access = polled.value
-                                if (access.state != COMPLETED) continue
-                                val issued = access.token
-                                if (issued == null) {
-                                    summary = context.getString(R.string.pref_ask_pair_denied)
-                                } else {
-                                    token = issued
-                                    scope = if (writeGranted(access.permission)) Prefs.ASK_SCOPE_WRITE
-                                    else Prefs.ASK_SCOPE_READ
-                                    summary = context.getString(
-                                        if (scope == Prefs.ASK_SCOPE_WRITE) R.string.pref_ask_pair_write
-                                        else R.string.pref_ask_pair_read
-                                    )
-                                }
-                                break
-                            }
-                        }
-                    }
+                // Everything, not just what the client catches: this is a plain thread, where an
+                // escaping throwable ends the app, and the answer comes over cleartext from anyone
+                // on the boat's network. Deeply nested JSON is a StackOverflowError, an address
+                // with an impossible port an IllegalArgumentException from the connection.
+                val text = try {
+                    pair(context, base, clientId, description)
+                } catch (_: Throwable) {
+                    context.getString(R.string.pref_ask_pair_unreadable)
+                } finally {
+                    PAIRING.set(false)
                 }
-                token?.let {
-                    val stored = Prefs(context)
-                    stored.put(Prefs.KEY_ASK_TOKEN, it)
-                    stored.put(Prefs.KEY_ASK_SCOPE, scope)
-                }
-                val text = summary
                 context.mainExecutor.execute { if (isAdded) row.summary = text }
             }, "ptt-ask-pair").start()
+        }
+
+        /** The device flow itself, blocking: request, then poll until decided. Returns what the row should say. */
+        private fun pair(context: Context, base: String, clientId: String, description: String): String {
+            val client = SignalKClient(context, base, null)
+            val requested = client.requestAccess(clientId, description)
+            if (requested is SignalKClient.Result.Failed) {
+                return context.getString(R.string.pref_ask_pair_failed, requested.detail ?: "")
+            }
+            val href = (requested as SignalKClient.Result.Ok).value.href
+                ?: return context.getString(R.string.pref_ask_pair_failed, "")
+            // An href pointing off the server fails every poll the same way: say so now, not after
+            // three minutes of polling, and let the loop below retry only what can pass.
+            if (SignalKUrl.resolve(base, href) == null) {
+                return context.getString(R.string.pref_ask_pair_failed, context.getString(R.string.pref_ask_pair_redirected))
+            }
+            // Somebody has to walk to the chart table and press approve.
+            var waited = 0L
+            while (waited < PAIR_TIMEOUT_MS) {
+                if (!sleepQuietly(PAIR_POLL_MS)) break
+                waited += PAIR_POLL_MS
+                val polled = client.pollAccess(href)
+                if (polled !is SignalKClient.Result.Ok) continue
+                val access = polled.value
+                if (access.state != COMPLETED) continue
+                val issued = access.token ?: return context.getString(R.string.pref_ask_pair_denied)
+                val scope = if (writeGranted(access.permission)) Prefs.ASK_SCOPE_WRITE else Prefs.ASK_SCOPE_READ
+                val stored = Prefs(context)
+                stored.put(Prefs.KEY_ASK_TOKEN, issued)
+                stored.put(Prefs.KEY_ASK_SCOPE, scope)
+                return context.getString(
+                    if (scope == Prefs.ASK_SCOPE_WRITE) R.string.pref_ask_pair_write else R.string.pref_ask_pair_read
+                )
+            }
+            return context.getString(R.string.pref_ask_pair_none)
         }
 
         /** True when the permission the server granted is enough to post an announcement. */
@@ -302,7 +358,7 @@ class SettingsActivity : AppCompatActivity() {
                     SettingsRules.KeyState.SHORT -> getString(R.string.key_masked_short, mask, getString(R.string.key_short))
                     SettingsRules.KeyState.OK -> mask
                 }
-                if (managedKey) getString(R.string.managed_by_org) + " · " + text else text
+                if (managedKey) getString(R.string.managed_value, getString(R.string.managed_by_org), text) else text
             }
 
             findPreference<Preference>(Prefs.KEY_CHANNEL_KEY_SHOW)?.setOnPreferenceClickListener {
@@ -375,7 +431,9 @@ class SettingsActivity : AppCompatActivity() {
             const val PAIR_POLL_MS = 2_000L
             /** How long it waits for that: long enough to walk to the chart table. */
             const val PAIR_TIMEOUT_MS = 180_000L
-            /** The state a Signal K access request reaches once the server has decided. */
+            /** True while a pairing request is out; process-wide, so a recreated screen cannot file a second. */
+            val PAIRING = java.util.concurrent.atomic.AtomicBoolean(false)
+                        /** The state a Signal K access request reaches once the server has decided. */
             const val COMPLETED = "COMPLETED"
             /** The rows that only make sense once the feature is on. */
             val ASK_CHILD_KEYS = listOf(

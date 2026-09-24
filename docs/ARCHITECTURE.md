@@ -101,7 +101,8 @@ of the same transport. `LanTransport` sends each frame unicast to the peers it h
 from directly in the last five seconds, because an access point sends multicast and broadcast at
 its lowest rate without acknowledgement and a phone in the same cabin still loses a few percent.
 The multicast group and the interface's broadcast address are added only while no peer is known,
-or when the packet is a hello: with both on top of the unicast copies every frame left the phone
+when the packet is a hello, or for the first few frames of each sender's talk burst (a floor, so a
+peer table poisoned with a replaying stranger's address stays audible): with both on top of the unicast copies every frame left the phone
 2 + N times, which the air cannot afford, while hellos are one packet a second and are how a
 phone nobody has heard yet is found at all. The seen-cache drops the duplicates on the receiving
 side.

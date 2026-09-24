@@ -28,6 +28,8 @@
     <string name="channel_off">OFF · TAP TO JOIN</string>
     <string name="channel_on">ON CHANNEL</string>
     <string name="channel_on_muted">ON CHANNEL · MUTED</string>
+    <!-- The second or two between Connect and the channel coming up, while the key is stretched. -->
+    <string name="channel_joining">JOINING…</string>
     <string name="volume_mute">Mute</string>
     <string name="volume_unmute">Unmute</string>
     <string name="volume_slider">Volume</string>
@@ -93,6 +95,153 @@
     <string name="status_mic_off">Talk key: mic off</string>
     <string name="status_other_build">%1$s runs another build</string>
     <string name="status_managed_changed">Managed settings changed</string>
+
+    <!-- Engine status lines (PttEngine), shown verbatim in the status line: keep them short. -->
+    <string name="status_mode_half_duplex">Mode: half duplex</string>
+    <string name="status_mode_full_duplex">Mode: full duplex</string>
+    <string name="status_at_ear">At the ear: voice keys the mic</string>
+    <string name="status_away_from_ear">Away from the ear</string>
+    <string name="status_vox_at_ear">Voice keys the mic at the ear</string>
+    <string name="status_vox">Voice keys the mic</string>
+    <string name="status_vox_timed_out">Voice key timed out</string>
+    <!-- %1$s is a short reason from the mic (status_mic_failed, status_mic_read_failed). -->
+    <string name="status_vox_stopped">Voice keying stopped: %1$s</string>
+    <string name="status_mic_error">Mic error: %1$s</string>
+    <!-- %1$s is a short reason from the mic (status_mic_failed, status_mic_read_failed). -->
+    <string name="status_mic_stopped">Mic stopped: %1$s</string>
+    <string name="status_on_hold">On hold: phone call</string>
+    <string name="status_back_on_channel">Back on channel</string>
+    <!-- %1$s is the output in use: call_speaker, call_earpiece, call_headset… -->
+    <string name="status_audio">Audio: %1$s</string>
+    <!-- %1$s is the transport's short name (LAN, BT, Aware), %2$s the reason. -->
+    <string name="status_transport_failed">%1$s failed: %2$s</string>
+    <string name="status_heartbeat_error">Heartbeat error: %1$s</string>
+    <string name="status_opus_encoder_unavailable">Opus encoder unavailable, sending PCM</string>
+    <string name="status_opus_failed">Opus failed (%1$s), sending PCM</string>
+    <string name="status_duplex_mic_on">Mic on</string>
+    <string name="status_duplex_mic_off">Mic off</string>
+    <string name="status_transmitting">Transmitting</string>
+    <string name="status_listening">Listening</string>
+    <string name="status_audio_ctl_slow">Audio control slow: %1$s</string>
+    <!-- %1$d packets, %2$d seconds (the replay window). -->
+    <plurals name="status_clock_off">
+        <item quantity="one">Clock: %1$d packet more than %2$d s off</item>
+        <item quantity="other">Clock: %1$d packets more than %2$d s off</item>
+    </plurals>
+    <string name="status_junk_packets">Unreadable packets: another key, or a flood</string>
+    <string name="status_links_up">Links up</string>
+    <string name="status_no_link">No link is up: nobody can hear this phone</string>
+    <string name="status_opus_decoder_unavailable">Opus decoder unavailable</string>
+    <string name="status_opus_decode_error">Opus decode error: %1$s</string>
+    <!-- %1$s is the reason (status_opus_decoder_unavailable, status_opus_decode_error), %2$s the
+         sender's id in hex, %3$d seconds. -->
+    <string name="status_sender_muted">%1$s, %2$s muted %3$d s</string>
+
+    <!-- Audio: playback (Mixer), mic (AudioCapture) and routing (AudioRoute). -->
+    <string name="status_audio_out_failed">Audio out failed (%1$s)</string>
+    <string name="status_playback_failed">Playback failed (%1$d), restarting</string>
+    <string name="status_playback_restored">Playback restored</string>
+    <!-- Lower case: these follow status_mic_stopped or status_vox_stopped. -->
+    <string name="status_mic_failed">mic failed (%1$s)</string>
+    <string name="status_mic_read_failed">mic read failed (%1$d)</string>
+    <!-- The %1$s of status_mic_error when the platform will not open the mic at all. -->
+    <string name="status_mic_init_failed">AudioRecord init failed</string>
+    <string name="status_route_error">Audio route: %1$s</string>
+    <string name="status_route_reset_failed">Audio route reset failed: %1$s</string>
+    <string name="status_route_failed">Audio route failed: %1$s</string>
+
+    <!-- WLAN transport (LanTransport). "LAN" is the transport's name in the log. -->
+    <string name="status_lan_wifi_lost">LAN: Wi-Fi lost, waiting for it</string>
+    <string name="status_lan_rx_stopped">LAN rx stopped: %1$s</string>
+    <!-- %2$d is seconds. -->
+    <string name="status_lan_no_interfaces">LAN: can\'t list interfaces (%1$s), retry in %2$ds</string>
+    <string name="status_lan_no_wifi">LAN: no Wi-Fi, waiting</string>
+    <!-- %2$d is seconds. -->
+    <string name="status_lan_cant_open">LAN: can\'t open (%1$s), retry in %2$ds</string>
+    <!-- Group address, port, broadcast address, interface name. -->
+    <string name="status_lan_open_broadcast">LAN: %1$s:%2$d + %3$s via %4$s</string>
+    <!-- Group address, port, interface name. -->
+    <string name="status_lan_open_multicast">LAN: %1$s:%2$d (multicast only) via %3$s</string>
+    <string name="status_lan_packet_dropped">LAN: packet dropped (%1$s)</string>
+    <string name="status_lan_socket_error">LAN: socket error (%1$s), reopening</string>
+    <string name="status_lan_hearing">LAN: hearing %1$s</string>
+
+    <!-- A new Bluetooth or Wi-Fi Aware link, the %1$s of status_bt_link and status_aware_link. -->
+    <string name="status_link_accepted">accepted %1$s</string>
+    <string name="status_link_connected">connected to %1$s</string>
+
+    <!-- Bluetooth transport (BluetoothTransport). "BT" is the transport's name in the log. -->
+    <string name="status_bt_adapter_on">BT: adapter on</string>
+    <string name="status_bt_adapter_off">BT: adapter off, waiting</string>
+    <string name="status_bt_unsupported">BT: not supported on this phone</string>
+    <string name="status_bt_listener_stopped">BT listener stopped: %1$s</string>
+    <string name="status_bt_starting">BT: starting</string>
+    <string name="status_bt_starting_dial">BT: starting, connecting to %1$s</string>
+    <string name="status_bt_no_listen_permission">BT: no permission to listen (%1$s)</string>
+    <!-- %2$d is seconds. -->
+    <string name="status_bt_cant_listen">BT: can\'t listen (%1$s), retry in %2$ds</string>
+    <string name="status_bt_listening">BT: listening</string>
+    <string name="status_bt_accept_failed">BT: accept failed (%1$s)</string>
+    <string name="status_bt_listener_dropped">BT: listener dropped, restarting</string>
+    <string name="status_bt_connect_stopped">BT connect stopped: %1$s</string>
+    <string name="status_bt_no_connect_permission">BT: no permission to connect (%1$s)</string>
+    <!-- %1$s is the peer phone, %2$d seconds. -->
+    <string name="status_bt_not_answering">BT: %1$s not answering, retry in %2$ds</string>
+    <!-- %1$s is status_link_accepted or status_link_connected, %2$d the links now up. -->
+    <plurals name="status_bt_link">
+        <item quantity="one">BT: %1$s (%2$d link)</item>
+        <item quantity="other">BT: %1$s (%2$d links)</item>
+    </plurals>
+    <string name="status_bt_tx_stopped">BT tx stopped: %1$s</string>
+    <string name="status_bt_rx_stopped">BT rx stopped: %1$s</string>
+    <string name="status_bt_dropped">BT: %1$s dropped</string>
+    <string name="status_bt_one_link_kept">BT: one link to %1$s kept</string>
+
+    <!-- Wi-Fi Aware transport (WifiAwareTransport). "Aware" is the transport's name in the log;
+         a peer is shown by its node id in hex or by its address. -->
+    <string name="status_aware_unavailable">Aware: unavailable (Wi-Fi off?), waiting</string>
+    <!-- %2$d is minutes. -->
+    <string name="status_aware_forgotten">Aware: %1$s not seen for %2$d min, forgotten</string>
+    <string name="status_aware_unsupported">Aware: not supported on this phone</string>
+    <string name="status_aware_accept_stopped">Aware accept stopped: %1$s</string>
+    <string name="status_aware_attached">Aware: attached, discovering…</string>
+    <string name="status_aware_attach_failed">Aware: attach failed, retrying</string>
+    <string name="status_aware_session_ended">Aware: session ended, re-attaching</string>
+    <string name="status_aware_attach_error">Aware attach: %1$s</string>
+    <string name="status_aware_responder_error">Aware responder: %1$s</string>
+    <string name="status_aware_publish_failed">Aware: publish failed, retrying</string>
+    <string name="status_aware_publish_ended">Aware: publish ended, restarting</string>
+    <string name="status_aware_publish_error">Aware publish: %1$s</string>
+    <string name="status_aware_lost">Aware: lost %1$s</string>
+    <string name="status_aware_subscribe_failed">Aware: subscribe failed, retrying</string>
+    <string name="status_aware_subscribe_ended">Aware: subscribe ended, restarting</string>
+    <string name="status_aware_subscribe_error">Aware subscribe: %1$s</string>
+    <string name="status_aware_connecting">Aware: connecting to %1$s</string>
+    <string name="status_aware_request_failed">Aware: request for %1$s failed (%2$s)</string>
+    <string name="status_aware_no_port">Aware: %1$s advertises no port</string>
+    <string name="status_aware_dial_died">Aware: dial died (%1$s)</string>
+    <string name="status_aware_dial_failed">Aware: dial %1$s failed (%2$s)</string>
+    <string name="status_aware_path_lost">Aware: path to %1$s lost</string>
+    <string name="status_aware_no_answer">Aware: %1$s did not answer</string>
+    <string name="status_aware_no_listen_permission">Aware: no permission to listen (%1$s)</string>
+    <!-- %1$d is the local port, %3$d seconds. -->
+    <string name="status_aware_cant_listen">Aware: can\'t listen on %1$d (%2$s), retry in %3$ds</string>
+    <string name="status_aware_accept_failed">Aware: accept failed (%1$s)</string>
+    <!-- %2$s is status_aware_not_aware_path or status_aware_link_limit. -->
+    <string name="status_aware_refused">Aware: refused %1$s (%2$s)</string>
+    <string name="status_aware_not_aware_path">not an Aware path</string>
+    <string name="status_aware_link_limit">link limit</string>
+    <string name="status_aware_link_limit_reached">Aware: link limit reached</string>
+    <!-- %1$s is status_link_accepted or status_link_connected, %2$d the links now up. -->
+    <plurals name="status_aware_link">
+        <item quantity="one">Aware: %1$s (%2$d link)</item>
+        <item quantity="other">Aware: %1$s (%2$d links)</item>
+    </plurals>
+    <string name="status_aware_tx_stopped">Aware tx stopped: %1$s</string>
+    <string name="status_aware_rx_stopped">Aware rx stopped: %1$s</string>
+    <string name="status_aware_silent">Aware: %1$s silent, dropped</string>
+    <string name="status_aware_dropped">Aware: %1$s dropped</string>
+    <string name="status_aware_reconnecting">Aware: %1$s dropped, reconnecting</string>
 
     <!-- Status screen -->
     <string name="state_off">OFF</string>
@@ -179,6 +328,8 @@
 
     <!-- Settings screen -->
     <string name="managed_by_org">Set by your organisation</string>
+    <!-- A managed row's summary: managed_by_org, then the value in force. -->
+    <string name="managed_value">%1$s · %2$s</string>
     <string name="pref_cat_me">Me</string>
     <string name="pref_cat_channel">Channel</string>
     <string name="pref_cat_talking">Talking</string>
@@ -427,6 +578,13 @@
     <string name="pref_ask_pair_write">Paired · read and write</string>
     <string name="pref_ask_pair_denied">The server refused this phone. Tap to ask again.</string>
     <string name="pref_ask_pair_failed">Could not reach the server: %1$s</string>
+    <string name="pref_ask_pair_unreadable">The server\'s answer could not be read. Tap to try again.</string>
+    <!-- How this phone names itself in the server's access requests: app_name, then the crew name. -->
+    <string name="pref_ask_pair_description">%1$s · %2$s</string>
+    <!-- Why pairing failed, the %1$s of pref_ask_pair_failed. -->
+    <string name="pref_ask_pair_http">HTTP %1$d</string>
+    <string name="pref_ask_pair_too_large">response too large</string>
+    <string name="pref_ask_pair_redirected">the server pointed the request somewhere else</string>
     <string name="pref_ask_speed_title">Speed unit</string>
     <string name="pref_ask_depth_title">Depth unit</string>
     <string name="pref_ask_privacy">Speech is recognised on this phone. Your question is never sent to the internet.</string>
