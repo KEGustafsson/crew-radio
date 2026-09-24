@@ -180,7 +180,8 @@ function chooseInterface(name, all = os.networkInterfaces()) {
     }
   }
   if (name) return candidates.find((c) => c.name === name) ?? null;
-  const rank = (c) => (/^wl|wi-?fi|wlan/i.test(c.name) ? 0 : /^(eth|en)/i.test(c.name) ? 1 : VIRTUAL.test(c.name) ? 3 : 2);
+  const wireless = (n) => /^wl/i.test(n) || /wi-?fi|wlan/i.test(n);   // "wlan0", "wlp2s0", Windows "Wi-Fi"
+  const rank = (c) => (wireless(c.name) ? 0 : /^(eth|en)/i.test(c.name) ? 1 : VIRTUAL.test(c.name) ? 3 : 2);
   candidates.sort((a, b) => rank(a) - rank(b));
   return candidates[0] ?? null;
 }
