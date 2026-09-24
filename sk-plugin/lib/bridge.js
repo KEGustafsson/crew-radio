@@ -92,8 +92,10 @@ class NotificationBridge extends EventEmitter {
       return;
     }
     if (rank < this.minRank) { this.forget(path); return; }
-    if (this.soundOnly && !methodsOf(value).includes("sound")) return;
-    if (!this.matches(path)) return;
+    // Silencing an alarm takes "sound" out of its method and leaves the state: that is the crew
+    // saying "heard", so it is forgotten here, or the repeat timer would go on announcing it.
+    if (this.soundOnly && !methodsOf(value).includes("sound")) { this.forget(path); return; }
+    if (!this.matches(path)) { this.forget(path); return; }
     const message = typeof value.message === "string" && value.message.trim() ? value.message.trim() : humanise(path);
     const cur = this.active.get(path);
     if (cur && cur.state === state && cur.message === message) return; // unchanged: the repeat timer owns it

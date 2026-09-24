@@ -505,3 +505,69 @@ test("GET /status carries what the web page shows, stale packets included, and t
   assert.ok(page.includes('"/plugins/signalk-crewradio"') && page.includes('"/status"') && page.includes('"/say"'), "the page talks to the plugin routes");
   assert.ok(require("../package.json").keywords.includes("signalk-webapp"), "served at /signalk-crewradio/");
 });
+
+test("an urgent say in the same tick as a normal one cuts it before its first frame, even with no wait for a gap", async () => {
+  FakeLink.last = undefined;
+  const app = fakeApp();
+  const p = plugin(app, deps);
+  p.start({ channelKey: KEY, waitForSilenceMs: 0, bridge: { enabled: false } });
+  await until(() => FakeLink.last);
+  const api = app.props["signalk-crewradio.api"];
+  const normal = api.say({ text: "normal one" });
+  const urgent = api.say({ text: "urgent one", priority: "urgent" });
+  await Promise.all([normal, urgent]);
+  await until(() => app.log.some((l) => /interrupting/.test(l)) && lastValue(app, "communication.crewradio.speaking") === false
+    && FakeLink.last.sent.some((b) => P.parseHeader(b).codec === P.Codec.PCM), 5000);
+  const frames = FakeLink.last.sent.map((b) => P.parseHeader(b)).filter((h) => h.codec === P.Codec.PCM);
+  // the urgent one alone: urgent chime (~570 ms) + 100 ms tone + 150 ms tail = 41 frames; both would be 77
+  assert.ok(frames.length >= 39 && frames.length <= 43, `${frames.length} frames`);
+  p.stop();
+});
+
+test("an announcement waiting for a gap in talk survives the link dropping meanwhile: it goes out on the reopened link", async () => {
+  FakeLink.last = undefined;
+  const app = fakeApp();
+  const p = plugin(app, deps);
+  p.start({ channelKey: KEY, waitForSilenceMs: 3000, bridge: { enabled: false } });
+  await until(() => FakeLink.last && FakeLink.last.sent.length > 0);
+  const first = FakeLink.last;
+  let seq = 0;
+  const talk = setInterval(() => first.emit("packet", phonePacket(77, seq++, Buffer.alloc(640), P.Codec.PCM), { address: "10.0.0.5" }), 20);
+  try {
+    await until(() => seq > 5);
+    await app.props["signalk-crewradio.api"].say({ text: "hello crew" });
+    await new Promise((r) => setTimeout(r, 200));  // held: a phone is talking
+    first.emit("error", new Error("network is unreachable"));
+  } finally {
+    clearInterval(talk);
+  }
+  await until(() => FakeLink.last !== first && FakeLink.last.sent.some((b) => P.parseHeader(b).codec === P.Codec.PCM), 5000);
+  assert.ok(!app.log.some((l) => /announcement failed/.test(l)), app.log.join("\n"));
+  p.stop();
+});
+
+test("POST /say: a body cut short by the client going away is not said", async () => {
+  FakeLink.last = undefined;
+  const app = fakeApp();
+  const p = plugin(app, deps);
+  p.start({ channelKey: KEY, waitForSilenceMs: 0 });
+  await until(() => FakeLink.last);
+  const router = fakeRouter(true);
+  p.registerWithRouter(router);
+  const post = router.routes["POST /say"];
+  for (const ending of ["error", "close"]) {
+    const req = new EventEmitter();
+    req.headers = { "content-type": "text/plain" };
+    req.setEncoding = () => {};
+    req.complete = false;
+    const res = fakeRes();
+    post(req, res);
+    req.emit("data", "Do not start the engine");
+    if (ending === "error") req.emit("error", Object.assign(new Error("aborted"), { code: "ECONNRESET" }));
+    req.emit("close");
+    await flush();
+    assert.equal(res.body, null, `${ending}: nothing answered`);
+    assert.ok(!FakeTts.last.texts.includes("Do not start the engine"), `${ending}: nothing said`);
+  }
+  p.stop();
+});

@@ -140,15 +140,18 @@ class ChannelNode extends EventEmitter {
   /**
    * Keys the channel with 16 kHz mono PCM16 (a Buffer of little-endian bytes), one frame every
    * 20 ms. Resolves when the last frame has gone out. Calls queue behind each other in call
-   * order (a promise chain, so two waiters can never both start). cancel() stops the current one.
+   * order (a promise chain, so two waiters can never both start). cancel() stops the current one;
+   * `cancelled`, checked before the first frame and before each one after, is the caller's own
+   * flag: a cancel() between this call and the first frame finds nothing speaking yet.
    */
-  speak(pcmBytes) {
-    const turn = this.chain.then(() => this.sendFrames(pcmBytes));
+  speak(pcmBytes, cancelled = () => false) {
+    const turn = this.chain.then(() => this.sendFrames(pcmBytes, cancelled));
     this.chain = turn.catch(() => {});
     return turn;
   }
 
-  async sendFrames(pcmBytes) {
+  async sendFrames(pcmBytes, isCancelled = () => false) {
+    if (isCancelled()) return;
     const frames = [];
     for (let off = 0; off < pcmBytes.length; off += FRAME_BYTES) {
       const f = Buffer.alloc(FRAME_BYTES); // the last frame is padded with silence
@@ -168,7 +171,7 @@ class ChannelNode extends EventEmitter {
       // early frames only sit in their jitter queue. The schedule is drift-corrected, so the
       // cushion never shrinks over a long announcement.
       const t0 = this.now();
-      for (let i = 0; i < frames.length && !cancelled; i++) {
+      for (let i = 0; i < frames.length && !cancelled && !isCancelled(); i++) {
         const packet = this.broadcast(P.Codec.PCM, frames[i]);
         if (this.repeatMs > 0) {
           // The same packet again a little later: a copy lost on the air is replaced before its

@@ -119,3 +119,24 @@ test("two concurrent misses for the same text count once in the cache size", asy
     tts.stop();
   }
 });
+
+test("a replaced worker that ends late does not fail its successor's sentence", async () => {
+  // A stub worker: "hang" blocks it past the timeout, anything else is answered with two bytes.
+  const stub = path.join(tempDir, "stub-worker.js");
+  fs.writeFileSync(stub, `
+    const { parentPort } = require("node:worker_threads");
+    parentPort.on("message", (req) => {
+      if (req.text.includes("hang")) { const t = Date.now(); while (Date.now() - t < 1500) {} }
+      const out = new ArrayBuffer(2);
+      parentPort.postMessage({ id: req.id, pcm: out }, [out]);
+    });`);
+  const tts = new FliteTts({ voice: "slt", tempDir, timeoutMs: 200, workerPath: stub });
+  try {
+    await assert.rejects(tts.synthesize("hang on"), /took more than 200 ms/);
+    // The next sentence starts a new worker at once, while the old one is still ending.
+    const pcm = await tts.synthesize("next one");
+    assert.equal(pcm.length, 2);
+  } finally {
+    tts.stop();
+  }
+});

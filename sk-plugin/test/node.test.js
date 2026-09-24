@@ -285,3 +285,18 @@ test("an authenticated sender over its own budget writes nothing further", () =>
   assert.equal(node.stats.rx, rxBefore, "over budget: nothing more is counted");
   node.stop();
 });
+
+test("the caller's cancel flag stops an announcement even before its first frame, when cancel() finds nothing speaking yet", async () => {
+  const link = new EventEmitter();
+  let sent = 0;
+  link.send = () => { sent++; return true; };
+  const node = new ChannelNode({ name: "Sirius", crypto, link });
+  let cancelled = false;
+  const done = node.speak(Buffer.alloc(FRAME_BYTES * 20), () => cancelled);
+  node.cancel();                                 // too early: nothing is speaking yet
+  cancelled = true;                              // the queue's own flag is what counts
+  await done;
+  assert.equal(sent, 0, "not one frame of a cancelled announcement");
+  await node.speak(Buffer.alloc(FRAME_BYTES * 2));
+  assert.equal(sent, 2, "the next one still goes out");
+});

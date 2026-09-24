@@ -34,6 +34,7 @@ class FliteTts {
    * @param {string} [opts.tempDir]       scratch directory for the WAV round trip (default: the OS temp dir)
    * @param {number} [opts.cacheBytes]    how much rendered speech to keep (default 8 MiB, about 4 minutes)
    * @param {string} [opts.wasmPath]      override for tests
+   * @param {string} [opts.workerPath]    the worker script, override for tests (default lib/tts-worker.js)
    * @param {number} [opts.timeoutMs]     a sentence taking longer than this ends the worker (default 30 s)
    */
   constructor(opts = {}) {
@@ -43,6 +44,7 @@ class FliteTts {
     this.tempDir = opts.tempDir ?? path.join(os.tmpdir(), "signalk-crewradio");
     this.cacheBytes = opts.cacheBytes ?? 8 * 1024 * 1024;
     this.wasmPath = opts.wasmPath ?? require.resolve("@echogarden/flite-wasi");
+    this.workerPath = opts.workerPath ?? path.join(__dirname, "tts-worker.js");
     this.timeoutMs = opts.timeoutMs ?? SYNTHESIS_TIMEOUT_MS;
     this.worker = null;
     this.pending = new Map(); // id -> {resolve, reject, timer}
@@ -119,10 +121,10 @@ class FliteTts {
 
   ensureWorker() {
     if (this.worker) return this.worker;
-    const worker = new Worker(path.join(__dirname, "tts-worker.js"));
+    const worker = new Worker(this.workerPath);
     worker.on("message", (m) => {
       const p = this.pending.get(m.id);
-      if (!p) return;
+      if (!p) { if (this.pending.size === 0) worker.unref(); return; }   // an answer nobody waits for any more
       this.pending.delete(m.id);
       clearTimeout(p.timer);
       if (this.pending.size === 0) worker.unref();
@@ -130,7 +132,10 @@ class FliteTts {
       else p.resolve(Buffer.from(m.pcm));
     });
     const gone = (why) => {
-      if (this.worker === worker) this.worker = null;
+      // A worker already replaced (stop(), or a timeout) ends later, while its successor may have a
+      // sentence in flight: that sentence is not this worker's to fail.
+      if (this.worker !== worker) return;
+      this.worker = null;
       this.fail(new Error(why));
     };
     worker.on("error", (e) => gone(`speech worker failed: ${e?.message ?? e}`));

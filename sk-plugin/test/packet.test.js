@@ -95,3 +95,11 @@ test("a decoded name is sanitised: controls and format characters dropped, white
   const tricky = P.decodeHello(P.encodeHello({ name: "‪eve‬  x", transports: 1, ttl: 1 }));
   assert.equal(tricky.name, "eve x");
 });
+
+test("a name is never cut inside a surrogate pair: no U+FFFD where an emoji did not fit", () => {
+  const emoji = "\u{1F600}";                     // four UTF-8 bytes, two UTF-16 units
+  const h = P.encodeHello({ name: "a".repeat(29) + emoji, transports: 1, ttl: 1 });
+  assert.equal(h.length, 6 + 29, "the emoji is left out whole, as the app's Hello does");
+  assert.equal(P.decodeHello(h).name, "a".repeat(29));
+  assert.equal(P.decodeHello(P.encodeHello({ name: "a".repeat(28) + emoji, transports: 1, ttl: 1 })).name, "a".repeat(28) + emoji, "and kept when it fits");
+});

@@ -128,3 +128,57 @@ test("an unknown named interface rejects open()", async () => {
   const link = new LanLink({ group: "239.255.42.1", port: 47474, iface: "no-such-interface-xyz" });
   await assert.rejects(link.open(), /no IPv4 address/);
 });
+
+test("checkInterface: a link whose interface changed or went away closes and says so; one that did not stays", () => {
+  const ifs = { eth0: [{ family: "IPv4", internal: false, address: "192.168.0.10", netmask: "255.255.255.0" }] };
+  const link = new LanLink({ group: "239.255.42.1", port: 47474, interfaces: () => ifs });
+  let closed = 0;
+  const errors = [];
+  link.on("error", (e) => errors.push(e.message));
+  const bind = () => { link.sock = { close: () => closed++ }; link.iface = "eth0"; link.address = "192.168.0.10"; link.netmask = "255.255.255.0"; };
+  bind();
+  assert.equal(link.checkInterface(), true);
+  assert.equal(errors.length, 0);
+  ifs.eth0[0].address = "192.168.0.44";          // a new DHCP lease
+  assert.equal(link.checkInterface(), false);
+  assert.equal(closed, 1);
+  assert.equal(link.sock, null);
+  assert.match(errors[0], /interface changed \(eth0 192.168.0.10 -> eth0 192.168.0.44\)/);
+  bind();
+  ifs.wlan0 = [{ family: "IPv4", internal: false, address: "10.10.10.2", netmask: "255.255.255.0" }];
+  assert.equal(link.checkInterface(), false, "a better interface came up (Wi-Fi after the lease)");
+  bind();
+  delete ifs.wlan0; delete ifs.eth0;
+  assert.equal(link.checkInterface(), false);
+  assert.match(errors[2], /went away/);
+  assert.equal(link.checkInterface(), false, "a closed link checks nothing");
+  assert.equal(errors.length, 3);
+});
+
+test("chooseInterface puts container, bridge and VPN interfaces last", () => {
+  const v4 = (address) => [{ family: "IPv4", internal: false, address, netmask: "255.255.255.0" }];
+  assert.equal(chooseInterface(null, { docker0: v4("172.17.0.1"), usb0: v4("192.168.7.2") }).name, "usb0");
+  assert.equal(chooseInterface(null, { "br-1a2b": v4("172.18.0.1"), tailscale0: v4("100.64.0.1") }).name, "br-1a2b", "still picked when nothing else is there");
+  assert.equal(chooseInterface(null, { docker0: v4("172.17.0.1"), wlan0: v4("10.0.0.5") }).name, "wlan0");
+});
+
+test("the interface re-check runs on a timer while bound and stops with close()", async (t) => {
+  const pick = chooseInterface(null);
+  if (!pick) { t.skip("no IPv4 interface on this machine"); return; }
+  let lookups = 0;
+  const link = new LanLink({ group: "239.255.42.1", port: 40000 + Math.floor(Math.random() * 20000), iface: pick.name, recheckMs: 10,
+    interfaces: () => { lookups++; return require("node:os").networkInterfaces(); } });
+  try {
+    await link.open();
+  } catch (e) {
+    t.skip(`multicast not available here: ${e.message}`);
+    return;
+  }
+  const t0 = Date.now();
+  while (lookups < 3 && Date.now() - t0 < 2000) await new Promise((r) => setTimeout(r, 10));
+  link.close();
+  assert.ok(lookups >= 3, `re-checked while bound (${lookups} lookups)`);
+  const after = lookups;
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(lookups, after, "and not after close()");
+});

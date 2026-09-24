@@ -8,6 +8,11 @@
  * twice, to the group and to the interface's IPv4 broadcast address, because plenty of access
  * points filter multicast. The receiving side drops the duplicate by (sender, seq).
  *
+ * The interface is looked at again every few seconds (checkInterface): a socket bound to every
+ * address raises no error when the address it joined the group on goes away or a better interface
+ * comes up (a Pi whose Signal K starts before wlan0 has its lease), so a change is reported as
+ * an error and the owner reopens, as the app's LanTransport does on an interface or address change.
+ *
  * Events: 'packet' (buf, rinfo), 'error' (the socket is dead; the owner reopens it), 'listening'.
  */
 
@@ -19,7 +24,9 @@ const { PeerBudget } = require("./wirelimit");
 
 class LanLink extends EventEmitter {
   /**
-   * @param {{group: string, port: number, iface?: string}} opts iface: interface name, or "auto"/empty
+   * @param {{group: string, port: number, iface?: string, recheckMs?: number, interfaces?: () => object}} opts
+   *   iface: interface name, or "auto"/empty; recheckMs: how often the interface is looked at again
+   *   (0: never); interfaces: os.networkInterfaces, replaceable for tests
    */
   constructor(opts) {
     super();
@@ -32,6 +39,9 @@ class LanLink extends EventEmitter {
     this.broadcast = null;
     this.iface = null;
     this.peers = opts.peers ?? new PeerBudget();   // one ingress budget per source address
+    this.recheckMs = opts.recheckMs ?? 5000;
+    this.interfaces = opts.interfaces ?? (() => os.networkInterfaces());
+    this.recheck = null;
   }
 
   /** Resolves with `{iface, address, broadcast}` once bound and joined; a socket that fails to bind is closed, not leaked. */
@@ -39,7 +49,7 @@ class LanLink extends EventEmitter {
     if (!Number.isInteger(this.port) || this.port < 1024 || this.port > 65535) {
       return Promise.reject(new Error(`UDP port ${this.port} is not 1024-65535`));
     }
-    const pick = chooseInterface(this.ifaceName);
+    const pick = chooseInterface(this.ifaceName, this.interfaces());
     if (!pick) return Promise.reject(new Error(this.ifaceName ? `interface ${this.ifaceName} has no IPv4 address` : "no usable IPv4 interface"));
     return new Promise((resolve, reject) => {
       const sock = dgram.createSocket({ type: "udp4", reuseAddr: true });
@@ -76,6 +86,10 @@ class LanLink extends EventEmitter {
           this.address = pick.address;
           this.netmask = pick.netmask;
           this.broadcast = pick.broadcast;
+          if (this.recheckMs > 0) {
+            this.recheck = setInterval(() => this.checkInterface(), this.recheckMs);
+            if (this.recheck.unref) this.recheck.unref();
+          }
           this.emit("listening", { iface: pick.name, address: pick.address, broadcast: pick.broadcast });
           resolve({ iface: pick.name, address: pick.address, broadcast: pick.broadcast });
         });
@@ -122,7 +136,28 @@ class LanLink extends EventEmitter {
     return a.every((o, i) => (o & m[i]) === (me[i] & m[i]));
   }
 
+  /**
+   * Looks at the interfaces again; when the one this link would pick now is not the one it is on
+   * (gone, readdressed, or a better one up), the link closes and emits 'error' for the owner to
+   * reopen. True while the link stays as it is.
+   */
+  checkInterface() {
+    if (!this.sock) return false;
+    let pick;
+    try {
+      pick = chooseInterface(this.ifaceName, this.interfaces());
+    } catch {
+      return true;                                 // the lookup failing is not the interface changing
+    }
+    if (pick && pick.name === this.iface && pick.address === this.address && pick.netmask === this.netmask) return true;
+    const was = `${this.iface} ${this.address}`;
+    this.close();
+    this.emit("error", new Error(pick ? `interface changed (${was} -> ${pick.name} ${pick.address})` : `interface ${was} went away`));
+    return false;
+  }
+
   close() {
+    if (this.recheck) { clearInterval(this.recheck); this.recheck = null; }
     const s = this.sock;
     this.sock = null;
     if (s) {
@@ -131,9 +166,11 @@ class LanLink extends EventEmitter {
   }
 }
 
-/** Prefer the named interface; else a wlan interface, then eth or en, then any up non-internal IPv4 interface. */
-function chooseInterface(name) {
-  const all = os.networkInterfaces();
+/**
+ * Prefer the named interface; else a wlan interface, then eth or en, then any up non-internal IPv4
+ * interface, and last the virtual ones (containers, bridges, VPNs), which are never the boat's network.
+ */
+function chooseInterface(name, all = os.networkInterfaces()) {
   const candidates = [];
   for (const [ifName, addrs] of Object.entries(all)) {
     for (const a of addrs ?? []) {
@@ -143,10 +180,12 @@ function chooseInterface(name) {
     }
   }
   if (name) return candidates.find((c) => c.name === name) ?? null;
-  const rank = (c) => (/^wl|wi-?fi|wlan/i.test(c.name) ? 0 : /^(eth|en)/i.test(c.name) ? 1 : 2);
+  const rank = (c) => (/^wl|wi-?fi|wlan/i.test(c.name) ? 0 : /^(eth|en)/i.test(c.name) ? 1 : VIRTUAL.test(c.name) ? 3 : 2);
   candidates.sort((a, b) => rank(a) - rank(b));
   return candidates[0] ?? null;
 }
+
+const VIRTUAL = /^(docker|veth|br-|virbr|cni|flannel|podman|lxc|lxd|vmnet|vboxnet|tun|tap|tailscale|zt|wg)/i;
 
 function broadcastOf(address, netmask) {
   const a = address.split(".").map(Number);
