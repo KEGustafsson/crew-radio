@@ -19,7 +19,9 @@ the people who change it. Everything here is about the `app` module, package `fi
   concealment, the talk state, the voice gate. It knows nothing about screens.
 - **Transports** (`transport/`) carry packets: `LanTransport` (UDP multicast plus subnet
   broadcast), `BluetoothTransport` (RFCOMM, one link per pair), `WifiAwareTransport` (NAN
-  discovery plus TCP data paths). All of them are symmetrical: every phone is server and client.
+  discovery plus TCP data paths), and, off by default, `ReticulumTransport` (one TCP connection
+  to a Reticulum transport node, links to the crew's other Reticulum nodes inside it; `rns/`).
+  All of them are symmetrical: every phone is server and client.
 - **Audio** (`audio/`) is the capture → Opus → packet path on the way out and the decoder →
   mixer → playback path on the way in, with `AudioRoute` deciding where the sound goes.
 
@@ -150,11 +152,16 @@ the two to the same bytes, and its values were checked against the reference imp
 - `ReticulumNode` is the protocol without the socket, pure and tested over a fake medium: it
   announces `crewradio.channel.<tag>` (the tag from `ChannelCrypto.reticulumTag`) on connect and
   every ten minutes; of two nodes the lower destination hash dials and the other answers a
-  newcomer's announce with its own; a link carries hellos at once and everything else once the
-  engine has confirmed the far end holds the key (`confirmPeer`); a link silent for 12 s or
-  unconfirmed after 15 s is closed and the dialler redials with backoff. `onFrame` returns the
-  channel packets instead of calling the engine, so the engine is never entered under the node's
-  lock.
+  newcomer's announce with its own. A link carries nothing until the far end's key proof has
+  checked out (`Carry.keyProof`: an HMAC of its role and the link id under
+  `ChannelCrypto.reticulumConfirmKey`, resent every 2 s while unanswered), so neither a stranger
+  who copies the public name hash nor a sealed packet copied from elsewhere gets anywhere; a link
+  silent for 12 s or unconfirmed after 15 s is closed and the dialler redials with backoff.
+  Announces under our name and link requests to us come out of a budget (10/s, bursts of 20)
+  before their signature work, which runs outside the node's lock so a flood never holds up
+  `send` on the audio path; a link younger than 5 s is never evicted. Timers run on a monotonic
+  clock. `onFrame` returns the channel packets instead of calling the engine, so the engine is
+  never entered under the node's lock.
 - Reticulum does the multi-hop part and every node links to every other, so `relayWithin` is
   false; a phone with Reticulum and WLAN, or the plugin, bridges the two. It is the fourth
   main-screen tile (`use_reticulum`); the first tap with no transport node set asks for one in a
@@ -164,8 +171,11 @@ the two to the same bytes, and its values were checked against the reference imp
   first, then Wi‑Fi or Ethernet, then mobile data; for a node at a private address, the Wi‑Fi, or
   with none the routing table unbound (behind the phone's own hotspot, which is not a network it
   joined). A name the chosen network cannot resolve (one only the boat's router knows) is asked of
-  the Wi‑Fi. `ReticulumTransport` keeps the networks from a `NetworkCallback`, binds its socket to the chosen
-  one, and drops and re-opens the connection when that network is lost. So a boat Wi‑Fi without
+  the Wi‑Fi. `ReticulumTransport` keeps the networks from a `NetworkCallback` (VPNs included:
+  under a VPN the default network is the VPN, and a bind a lockdown VPN refuses falls back to the
+  routing table), binds its socket to the chosen one, and drops and re-opens the connection when
+  that network is lost; `TCP_USER_TIMEOUT` (20 s) ends a connection that died without a word, and
+  only a connection that held 30 s resets the backoff. So a boat Wi‑Fi without
   internet does not swallow the connection, and WLAN aboard and Reticulum over mobile data run at
   once.
 
@@ -235,7 +245,8 @@ rejoin. The channel key is generated at random on first use
 | `Packet`, `Hello`, `SeqTracker` | Wire header, roster heartbeat payload, per-sender sequence admission |
 | `LinkQuality` | A sender's link level from its missing hellos and audio frames, the roster's bars |
 | `Ingress` | Every admission decision for a received packet, in one testable place |
-| `ChannelCrypto`, `RateLimiter` | AES-GCM sealing under the packet key derived from the channel key, and the Aware secrets derived from that packet key; ingress budgets |
+| `ChannelCrypto`, `RateLimiter` | AES-GCM sealing under the packet key derived from the channel key, and the Aware and Reticulum secrets derived from that packet key (`reticulumTag`, `reticulumConfirmKey`); ingress budgets |
+| `LocalNetwork` | When Android 17's local network access is needed: WLAN, a private Reticulum node, the Signal K server |
 | `audio/AudioConfig` | 16 kHz, 20 ms, frame sizes |
 | `audio/AudioCapture`, `audio/AudioPlayback` | Mic in, speaker out, each on its own thread |
 | `audio/OpusEncoder`, `audio/OpusDecoder`, `audio/Decimator` | Platform Opus and the 48 → 16 kHz step |
@@ -244,7 +255,9 @@ rejoin. The channel key is generated at random on first use
 | `audio/MicGate` | Voice-operated keying |
 | `audio/AudioRoute` | Headset, earpiece or loudspeaker, following the hardware and the ear |
 | `transport/Transport` | The interface: `start`, `send` (returns whether anything went out), `stop`, `relayWithin` |
-| `transport/LanTransport`, `BluetoothTransport`, `WifiAwareTransport` | The three carriers |
+| `transport/LanTransport`, `BluetoothTransport`, `WifiAwareTransport`, `ReticulumTransport` | The four carriers |
+| `transport/NetworkChoice` | Which network the Reticulum connection goes over, pure and tested |
+| `rns/Curve25519`, `RnsCrypto`, `RnsPacket`, `RnsIdentity`, `RnsLink` (+ `Carry`), `ReticulumNode` | Reticulum written from its manual: X25519/Ed25519, the token, packets and HDLC framing, announces, links and the key proof, and the node without the socket |
 | `transport/StreamLink`, `SendQueue`, `Backoff`, `Threads` | Length-prefixed framing, per-link outbound queue, retry schedule, guarded threads |
 | `transport/AwareSsi`, `BluetoothTieBreak`, `LanAddressing`, `PeerTable` | Discovery tag, one link per pair, broadcast address, peers heard from directly |
 

@@ -136,21 +136,29 @@ The plugin can carry the channel over [Reticulum](https://reticulum.network/) as
 the protocol is implemented here from the published manual (`lib/rns/`, Node's own crypto, no
 dependency), not taken from the reference implementation, and checked against it (rnsd 1.5.4).
 
-- **What it needs.** A Reticulum transport node the server can reach over TCP: the boat's own
-  `rnsd` with a `TCPServerInterface` and `enable_transport = Yes` (its other interfaces, a LoRa
-  RNode or a TCP link to a hub ashore, then carry the channel onward), or a hub ashore directly.
-  Interface access codes (a network name or passphrase on the interface) are not supported.
-  [docs/RETICULUM_HUB.md](../docs/RETICULUM_HUB.md) sets up a hub ashore, and optionally an
-  `rnsd` on the server itself, with autostart at boot.
+- **What it needs.** A Reticulum transport node the server can reach over TCP, with a
+  `TCPServerInterface` and `enable_transport = Yes`: usually a hub ashore that the server dials
+  out to directly (Transport node host set to the hub), or the boat's own `rnsd` connected on to
+  one over TCP. Interface access codes (a network name or passphrase on the interface) are not
+  supported. [RETICULUM_HUB.md](https://github.com/KEGustafsson/crew-radio/blob/main/docs/RETICULUM_HUB.md)
+  sets up a hub, and optionally an `rnsd` on the server itself, with autostart at boot.
 - **How it works.** The channel's sealed packets ride unchanged inside Reticulum links, so the
   channel key still does all the securing; Reticulum adds its own encryption around it. The
   plugin announces `crewradio.channel.<tag>`, the tag an HMAC of the packet key, so only a node
   with the channel key recognises it. Every Crew Radio node on the Reticulum network links to
-  every other (one link per pair); a link carries hellos at once and audio only after the far end
-  has sent a packet that opened with the channel key. The identity is new at every start.
+  every other (one link per pair); a link carries nothing until the far end has sent its key
+  proof, an HMAC of its role and the link id under a key from the packet key, so a stranger who
+  copies the public name hash and links in gets nothing, and a sealed packet copied from elsewhere
+  proves nothing. Announces and link requests beyond 10 a second are not checked at all, so a
+  flood costs the server no signature work. The identity is new at every start.
 - **Relaying.** A first, authentic copy heard on the LAN goes on to Reticulum and the other way,
   ttl lowered by one, as a phone relays between its transports. A phone ashore shows on the
   roster with the Reticulum flag.
+- **When the LAN is down.** The channel keeps going on Reticulum alone (the status says "LAN
+  down", and the hello no longer claims the LAN). An announcement made then waits for the LAN for
+  10 s first, since the boat's own phones are its first audience and a Wi‑Fi reconnect is over in
+  a second or two; after that it goes to the crew ashore. If the LAN comes back while it is being
+  said, it is said again, whole, on the LAN. When Reticulum is down the status says why.
 - **Bandwidth.** Announcements are PCM: 686 bytes a frame, which a Reticulum link carries in two
   packets, about 40 kB/s per remote node while speaking. Fine over the internet or Wi‑Fi, not over
   LoRa, which cannot carry live voice at all.

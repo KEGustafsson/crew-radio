@@ -174,15 +174,15 @@ To see the hub at work:
 sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
 
-It lists the `TCPServerInterface[Crew Radio hub/0.0.0.0:4242]` with its `Clients` count, and ends
-with `Transport Instance <…> running`. If it says nothing about a transport instance,
-`enable_transport` is not on.
+It lists the `TCPServerInterface[Crew Radio hub/0.0.0.0:4242]` with its `Clients` count, and near
+the end says `Transport Instance <…> running` (followed by the uptime). If it says nothing about a
+transport instance, `enable_transport` is not on.
 
 ## 6. Connect the crew
 
 - **A phone ashore.** Tap the **RETICULUM** tile. The first time, it asks for the transport node:
   type the hub as `hub.example.org` or `hub.example.org:4242` (4242 is used when the port is
-  left out). It can be changed later in **Settings > Transport node**, in the Reticulum section.
+  left out). It can be changed later in **Settings › Transport node**, in the Reticulum section.
   Join the channel as usual. The status line says *Reticulum: connected to hub.example.org:4242*,
   then *Reticulum: 1 link* once another Crew Radio node on the hub has answered, and the roster
   lists that node with **Reticulum** among its links.
@@ -236,7 +236,7 @@ hub → phone ashore, which was checked end to end with two `rnsd` 1.5.4 instanc
 | What you see | Look at |
 |---|---|
 | The phone says *Reticulum: can't reach …* | The port is not reachable. From a network outside, e.g. a phone on mobile data with a terminal app, or another server, run `nc -vz hub.example.org 4242`. Check the machine's firewall, the provider's firewall, the router's port forward, and that `rnstatus` shows the interface. |
-| **Connected, but 0 links** for more than a minute | The hub's `enable_transport` is off (`rnstatus` shows no transport instance), or the other node has a different channel key, or it is not connected at all (compare the `Clients` count). |
+| The phone stays at *Reticulum: connected to …* and never shows *1 link* (the plugin's status: *Reticulum 0 links*) for more than a minute | The hub's `enable_transport` is off (`rnstatus` shows no transport instance), or the other node has a different channel key (a link then never gets past the key proof), or it is not connected at all (compare the `Clients` count). |
 | It stops after a reboot | `systemctl is-enabled rnsd` should say `enabled`. Then look at `systemctl status rnsd` and the log file. |
 | `rnstatus` says no shared instance is running | `rnsd` is not running, or `share_instance` is off, or you ran `rnstatus` as another user than `rns`. |
 | Anything else | Set `loglevel = 6`, restart, and read the log file. |
@@ -247,8 +247,10 @@ hub → phone ashore, which was checked end to end with two `rnsd` 1.5.4 instanc
   to end, and Reticulum's link encryption wraps it again. It sees who connects (IP addresses),
   when, and how much, and a destination named after an HMAC of the channel key.
 - A Reticulum TCP interface is open to anyone who finds it: strangers can connect and use it as a
-  transport. They cannot join the channel without the channel key, and the app and the plugin
-  never let unconfirmed links push out the crew's own links. If that bothers you, restrict the
+  transport, and link to the crew's nodes. A link carries nothing until its far end has proved the
+  channel key with a proof bound to that link, so they get nothing, and a link that has proved the
+  key is never pushed out. A stranger flooding the hub with link requests can keep new links from
+  forming while it lasts; links already up are not affected. If that bothers you, restrict the
   port in the firewall to the addresses you expect. Phones on mobile data change address, so
   that usually means the boat only.
 - Keep the machine patched (`sudo apt install unattended-upgrades` on Debian, Ubuntu and

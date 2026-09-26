@@ -90,7 +90,8 @@ def phone(p, x, y, talker, peers, s=1.0):
     n.append(txt(p + "h2", "CREW RADIO", x + 22 * s, y + 60 * s, 220 * s, 40 * s, int(26 * s), CYAN, bold=True, mono=False))
     n.append(rect(p + "hc", x + 232 * s, y + 52 * s, 66 * s, 40 * s, arc=25, label="▮▮ " + peers, color=TALKING, size=int(14 * s)))
     n.append(txt(p + "m", "⋮", x + 316 * s, y + 52 * s, 30 * s, 40 * s, int(22 * s), TEXT, align="center"))
-    # Four tiles, as the app has since Reticulum: 8 apart, 11 sp labels.
+    # Four tiles, as the app has since Reticulum: 8 apart; the labels a size smaller than the app's
+    # 11 sp, since this phone is drawn at the illustration's own scale.
     for i, (name, active) in enumerate([("WLAN", True), ("BLUETOOTH", True), ("AWARE", True), ("RETICULUM", False)]):
         tx = x + (20 + i * 82) * s
         n.append(rect(p + f"t{i}", tx, y + 118 * s, 74 * s, 66 * s, fill=(CYAN_DIM if active else BG), stroke=(CYAN if active else OUTLINE), arc=18,

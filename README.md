@@ -7,7 +7,8 @@ network at all: on a boat, on a hike, at a work site, in a building with dead sp
 every kind of link the phones have — the boat's WLAN, Wi‑Fi Aware (phone to phone, no router),
 Bluetooth — all at the same time, and every phone repeats what it hears to the phones it can
 reach, so the crew stays connected as long as there is *some* path between them. No server,
-no account, no internet, no subscription. Connecting people, with what is in their pockets.
+no account, no subscription, and no internet unless you switch on Reticulum to reach the crew
+ashore. Connecting people, with what is in their pockets.
 
 ## What it does
 
@@ -232,11 +233,13 @@ the roster under the vessel's name.
 The channel normally stays on the boat. [Reticulum](https://reticulum.network/) can take it
 further: a crew member ashore, on mobile data, stays on the channel, and so can a second boat.
 
-1. The boat needs a Reticulum transport node the phones can reach: the Signal K server running
-   `rnsd` with a TCP server interface and `enable_transport = Yes`, connected onward to a Reticulum
-   hub ashore (or reachable from the internet itself). Turn on **Reticulum** in the
-   [signalk-crewradio](sk-plugin/README.md) plugin too: the server then relays between Reticulum and
-   the boat's WLAN, so the phones aboard need nothing new.
+1. The crew needs a Reticulum hub that both the boat and the phones ashore can reach: usually a
+   small machine ashore (a Raspberry Pi at home or a cheap cloud server) running `rnsd` with a TCP
+   server interface and `enable_transport = Yes`; [docs/RETICULUM_HUB.md](docs/RETICULUM_HUB.md)
+   sets one up. On the boat, turn on **Reticulum** in the [signalk-crewradio](sk-plugin/README.md)
+   plugin with the hub as its transport node: the server dials out to it and relays between it and
+   the boat's WLAN, so the phones aboard need nothing new. (An `rnsd` on the Signal K server itself
+   is optional, for other Reticulum programs aboard.)
 2. On the phone ashore, tap the **RETICULUM** tile. The first time it asks for the transport node:
    the hub (or the boat's node), as `host:port`. Join the channel as usual; the other tiles may
    stay on or off. The phone reaches the hub over whatever it has — the boat's Wi‑Fi, a marina's,
@@ -250,8 +253,8 @@ Interface access codes (a Reticulum network name or passphrase on the interface)
 supported. The details, and what a transport node can and cannot see, are in
 [docs/SECURITY.md](docs/SECURITY.md#reticulum-optional-off-by-default).
 
-To run your own hub (a Raspberry Pi at home or a small cloud server, installed, configured and
-started at boot), follow [docs/RETICULUM_HUB.md](docs/RETICULUM_HUB.md).
+Someone who is not crew can find the hub and link to a phone (Reticulum names are public), but a
+link carries nothing until its far end has proved it holds the channel key, so they get nothing.
 
 ## Add-on: Ask boat data
 

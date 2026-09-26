@@ -4,7 +4,8 @@ with draw.io desktop:
 
     "C:/Program Files/draw.io/draw.io.exe" -x -f png -s 1.5 -b 16 -o docs/images/<name>.png docs/diagrams/<name>.drawio
 
-(scale 1 for the screen mock-ups, 1.5 for the flowcharts; the markdown gives each image a display width)
+(scale 1.5 for the flowcharts and the phone mock-ups, 1 for screen-settings, as export_png.js does; the markdown
+gives each image a display width)
 
 Keep `-b 16` for every phone mock-up. The export crops to the drawing, so the border is the only
 thing that sets the canvas size, and the README puts phones side by side: a mock-up exported with

@@ -225,7 +225,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   (pure, tested) picks: validated internet for a hub (default, then Wi-Fi/Ethernet, then mobile),
   Wi-Fi for a private address, unbound over the routing table when there is no Wi-Fi (the phone's own
   hotspot, which is not a network it joined), and a name mobile data cannot resolve is asked of the
-  Wi-Fi; bound with `Network.bindSocket`, re-opened when that network is lost.
+  Wi-Fi; VPNs are candidates too (a bind a lockdown VPN refuses falls back to unbound); bound with
+  `Network.bindSocket`, re-opened when that network is lost; `TCP_USER_TIMEOUT` 20 s; the backoff
+  resets only after a connection held 30 s (the plugin: keepalive, the same backoff rule).
   One TCP connection (HDLC framing) to a Reticulum transport node, Reticulum
   links inside it, the channel's sealed packets carried unchanged behind a one-byte `Carry` header
   (a PCM frame, 686 bytes, goes in two parts: the base-MTU link payload is 431). Written from the
@@ -234,13 +236,23 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   below API 33), checked against RFC 7748/8032. Destination `crewradio.channel.<tag>`,
   `ChannelCrypto.reticulumTag` = first 8 bytes of HMAC(packet key, "CrewRadio reticulum v1") in hex;
   identity fresh per session. `ReticulumNode` (pure, tested over a fake medium) announces on connect
-  and every 10 min; the lower destination hash dials, the other re-announces for a newcomer; a link
-  carries hellos at once and audio only after `confirmPeer`; silent 12 s or unconfirmed 15 s =
-  closed; a full table (32 links, 64 peers) evicts the oldest unconfirmed link (else our oldest unanswered request) / stalest peer
-  without a confirmed link, never a confirmed one (the name hash is public, so strangers can fill it);
+  and every 10 min; the lower destination hash dials, the other re-announces for a newcomer. A link
+  carries NOTHING until the far end's key proof checks out: `Carry.keyProof` = `0x80 | HMAC-SHA256(
+  ChannelCrypto.reticulumConfirmKey, role | link id)`, role 1 = the dialler, sent when the link comes
+  up and every 2 s while unanswered (the confirmed end answers a resend with its own). Bound to the
+  link and the role, so it cannot be copied or reflected; never confirm a link on a sealed channel
+  packet, which anyone can copy (that was the first design, and a stranger echoing a hello filled
+  the plugin's table with "confirmed" links). Silent 12 s or unconfirmed 15 s = closed; announces
+  and link requests are budgeted (10/s, bursts of 20) before their signature work, which in the app
+  runs outside the node lock; a full table (32 links, 64 peers) evicts the oldest unconfirmed link
+  older than 5 s (else our oldest unanswered request past 5 s) / stalest peer without a confirmed
+  link (a dropped link refreshes its peer), never a confirmed one (the name hash is public, so
+  strangers can fill it); timers on a monotonic clock;
   a link request is validated before it may evict anything (a malformed one costs nobody a slot);
-  in the plugin, with Reticulum on and the LAN down, a node on Reticulum alone keeps the channel, and
-  hands over to the LAN node only after an announcement it is speaking has ended; `onFrame` returns packets rather than calling the engine (no engine call under its lock).
+  in the plugin, with Reticulum on and the LAN down, a node on Reticulum alone keeps the channel (its
+  hello without the LAN flag); an announcement made then waits 10 s for the LAN (the boat's own
+  phones are its first audience) before going to confirmed Reticulum links alone, and when the LAN
+  returns the LAN node takes over at once and an announcement that was cut is said again, whole; `onFrame` returns packets rather than calling the engine (no engine call under its lock).
   `relayWithin` is false (every node links to every other; Reticulum does the multi-hop), so a
   phone or the plugin with Reticulum and WLAN bridges them. Hello transport flag 8. Group
   destinations are not used: Reticulum does not carry them over more than one hop. Interface access
