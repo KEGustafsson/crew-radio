@@ -52,7 +52,8 @@ echo cancellation and noise suppression), the AOSP Opus codec through `MediaCode
   volume-changed broadcast when a headset button moves it. The volume keys cannot do this on
   channel, since they are a talk key there. Android keeps a stream's level per output device
   (earpiece off channel, loudspeaker on it), which made the slider jump on every join and leave,
-  so the crew's level is held for the process (`VolumeMemory`, pure and tested), shown by the
+  so the crew's level is held for the process (`VolumeMemory`, pure and tested; on the SCO
+  stream as the same share of its own maximum, so a headset on Android 13 and below keeps it too), shown by the
   slider, and put back by the service whenever the stream lands on another device: on the
   system's stream-devices-changed broadcast, and 300 ms and 1.2 s after every route change the
   session makes (`AudioRoute.onRouteChanged`, session start and end included), and again when
@@ -209,7 +210,7 @@ of the transports, so they need a rejoin. The channel key is generated at random
 | `audio/OpusEncoder`, `audio/OpusDecoder`, `audio/Decimator` | Platform Opus and the 48 → 16 kHz step |
 | `audio/Mixer`, `audio/Conceal`, `audio/Tones` | Per-talker queues, loss concealment, cue tones, the mute |
 | `audio/CallVolume` | The phone's call volume behind the main screen's slider: stream in use, range, level, kept the same on every device |
-| `audio/VolumeMemory` | The crew's chosen call volume per stream, and what to put back when the stream changes device |
+| `audio/VolumeMemory` | The crew's chosen call volume, in each stream's own steps, and what to put back when the stream changes device |
 | `audio/MicGate` | Voice-operated keying |
 | `audio/AudioRoute` | Headset, earpiece or loudspeaker, following the hardware and the ear |
 | `transport/Transport` | The interface: `start`, `send` (returns whether anything went out), `stop`, `relayWithin` |

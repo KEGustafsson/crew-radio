@@ -150,7 +150,8 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   audio on API < 34, in the stream's own steps (min 1, so the stream cannot mute); it follows
   `android.media.VOLUME_CHANGED_ACTION` so a headset button moves it too. Android keeps that
   level per output device (earpiece off channel, loudspeaker on it), so the slider used to jump on
-  every join and leave: `audio/VolumeMemory` (pure, tested, process-wide) holds the crew's level,
+  every join and leave: `audio/VolumeMemory` (pure, tested, process-wide) holds the crew's level (the last
+  choice and its stream's range; the SCO stream gets the same share of its own maximum),
   the slider shows it, and `PttService` puts it back on `android.media.STREAM_DEVICES_CHANGED_ACTION`
   and 300 ms / 1.2 s after each `AudioRoute.onRouteChanged` (session start and end included), and
   again when the service is created or destroyed. On channel the volume

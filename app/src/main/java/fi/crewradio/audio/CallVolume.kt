@@ -17,7 +17,8 @@ import android.os.Build
  *
  * Android keeps that level per output device (earpiece, loudspeaker, each headset), and joining
  * or leaving moves the stream from one to another, so the level the crew chose is held in
- * [VolumeMemory] for the process and put back on whatever device the stream lands on ([restore]).
+ * [VolumeMemory] for the process and put back on whatever device the stream lands on ([restore]),
+ * in the steps of the stream in use (the SCO stream's are finer).
  * The slider shows the held level ([level]), not the device's, so it never jumps.
  */
 class CallVolume(context: Context) {
@@ -32,18 +33,18 @@ class CallVolume(context: Context) {
     fun get(stream: Int): Int = try { am.getStreamVolume(stream) } catch (_: Exception) { 0 }
 
     /** The level the crew chose for [stream]: the one to show, whichever device the stream is on. */
-    fun level(stream: Int): Int = memory.level(stream, get(stream))
+    fun level(stream: Int): Int = memory.level(stream, get(stream), min(stream), max(stream))
 
     /** The crew's choice: held, and set silently (no system volume panel), clamped to the stream's range. */
     fun set(stream: Int, index: Int) {
         val level = index.coerceIn(min(stream), max(stream))
-        memory.chose(stream, level)
+        memory.chose(stream, level, max(stream))
         write(stream, level)
     }
 
     /** Puts the held level back on [stream] if the device it now plays on has another. */
     fun restore(stream: Int) {
-        memory.restore(stream, get(stream))?.let { write(stream, it.coerceIn(min(stream), max(stream))) }
+        memory.restore(stream, get(stream), min(stream), max(stream))?.let { write(stream, it) }
     }
 
     /**
@@ -59,7 +60,9 @@ class CallVolume(context: Context) {
             VOLUME_CHANGED_ACTION -> memory.changed(
                 stream,
                 intent.getIntExtra(EXTRA_PREV_VOLUME_STREAM_VALUE, -1),
-                intent.getIntExtra(EXTRA_VOLUME_STREAM_VALUE, -1)
+                intent.getIntExtra(EXTRA_VOLUME_STREAM_VALUE, -1),
+                get(stream),
+                max(stream)
             )
             STREAM_DEVICES_CHANGED_ACTION -> restore(stream)
         }

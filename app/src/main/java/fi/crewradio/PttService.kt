@@ -146,7 +146,11 @@ class PttService : Service() {
      */
     private val restoreVolume = Runnable { callVolume.restore(callVolume.stream(engine.bluetoothHeadsetNow)) }
 
+    /** False from [onDestroy] on: a route change reported by its own teardown must not queue more restores. */
+    private var alive = false
+
     private fun routeChanged() {
+        if (!alive) return
         mainHandler.removeCallbacks(restoreVolume)
         mainHandler.postDelayed(restoreVolume, VOLUME_RESTORE_MS)
         mainHandler.postDelayed(restoreVolume, VOLUME_RESTORE_LATE_MS)
@@ -164,6 +168,7 @@ class PttService : Service() {
         // notification, screen closed) it puts the held level back on the earpiece.
         callVolume.restore(callVolume.stream(false))
         engine.onRouteChanged = { mainHandler.post { routeChanged() } }
+        alive = true
         createChannel()
         // Not deliverable to a manifest receiver, so it is registered for as long as the service lives.
         ContextCompat.registerReceiver(
@@ -193,6 +198,8 @@ class PttService : Service() {
     override fun onDestroy() {
         unregisterReceiver(restrictionsChanged)
         unregisterReceiver(volumeReceiver)
+        alive = false                   // before the disconnect below, whose route change would queue restores again
+        engine.onRouteChanged = null
         mainHandler.removeCallbacks(restoreVolume)
         session.shutdown()          // never shutdownNow: a teardown in flight must finish
         // Wait for it before disconnecting here: PttEngine.connect and disconnect are not
