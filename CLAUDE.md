@@ -234,7 +234,7 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   identity fresh per session. `ReticulumNode` (pure, tested over a fake medium) announces on connect
   and every 10 min; the lower destination hash dials, the other re-announces for a newcomer; a link
   carries hellos at once and audio only after `confirmPeer`; silent 12 s or unconfirmed 15 s =
-  closed; a full table (32 links, 64 peers) evicts the oldest unconfirmed link / stalest peer
+  closed; a full table (32 links, 64 peers) evicts the oldest unconfirmed link (else our oldest unanswered request) / stalest peer
   without a confirmed link, never a confirmed one (the name hash is public, so strangers can fill it);
   in the plugin, with Reticulum on and the LAN down, a node on Reticulum alone keeps the channel; `onFrame` returns packets rather than calling the engine (no engine call under its lock).
   `relayWithin` is false (every node links to every other; Reticulum does the multi-hop), so a

@@ -206,10 +206,20 @@ internal class ReticulumNode(
      * link. A link that has proved the key, and the peer behind it, is never the one to go.
      */
 
-    /** Closes the oldest unconfirmed link; false when every link is confirmed. */
+    /**
+     * Makes one slot: closes the oldest unconfirmed link, else drops the oldest request of ours
+     * still waiting for its proof (announces from strangers can fill the table with those just as
+     * well); false when every slot holds a confirmed link.
+     */
     private fun evictLink(): Boolean {
-        val victim = links.values.filter { !it.confirmed }.minByOrNull { it.createdAt } ?: return false
-        close(victim)
+        val victim = links.values.filter { !it.confirmed }.minByOrNull { it.createdAt }
+        if (victim != null) {
+            close(victim)
+            return true
+        }
+        val oldest = pending.entries.minByOrNull { it.value.sentAt } ?: return false
+        pending.remove(oldest.key)
+        peers[oldest.value.peer]?.let { it.dialAt = clock() + it.backoffMs; it.backoffMs = minOf(it.backoffMs * 2, 15_000) }
         return true
     }
 

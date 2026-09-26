@@ -146,12 +146,37 @@ class ReticulumNodeTest {
         assertTrue(newest in held)
         assertFalse("the oldest unconfirmed link made room", oldest in held)
         assertTrue(held.size <= ReticulumNode.MAX_LINKS && ids.isNotEmpty())
-        // Once every link has proved the key, a request is refused rather than evicting one.
+        // Once every link has proved the key, none of them is ever the one to go: a new request
+        // takes the slot of one of our own unanswered requests if there is one, else it is refused.
         for (e in me.entries()) me.confirm(e)
-        val count = me.entries().size
-        val refused = request()
-        assertFalse(refused in me.entries().map { it.key })
-        assertEquals(count, me.entries().size)
+        val confirmed = me.entries().map { it.key }.toSet()
+        repeat(ReticulumNode.MAX_LINKS + 1) { request() }
+        assertTrue(me.entries().map { it.key }.containsAll(confirmed))
+        assertTrue(me.entries().size <= ReticulumNode.MAX_LINKS)
+    }
+
+    @Test
+    fun requestsOfOursNobodyAnswersNeverLockTheCrewOut() {
+        val me = node("6666666666666666")
+        me.connected()
+        queue.clear()
+        // Strangers announcing under our name with destinations we are to dial: each costs a pending request of ours.
+        var dialled = 0
+        while (dialled < ReticulumNode.MAX_LINKS) {
+            val id = RnsIdentity.generate()
+            if (compare(me.destination, RnsIdentity.destinationHash(me.nameHash, id.hash)) > 0) continue   // it would dial us
+            now += 10
+            val (d, data) = RnsIdentity.buildAnnounce(id, me.nameHash, ByteArray(0), ByteArray(5), now / 1000)
+            me.onFrame(RnsPacket.encode(RnsPacket.ANNOUNCE, RnsPacket.SINGLE, d, data = data))
+            dialled++
+        }
+        queue.clear()                                     // nobody answers them
+        assertEquals(0, me.entries().size)
+        val target = RnsIdentity.parseAnnounce(RnsPacket.decode(RnsPacket.encode(RnsPacket.ANNOUNCE, RnsPacket.SINGLE, me.destination,
+            data = RnsIdentity.buildAnnounce(me.identity, me.nameHash).second))!!)!!
+        val crew = RnsLink.request(target, null)
+        me.onFrame(crew.raw)
+        assertEquals("the oldest unanswered request made room", listOf(crew.id.toHex()), me.entries().map { it.key })
     }
 
     private fun compare(x: ByteArray, y: ByteArray): Int {

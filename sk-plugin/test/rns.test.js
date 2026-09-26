@@ -438,3 +438,24 @@ test("transport: full tables make room for the crew by dropping what never prove
   assert.ok(me.peers.has(keptKey));
   me.stop();
 });
+
+test("transport: requests of ours that nobody answers never lock the crew out", async () => {
+  const medium = new Medium();
+  const me = new ReticulumTransport({ host: "h", port: 1, tag: "6666666666666666", connect: () => medium.connect() });
+  me.start();
+  await settle();
+  const { MAX_LINKS } = require("../lib/rns/transport");
+  let t = 1000;
+  while (me.pending.size < MAX_LINKS) {
+    const id = I.Identity.generate();
+    if (!me.weDial(I.destinationHash(me.nameHash, id.hash))) continue;          // it would dial us
+    const a = I.buildAnnounce(id, me.nameHash, Buffer.alloc(0), undefined, ++t);
+    me.onFrame(P.encode({ packetType: P.PacketType.ANNOUNCE, destType: P.DestType.SINGLE, destination: a.destination, data: a.data }));
+  }
+  assert.equal(me.links.size, 0);
+  const crew = L.requestLink({ destination: me.destination, sigPub: me.identity.sigPub });
+  me.onFrame(crew.raw);
+  assert.deepEqual([...me.links.keys()], [crew.id.toString("hex")], "the oldest unanswered request made room");
+  assert.equal(me.pending.size, MAX_LINKS - 1);
+  me.stop();
+});

@@ -300,12 +300,24 @@ class ReticulumTransport extends EventEmitter {
   // room - the link waiting longest without proving the key, the peer heard from longest ago
   // with no confirmed link - and a link that has proved the key is never the one to go.
 
-  /** Closes the oldest unconfirmed link; false when every link is confirmed. */
+  /**
+   * Makes one slot: closes the oldest unconfirmed link, else drops the oldest request of ours still
+   * waiting for its proof (strangers' announces can fill the table with those just as well); false
+   * when every slot holds a confirmed link.
+   */
   evictLink() {
     let victim = null;
     for (const e of this.links.values()) if (!e.confirmed && (!victim || e.createdAt < victim.createdAt)) victim = e;
-    if (!victim) return false;
-    this.close(victim);
+    if (victim) {
+      this.close(victim);
+      return true;
+    }
+    let oldest = null;
+    for (const [id, p] of this.pending) if (!oldest || p.sentAt < oldest[1].sentAt) oldest = [id, p];
+    if (!oldest) return false;
+    this.pending.delete(oldest[0]);
+    const peer = this.peers.get(oldest[1].peer);
+    if (peer) { peer.dialAt = this.now() + peer.backoffMs; peer.backoffMs = Math.min(peer.backoffMs * 2, 15_000); }
     return true;
   }
 
