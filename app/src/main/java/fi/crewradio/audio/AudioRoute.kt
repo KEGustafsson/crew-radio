@@ -57,6 +57,13 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
      */
     var onHeadsetChanged: (() -> Unit)? = null
 
+    /**
+     * Called (on the main thread) when the session starts or ends and whenever the device in use
+     * changes: the call volume is kept per device, so the owner puts the crew's level back on the
+     * new one (see `CallVolume`).
+     */
+    var onRouteChanged: (() -> Unit)? = null
+
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val handler = Handler(Looper.getMainLooper())
     @Volatile private var active = false
@@ -147,6 +154,7 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
             context.registerReceiver(scoReceiver, IntentFilter(ScoBroadcast.ACTION))
         }
         apply(announce = false)
+        handler.post { onRouteChanged?.invoke() }            // the mode changed even when the device did not
     }
 
     /**
@@ -158,6 +166,7 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
      */
     fun stop() {
         val hadBluetooth = synchronized(this) { teardown() } ?: return
+        handler.post { onRouteChanged?.invoke() }
         if (hadBluetooth) onBluetoothHeadset?.invoke(false)
     }
 
@@ -273,6 +282,7 @@ class AudioRoute(private val context: Context, private val onStatus: (String) ->
                 current = before
             }
             if (announce && current != before) onStatus(context.getString(R.string.status_audio, current))
+            if (current != before) handler.post { onRouteChanged?.invoke() }
         }
         routed(applied, applied && bluetooth)
     }

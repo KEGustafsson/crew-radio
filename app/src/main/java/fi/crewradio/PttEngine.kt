@@ -206,6 +206,9 @@ class PttEngine(
     /** Told when the engine starts or stops watching the ear; the service darkens the screen at the ear meanwhile. */
     @Volatile var onEarWatch: ((Boolean) -> Unit)? = null
 
+    /** Told when the audio route changed (session start and end included); the service puts the call volume back on it. */
+    @Volatile var onRouteChanged: (() -> Unit)? = null
+
     private fun watchProximity(on: Boolean) {
         val s = sensors.getDefaultSensor(android.hardware.Sensor.TYPE_PROXIMITY)?.takeIf { useProximity }
         sensors.unregisterListener(proximity)                          // harmless when it is not registered
@@ -394,7 +397,11 @@ class PttEngine(
             syncMonitorLater()
         }
         override fun onAudioRoute(label: String) {
-            if (label != route.current) { route.current = label; onStatus(str(R.string.status_audio, label)) }
+            if (label != route.current) {
+                route.current = label
+                onStatus(str(R.string.status_audio, label))
+                onRouteChanged?.invoke()
+            }
         }
     }
 
@@ -413,6 +420,7 @@ class PttEngine(
     init {
         route.onBluetoothHeadset = { present -> syncCall(present) }
         route.onHeadsetChanged = { syncMonitorLater() }
+        route.onRouteChanged = { onRouteChanged?.invoke() }
     }
 
     /**

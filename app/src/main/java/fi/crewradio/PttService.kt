@@ -21,6 +21,7 @@ import android.net.wifi.WifiManager
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.view.KeyEvent
+import fi.crewradio.audio.CallVolume
 import fi.crewradio.audio.Tones
 import android.os.Binder
 import android.os.Build
@@ -129,18 +130,52 @@ class PttService : Service() {
         }
     }
 
+    /**
+     * The call volume, kept at the crew's level on every device the stream plays on (see
+     * [CallVolume]). The service lives while the screen is up or the phone is on channel, which is
+     * every moment the route can change or the slider be seen.
+     */
+    private lateinit var callVolume: CallVolume
+    private val volumeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) { callVolume.heard(intent) }
+    }
+
+    /**
+     * Put back twice after the route changed: the platform switches devices on a thread of its own,
+     * so a read at once can still see the old one. Setting the level it already has does nothing.
+     */
+    private val restoreVolume = Runnable { callVolume.restore(callVolume.stream(engine.bluetoothHeadsetNow)) }
+
+    private fun routeChanged() {
+        mainHandler.removeCallbacks(restoreVolume)
+        mainHandler.postDelayed(restoreVolume, VOLUME_RESTORE_MS)
+        mainHandler.postDelayed(restoreVolume, VOLUME_RESTORE_LATE_MS)
+    }
+
     /** Creates the engine and the notification channel; the engine lives as long as the service. */
     override fun onCreate() {
         super.onCreate()
         lastStatus = getString(R.string.status_not_connected)
         engine = PttEngine(this, ::onStatus, ::onRoster)
         engine.onEarWatch = { on -> mainHandler.post { earWatch(on) } }
+        callVolume = CallVolume(this)
+        // Off channel here. The first time in this process this holds the level the stream has, before
+        // any join moves it; after a session that ended with the service (Disconnect from the
+        // notification, screen closed) it puts the held level back on the earpiece.
+        callVolume.restore(callVolume.stream(false))
+        engine.onRouteChanged = { mainHandler.post { routeChanged() } }
         createChannel()
         // Not deliverable to a manifest receiver, so it is registered for as long as the service lives.
         ContextCompat.registerReceiver(
             this, restrictionsChanged,
             IntentFilter(Intent.ACTION_APPLICATION_RESTRICTIONS_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        // Protected system broadcasts: only the system can send them, so exporting the receiver exposes nothing.
+        ContextCompat.registerReceiver(
+            this, volumeReceiver,
+            IntentFilter(CallVolume.VOLUME_CHANGED_ACTION).apply { addAction(CallVolume.STREAM_DEVICES_CHANGED_ACTION) },
+            ContextCompat.RECEIVER_EXPORTED
         )
     }
 
@@ -157,6 +192,8 @@ class PttService : Service() {
     /** Last line of defence: tear the session down if the system destroys the service. */
     override fun onDestroy() {
         unregisterReceiver(restrictionsChanged)
+        unregisterReceiver(volumeReceiver)
+        mainHandler.removeCallbacks(restoreVolume)
         session.shutdown()          // never shutdownNow: a teardown in flight must finish
         // Wait for it before disconnecting here: PttEngine.connect and disconnect are not
         // synchronized, so a join still running on the session thread and this call would be two
@@ -168,6 +205,7 @@ class PttService : Service() {
             Thread.currentThread().interrupt(); false
         }
         if (done) engine.disconnect()
+        callVolume.restore(callVolume.stream(false))    // the delayed one may never run; onCreate puts it back again if not settled yet
         stopHardwareButtons()       // a session left holding the volume keys would outlive us
         releaseLocks()
         if (done) engine.shutdown() // its threads; a session thread still inside it keeps them
@@ -629,6 +667,9 @@ class PttService : Service() {
 
         /** How long onDestroy waits for the session thread before leaving the engine to it. */
         private const val SHUTDOWN_WAIT_MS = 2_000L
+        /** When the call volume is put back after a route change: soon, and again once the platform has surely switched. */
+        private const val VOLUME_RESTORE_MS = 300L
+        private const val VOLUME_RESTORE_LATE_MS = 1_200L
         const val ACTION_DISCONNECT = "fi.crewradio.action.DISCONNECT"
         private const val CHANNEL_ID = "ptt"
         private const val NOTIFICATION_ID = 1
