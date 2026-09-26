@@ -588,35 +588,43 @@ class FakeRns extends EventEmitter {
   confirm() {}
 }
 
-test("Reticulum: off by default; when enabled it starts with the channel's tag, carries our packets, shows in the status and stops with the plugin", async () => {
+test("Reticulum: off by default; when enabled it starts with the channel's tag and key proof key, carries our packets, shows in the status and stops with the plugin", async () => {
   FakeRns.last = undefined;
+  FakeLink.last = undefined;
   const app = fakeApp();
   const off = plugin(app, { ...deps, Reticulum: FakeRns });
-  off.start({ channelKey: KEY });
-  await until(() => FakeLink.last && FakeLink.last.sent.length > 0);
-  assert.equal(FakeRns.last, undefined, "not enabled, not made");
-  off.stop();
-
   const p = plugin(app, { ...deps, Reticulum: FakeRns });
-  p.start({ channelKey: KEY, reticulum: { enabled: true, host: "hub.example", port: 4965 } });
-  await until(() => FakeRns.last && FakeRns.last.sent.length > 0);
-  const r = FakeRns.last;
-  assert.deepEqual(r.opts, { host: "hub.example", port: 4965, tag: crypto.reticulumTag });
-  assert.equal(r.started, 1);
-  assert.match(app.status.at(-1), /Reticulum down/);
-  r.ready = true;
-  r.linkCount = 2;
-  r.emit("status", "Reticulum: 2 links");
-  assert.match(app.status.at(-1), /Reticulum 2 links/);
-  assert.ok(app.log.includes("Reticulum: 2 links"));
-  r.emit("status", "Reticulum: 2 links");
-  const router = fakeRouter(true);
-  p.registerWithRouter(router);
-  const res = fakeRes();
-  router.routes["GET /status"]({}, res);
-  assert.deepEqual(res.body.reticulum, { host: "hub.example", port: 4965, connected: true, links: 2, status: "Reticulum: 2 links" });
-  p.stop();
-  assert.equal(r.stopped, 1);
+  try {
+    off.start({ channelKey: KEY });
+    await until(() => FakeLink.last && FakeLink.last.sent.length > 0);   // this plugin's own link, not a leftover
+    assert.equal(FakeRns.last, undefined, "not enabled, not made");
+    off.stop();
+
+    p.start({ channelKey: KEY, reticulum: { enabled: true, host: "hub.example", port: 4965 } });
+    await until(() => FakeRns.last && FakeRns.last.sent.length > 0);
+    const r = FakeRns.last;
+    assert.deepEqual(r.opts, { host: "hub.example", port: 4965, tag: crypto.reticulumTag, confirmKey: crypto.reticulumConfirmKey });
+    assert.equal(r.started, 1);
+    assert.match(app.status.at(-1), /Reticulum down/);
+    r.ready = true;
+    r.linkCount = 2;
+    r.emit("status", "Reticulum: 2 links");
+    assert.match(app.status.at(-1), /Reticulum 2 links/);
+    assert.ok(app.log.includes("Reticulum: 2 links"));
+    const logged = app.log.length;
+    r.emit("status", "Reticulum: 2 links");
+    assert.equal(app.log.length, logged, "the same line again is not logged again");
+    const router = fakeRouter(true);
+    p.registerWithRouter(router);
+    const res = fakeRes();
+    router.routes["GET /status"]({}, res);
+    assert.deepEqual(res.body.reticulum, { host: "hub.example", port: 4965, connected: true, links: 2, status: "Reticulum: 2 links" });
+    p.stop();
+    assert.equal(r.stopped, 1);
+  } finally {
+    off.stop();
+    p.stop();
+  }
 });
 
 test("Reticulum settings: defaults, a bad port falls back and is named, and the schema offers them", () => {
@@ -643,10 +651,10 @@ test("Reticulum: with the LAN down the channel runs on Reticulum alone, and move
     assert.ok(app.errors.some((e) => /no usable IPv4 interface/.test(e)));
     assert.match(app.status.at(-1), /LAN down/);
     assert.equal(P.parseHeader(r.accepted[0]).codec, P.Codec.HELLO, "our hellos go out over Reticulum while the LAN retries");
-    const before = r.sent.length;
     const firstLink = FakeLink.last;
-    await until(() => FakeLink.last !== firstLink, 2500);        // a retry failed too; the Reticulum node is not rebuilt for it
-    assert.ok(r.sent.length >= before);
+    await until(() => FakeLink.last !== firstLink, 2500);        // a retry failed too; the Reticulum transport is not rebuilt for it
+    assert.equal(FakeRns.last, r);
+    assert.equal(r.stopped, 0);
     FakeLink.failOpen = false;
     await until(() => FakeLink.last && !FakeLink.last.closed && FakeLink.last.sent.length > 0, 6000);
     assert.doesNotMatch(app.status.at(-1), /LAN down/);

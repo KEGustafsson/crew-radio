@@ -42,7 +42,7 @@ class ChannelNode extends EventEmitter {
    * @param {number} [opts.silenceMs=4000]  a node silent this long is dropped from the roster
    * @param {number} [opts.talkingMs=400]   audio within this long ago means "talking"
    * @param {ReplayGuard} [opts.guard]      the replay state; pass one guard across link reopens
-   * @param {object} [opts.rns]              a second transport (send(buf, except), confirm(via), ready, 'packet')
+   * @param {object} [opts.rns]              a second transport (send(buf, except), ready, 'packet')
    * @param {boolean} [opts.relay=true]      forward between the link and `rns`
    * @param {() => number} [opts.now]       milliseconds; also the clock the packets' `time` is checked against
    */
@@ -256,7 +256,6 @@ class ChannelNode extends EventEmitter {
     // touch the stale counter.
     const plain = this.crypto.open(P.aadOf(buf), buf.subarray(P.HEADER));
     if (!plain) { this.stats.rejected++; this.limiter.allowJunk(); return; }
-    if (via) this.rns?.confirm(via);                 // the far end of that link holds the key
     const now = this.now();
     if (!P.isFresh(h.time, Math.floor(now / 1000))) { this.stale(now); return; }
     const verdict = this.guard.admit(h.senderId, h.seq, h.codec === P.Codec.HELLO ? "hello" : "audio");
@@ -319,9 +318,8 @@ class ChannelNode extends EventEmitter {
     if (ttl === 0) return;
     const copy = Buffer.from(buf);
     copy[4] = ttl;
-    if (via) this.link.send(copy, this.unicastTargets());
-    else this.rns.send(copy);
-    this.stats.relayed++;
+    const sent = via ? this.link.send(copy, this.unicastTargets()) : this.rns.send(copy);
+    if (sent !== false) this.stats.relayed++;           // a Reticulum with no confirmed link took nothing
   }
 
   /** Counts a stale packet and reports the count at most once per 30 s. */

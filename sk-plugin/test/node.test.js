@@ -306,9 +306,7 @@ function fakeRns(ready = true) {
   const r = new EventEmitter();
   r.ready = ready;
   r.sent = [];
-  r.confirmed = [];
   r.send = (buf, except) => { r.sent.push({ buf: Buffer.from(buf), except }); return true; };
-  r.confirm = (via) => r.confirmed.push(via);
   return r;
 }
 
@@ -332,24 +330,26 @@ test("with Reticulum: our packets go both ways, the hello says so, and the node 
   assert.equal(P.parseHeader(rns.sent[1].buf).ttl, 3);
   assert.equal(n.stats.relayed, 1);
 
-  // From Reticulum to the LAN, with the unicast copies; the link is confirmed as holding the key.
+  // From Reticulum to the LAN, with the unicast copies.
   const via = { key: "link" };
   const fromRns = packet({ senderId: 12, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60, 4) });
   rns.emit("packet", fromRns, via);
-  assert.deepEqual(rns.confirmed, [via]);
   const relayed = lan.sent.at(-1);
   assert.equal(P.parseHeader(relayed.buf).ttl, 3);
   assert.deepEqual(relayed.targets, ["10.0.0.7"]);
   assert.equal(rns.sent.length, 2, "nothing goes back into Reticulum");
 
-  // A packet at the end of its budget is heard but not relayed; a forgery confirms nothing.
+  // A packet at the end of its budget is heard but not relayed; a forgery is not heard at all.
   rns.emit("packet", packet({ senderId: 13, seq: 1, codec: P.Codec.OPUS, ttl: 1, payload: Buffer.alloc(60) }), via);
   assert.equal(n.stats.relayed, 2);
   const forged = Buffer.from(fromRns);
   forged[forged.length - 1] ^= 1;
   rns.emit("packet", forged, { key: "stranger" });
-  assert.equal(rns.confirmed.length, 2);
   assert.equal(n.roster().length, 3);
+  // A Reticulum with no confirmed link takes nothing, and that is not counted as relayed.
+  rns.send = () => false;
+  lan.emit("packet", packet({ senderId: 14, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60, 5) }), { address: "10.0.0.8" });
+  assert.equal(n.stats.relayed, 2);
   n.stop();
   assert.equal(rns.listenerCount("packet"), 0);
 });

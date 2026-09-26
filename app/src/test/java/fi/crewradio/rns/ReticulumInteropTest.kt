@@ -28,13 +28,12 @@ class ReticulumInteropTest {
         socket.connect(InetSocketAddress(host, port), 5000)
         socket.soTimeout = 200
         val out = socket.getOutputStream()
-        val node = ReticulumNode(TestKeys.crypto.reticulumTag, write = { raw -> synchronized(out) { out.write(RnsPacket.frame(raw)); out.flush() } })
+        val node = ReticulumNode(TestKeys.crypto.reticulumTag, TestKeys.crypto.reticulumConfirmKey, write = { raw -> synchronized(out) { out.write(RnsPacket.frame(raw)); out.flush() } })
         var heard: String? = null
         val deframer = RnsPacket.Deframer { raw ->
             for ((packet, via) in node.onFrame(raw)) {
                 val h = Packet.parse(packet) ?: continue
                 val plain = TestKeys.crypto.open(Packet.aadOf(packet), packet, Packet.HEADER, packet.size - Packet.HEADER) ?: continue
-                node.confirm(via)
                 if (h.codec == Packet.Codec.HELLO) heard = Hello.decode(plain, 0, plain.size)?.name
             }
         }

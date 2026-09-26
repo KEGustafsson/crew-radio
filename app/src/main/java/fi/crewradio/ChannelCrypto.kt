@@ -79,8 +79,9 @@ class ChannelCrypto(private val key: SecretKeySpec) {
     /**
      * The channel's Reticulum destination aspect: the first 8 bytes of HMAC-SHA256(packet key,
      * "CrewRadio reticulum v1") in lower-case hex. Our destination is `crewradio.channel.<tag>`,
-     * so without the key nobody can tell which channel an announce belongs to. The plugin's
-     * ChannelCrypto.reticulumTag is the same.
+     * so without the key nobody can work out the tag. The name hash itself is in clear in every
+     * announce, so anyone may announce or link under it: a link carries nothing until its far end
+     * has proved the key ([reticulumConfirmKey]). The plugin's ChannelCrypto.reticulumTag is the same.
      */
     val reticulumTag: String by lazy {
         hmac(RETICULUM_LABEL.toByteArray(StandardCharsets.US_ASCII)).copyOf(8).joinToString("") { b ->
@@ -88,6 +89,15 @@ class ChannelCrypto(private val key: SecretKeySpec) {
             "${HEX[v ushr 4]}${HEX[v and 15]}"
         }
     }
+
+    /**
+     * The key of each Reticulum link's key proof: HMAC-SHA256(packet key, "CrewRadio reticulum
+     * confirm v1"). The proof on a link is an HMAC of its role and link id under this key
+     * ([fi.crewradio.rns.Carry.keyProof]), so it cannot be copied to another link nor sent back to
+     * its maker. The plugin's reticulumConfirmKey is the same.
+     */
+    val reticulumConfirmKey: ByteArray get() = confirmKey.copyOf()
+    private val confirmKey: ByteArray by lazy { hmac(RETICULUM_CONFIRM_LABEL.toByteArray(StandardCharsets.US_ASCII)) }
 
     private fun hmac(data: ByteArray): ByteArray =
         Mac.getInstance(HMAC).run { init(SecretKeySpec(key.encoded, HMAC)); doFinal(data) }
@@ -105,6 +115,7 @@ class ChannelCrypto(private val key: SecretKeySpec) {
         private const val AWARE_LABEL = "CrewRadio aware v4"
         private const val AWARE_ID_LABEL = "CrewRadio aware id v4"
         private const val RETICULUM_LABEL = "CrewRadio reticulum v1"
+        private const val RETICULUM_CONFIRM_LABEL = "CrewRadio reticulum confirm v1"
         private const val HEX = "0123456789abcdef"
         private val SALT = "CrewRadio channel key v4".toByteArray(StandardCharsets.US_ASCII)
         private val random = SecureRandom()

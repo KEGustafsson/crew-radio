@@ -13,9 +13,13 @@
  *    whose destination hash sorts lower dials; the other, on hearing a node it did not know,
  *    announces again soon so the newcomer learns of it and dials. One link per pair.
  *  - Links, not group destinations: Reticulum does not carry group packets over more than one
- *    hop. A link carries hellos from the start and everything else once the far end has sent a
- *    packet that opened with the channel key (confirm()), so a stranger who copies our public
- *    name hash and links in learns nothing but that we exist.
+ *    hop. A link carries nothing but the two ends' key proofs until the far end's has checked out
+ *    (an HMAC of its role and the link id under a key from the packet key, carry.js), so a
+ *    stranger who copies our public name hash and links in learns nothing but that we exist, and
+ *    a sealed packet copied from elsewhere proves nothing.
+ *  - Floods: the checks that cost a signature (an announce under our name, a link request to us)
+ *    come out of a small budget first, and a link younger than GRACE_MS is never evicted, so a
+ *    stranger cannot burn our CPU or push a crew link out before it has had time to prove itself.
  *  - Relaying: none within this transport. Every node links to every other, and Reticulum's own
  *    transport nodes do the multi-hop part; the engine relays between this and the LAN.
  *
@@ -34,17 +38,22 @@ const ANNOUNCE_MS = 10 * 60_000;       // re-announce: keeps our path fresh on t
 const REANNOUNCE_MS = 3_000;           // answer to a newcomer, at most this often
 const LINK_TIMEOUT_MS = 10_000;        // a request unproven this long is given up
 const STALE_MS = 12_000;               // a link silent this long is dead (the engine sends a hello every second)
-const CONFIRM_MS = 15_000;             // a link that has sent nothing sealed with the channel key by then is closed
+const CONFIRM_MS = 15_000;             // a link whose far end has not proved the key by then is closed
+const PROOF_RESEND_MS = 2_000;         // our proof again, while the far end's has not arrived
+const GRACE_MS = 5_000;                // a link or request younger than this is never evicted
+const STABLE_MS = 30_000;              // a connection that lasted this long resets the backoff
+const GATE_PER_S = 10;                 // announce checks and link requests we spend a signature on, a second
+const GATE_BURST = 20;
 const PEER_FORGET_MS = 3 * ANNOUNCE_MS;
 const MAX_LINKS = 32;
 const MAX_PEERS = 64;
-const HELLO_CODEC = 2;
 
 class ReticulumTransport extends EventEmitter {
   /**
    * @param {object} o
    * @param {string} o.host  @param {number} o.port   the transport node's TCP interface
    * @param {string} o.tag   hex tag from the packet key: the channel's destination aspect
+   * @param {Buffer} o.confirmKey  the key of each link's key proof (ChannelCrypto.reticulumConfirmKey)
    * @param {(host: string, port: number) => import('node:net').Socket} [o.connect]
    * @param {() => number} [o.now]
    * @param {I.Identity} [o.identity]
@@ -58,7 +67,11 @@ class ReticulumTransport extends EventEmitter {
     this.identity = o.identity ?? I.Identity.generate();
     this.nameHash = I.nameHash(`crewradio.channel.${o.tag}`);
     this.destination = I.destinationHash(this.nameHash, this.identity.hash);
+    if (!Buffer.isBuffer(o.confirmKey) || o.confirmKey.length !== 32) throw new Error("confirmKey must be 32 bytes");
+    this.confirmKey = o.confirmKey;
     this.budget = new PeerBudget({ now: () => this.now(), perSecond: 400, burst: 800 });
+    this.gate = new PeerBudget({ now: () => this.now(), perSecond: GATE_PER_S, burst: GATE_BURST });
+    this.connectedAt = 0;
     this.sock = null;
     this.running = false;
     this.connected = false;
@@ -102,33 +115,24 @@ class ReticulumTransport extends EventEmitter {
     this.drop();
   }
 
-  /** Links that carry channel traffic now. */
+  /** Links that carry channel traffic now: up, and their far end has proved the key. */
   get linkCount() {
     let n = 0;
-    for (const e of this.links.values()) if (e.link.active) n++;
+    for (const e of this.links.values()) if (e.link.active && e.confirmed) n++;
     return n;
   }
 
-  /**
-   * Sends a sealed channel packet on every active link but `except`; hellos go to links not yet
-   * confirmed as well, so that each end can prove it holds the key. True when it went anywhere.
-   */
+  /** Sends a sealed channel packet on every confirmed link but `except`. True when it went anywhere. */
   send(buf, except = null) {
     if (!this.connected) return false;
-    const hello = buf.length > 3 && buf[3] === HELLO_CODEC;
     let sent = false;
     for (const e of this.links.values()) {
-      if (e === except || !e.link.active || (!e.confirmed && !hello)) continue;
+      if (e === except || !e.link.active || !e.confirmed) continue;
       for (const part of Carry.cut(buf, e.cutId++ & 0xff)) this.write(e.link.dataPacket(part));
       sent = true;
     }
     if (sent) this.stats.tx++;
     return sent;
-  }
-
-  /** Called by the engine once a packet from `via` opened with the channel key. */
-  confirm(via) {
-    if (via && this.links.get(via.key) === via) via.confirmed = true;
   }
 
   // ---- connection ----
@@ -145,10 +149,13 @@ class ReticulumTransport extends EventEmitter {
     this.sock = s;
     const deframer = new P.Deframer((raw) => this.onFrame(raw));
     s.setNoDelay?.(true);
+    // A connection that dies without a word (a marina uplink gone, a NAT mapping dropped) is
+    // noticed in seconds rather than after TCP's quarter of an hour of retransmissions.
+    s.setKeepAlive?.(true, 10_000);
     s.on("connect", () => {
       if (this.sock !== s) return;
       this.connected = true;
-      this.backoffMs = 1000;
+      this.connectedAt = this.now();
       this.emit("state", true);
       this.status(`Reticulum: connected to ${this.host}:${this.port}`);
       this.announce();
@@ -160,6 +167,9 @@ class ReticulumTransport extends EventEmitter {
 
   lost(why) {
     const was = this.connected;
+    // Only a connection that held resets the backoff: one that is accepted and dropped at once
+    // (a proxy with nothing behind it, rnsd restarting) must not be redialled every second.
+    if (was && this.now() - this.connectedAt >= STABLE_MS) this.backoffMs = 1000;
     this.drop();
     if (was) this.emit("state", false);
     if (!this.running) return;
@@ -213,6 +223,7 @@ class ReticulumTransport extends EventEmitter {
     if (p.destType !== P.DestType.SINGLE || p.data.length < I.ANNOUNCE_MIN) return;
     if (!p.data.subarray(I.PUBLIC_BYTES, I.PUBLIC_BYTES + I.NAME_HASH_BYTES).equals(this.nameHash)) return;   // not our channel: no signature check spent
     if (p.destination.equals(this.destination)) return;                                                          // our own, echoed back
+    if (!this.gate.allow("announce")) return;                                                                     // a flood under our public name: no signature check for it
     const key = p.destination.toString("hex");
     let peer = this.peers.get(key);
     const a = I.parseAnnounce(p);
@@ -244,6 +255,7 @@ class ReticulumTransport extends EventEmitter {
     if (p.destType !== P.DestType.SINGLE || !p.destination.equals(this.destination)) return;
     const id = L.linkIdOf(p.raw, p.data.length).toString("hex");
     if (this.links.has(id)) return;                                     // a copy of one we already answered
+    if (!this.gate.allow("request")) return;                            // a flood of requests: no key agreement for it
     const r = L.acceptLink(this.identity, p);
     if (!r) return;                                                     // only a request a link can come of may cost another its slot
     if (this.links.size + this.pending.size >= MAX_LINKS && !this.evictLink()) return;
@@ -263,6 +275,7 @@ class ReticulumTransport extends EventEmitter {
     const e = this.addLink(link, pend.peer);
     if (peer) { peer.link = e; peer.backoffMs = 1000; }
     this.write(link.rttPacket((this.now() - pend.sentAt) / 1000));
+    this.sendProof(e);                                                  // after the RTT, which makes it active at the far end
   }
 
   onData(p) {
@@ -273,15 +286,35 @@ class ReticulumTransport extends EventEmitter {
     const r = e.link.handle(p);
     if (!r) return;
     e.lastIn = this.now();
-    if (!wasActive && e.link.active) this.linksChanged();
+    if (!wasActive && e.link.active) this.sendProof(e);                // the far end's RTT: the link is up on our side too
     if (r.kind === "keepalive" && r.reply) this.write(r.reply);
     else if (r.kind === "close") this.forget(e);
     else if (r.kind === "data") {
+      if (Carry.isKeyProof(r.plain)) return this.onKeyProof(e, r.plain);
+      if (!e.confirmed) return;                                          // nothing counts before the far end has proved the key
       const packet = e.joiner.push(r.plain);
       if (!packet || !this.budget.allow(e.key)) return;
       this.stats.rx++;
       this.emit("packet", packet, e);
     }
+  }
+
+  /** The far end's key proof: the link is confirmed, and ours goes again if it seems to have missed it. */
+  onKeyProof(e, payload) {
+    if (!e.link.active || !Carry.proofMatches(payload, this.confirmKey, e.link.id, !e.link.initiator)) return;
+    if (e.confirmed) {
+      // It keeps sending its proof, so it has not had ours: once a second at most, again.
+      if (this.now() - e.proofAt >= 1000) this.sendProof(e);
+      return;
+    }
+    e.confirmed = true;
+    this.linksChanged();
+  }
+
+  sendProof(e) {
+    if (!e.link.active) return;
+    this.write(e.link.dataPacket(Carry.keyProof(this.confirmKey, e.link.id, e.link.initiator)));
+    e.proofAt = this.now();
   }
 
   // ---- links ----
@@ -298,22 +331,27 @@ class ReticulumTransport extends EventEmitter {
   // Our name hash is public: anyone can announce under it or link to us, and with a hard cap
   // alone a stranger who filled the tables first would keep the crew out. So a full table makes
   // room - the link waiting longest without proving the key, the peer heard from longest ago
-  // with no confirmed link - and a link that has proved the key is never the one to go.
+  // with no confirmed link - and a link that has proved the key is never the one to go. Nor is
+  // one younger than GRACE_MS: a crew link needs a round trip to prove itself, and a flood of
+  // requests would otherwise push every new one out before it could.
 
   /**
-   * Makes one slot: closes the oldest unconfirmed link, else drops the oldest request of ours still
-   * waiting for its proof (strangers' announces can fill the table with those just as well); false
-   * when every slot holds a confirmed link.
+   * Makes one slot: closes the oldest unconfirmed link past its grace, else drops the oldest
+   * request of ours past it (strangers' announces can fill the table with those just as well);
+   * false when there is neither.
    */
   evictLink() {
+    const now = this.now();
     let victim = null;
-    for (const e of this.links.values()) if (!e.confirmed && (!victim || e.createdAt < victim.createdAt)) victim = e;
+    for (const e of this.links.values()) {
+      if (!e.confirmed && now - e.createdAt >= GRACE_MS && (!victim || e.createdAt < victim.createdAt)) victim = e;
+    }
     if (victim) {
       this.close(victim);
       return true;
     }
     let oldest = null;
-    for (const [id, p] of this.pending) if (!oldest || p.sentAt < oldest[1].sentAt) oldest = [id, p];
+    for (const [id, p] of this.pending) if (now - p.sentAt >= GRACE_MS && (!oldest || p.sentAt < oldest[1].sentAt)) oldest = [id, p];
     if (!oldest) return false;
     this.pending.delete(oldest[0]);
     const peer = this.peers.get(oldest[1].peer);
@@ -345,10 +383,9 @@ class ReticulumTransport extends EventEmitter {
   }
 
   addLink(link, peerKey) {
-    const e = { key: link.id.toString("hex"), link, peer: peerKey, createdAt: this.now(), lastIn: this.now(), confirmed: false, joiner: new Carry.Joiner(), cutId: 0 };
+    const e = { key: link.id.toString("hex"), link, peer: peerKey, createdAt: this.now(), lastIn: this.now(), confirmed: false, proofAt: 0, joiner: new Carry.Joiner(), cutId: 0 };
     this.links.set(e.key, e);
     this.stats.linksUp++;
-    if (link.active) this.linksChanged();
     return e;
   }
 
@@ -361,8 +398,11 @@ class ReticulumTransport extends EventEmitter {
     if (this.links.get(e.key) !== e) return;
     this.links.delete(e.key);
     this.stats.linksDropped++;
-    if (e.link.active) this.linksChanged();
+    if (e.link.active && e.confirmed) this.linksChanged();
     const peer = e.peer ? this.peers.get(e.peer) : null;
+    // A peer we just had a link with is fresher than its last announce says: a flood of strangers'
+    // announces must not make it the stalest, and forget it, the moment its link drops.
+    if (peer) peer.seenAt = Math.max(peer.seenAt, e.lastIn);
     if (peer && peer.link === e) {
       peer.link = null;
       peer.dialAt = this.now() + peer.backoffMs;
@@ -394,7 +434,8 @@ class ReticulumTransport extends EventEmitter {
       if (peer) { peer.dialAt = now + peer.backoffMs; peer.backoffMs = Math.min(peer.backoffMs * 2, 15_000); }
     }
     for (const e of [...this.links.values()]) {
-      if (now - e.lastIn > STALE_MS || (!e.confirmed && now - e.createdAt > CONFIRM_MS)) this.close(e);
+      if (now - e.lastIn > STALE_MS || (!e.confirmed && now - e.createdAt > CONFIRM_MS)) { this.close(e); continue; }
+      if (!e.confirmed && e.link.active && now - e.proofAt >= PROOF_RESEND_MS) this.sendProof(e);
     }
     for (const [key, peer] of this.peers) {
       if (!peer.link && now - peer.seenAt > PEER_FORGET_MS) { this.peers.delete(key); continue; }
@@ -404,4 +445,4 @@ class ReticulumTransport extends EventEmitter {
   }
 }
 
-module.exports = { ReticulumTransport, ANNOUNCE_MS, REANNOUNCE_MS, LINK_TIMEOUT_MS, STALE_MS, CONFIRM_MS, MAX_LINKS, MAX_PEERS };
+module.exports = { ReticulumTransport, ANNOUNCE_MS, REANNOUNCE_MS, LINK_TIMEOUT_MS, STALE_MS, CONFIRM_MS, GRACE_MS, STABLE_MS, GATE_BURST, MAX_LINKS, MAX_PEERS };

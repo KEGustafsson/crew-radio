@@ -9,17 +9,43 @@
  *
  *   whole:  0x01 | packet
  *   part:   count (2-3) | index (0..count-1) | id u8 | bytes
+ *   proof:  0x80 | HMAC-SHA256(confirm key, role | link id)   (32 bytes; role 1 = the end that dialled)
+ *
+ * The proof is how a link is confirmed: each end sends its own as soon as the link is up, and
+ * nothing else goes either way until the far end's has checked out. It is bound to the link id
+ * (fresh keys on every link) and to the sender's role, so a proof seen on one link is worthless on
+ * any other and cannot be echoed back to the end that made it; a sealed channel packet, which
+ * anyone can copy from anywhere, proves nothing about the link it arrives on.
  *
  * Parts are sent in order on one link and reassembled only in order: a missing or reordered part
  * drops that packet (it is 20 ms of audio, and the mixer conceals it), never the ones after it.
  * The same format as the app's fi.crewradio.rns.Carry.
  */
 
+const crypto = require("node:crypto");
 const { MDU } = require("./link");
 
 const WHOLE = 1;
 const MAX_PARTS = 3;
 const PART_HEAD = 3;
+const KEYPROOF = 0x80;
+const PROOF_BYTES = 32;
+
+/** The key proof the end in `initiator`'s role sends on the link `linkId`. */
+function keyProof(confirmKey, linkId, initiator) {
+  const mac = crypto.createHmac("sha256", confirmKey).update(Buffer.from([initiator ? 1 : 0])).update(linkId).digest();
+  return Buffer.concat([Buffer.from([KEYPROOF]), mac]);
+}
+
+/** True when `payload` is a key proof frame, whatever it proves. */
+function isKeyProof(payload) {
+  return Buffer.isBuffer(payload) && payload.length === 1 + PROOF_BYTES && payload[0] === KEYPROOF;
+}
+
+/** True when `payload` is the far end's proof for this link: made in `initiator`'s role (compared in constant time). */
+function proofMatches(payload, confirmKey, linkId, initiator) {
+  return isKeyProof(payload) && crypto.timingSafeEqual(payload, keyProof(confirmKey, linkId, initiator));
+}
 
 /** The link payloads for one packet. `id` names its parts; the caller counts it per link. */
 function cut(packet, id) {
@@ -62,4 +88,4 @@ class Joiner {
   }
 }
 
-module.exports = { cut, Joiner, WHOLE, MAX_PARTS, PART_HEAD };
+module.exports = { cut, Joiner, WHOLE, MAX_PARTS, PART_HEAD, KEYPROOF, keyProof, isKeyProof, proofMatches };

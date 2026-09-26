@@ -20,6 +20,7 @@ const OVERHEAD = NONCE_BYTES + TAG_BYTES;
 const ITERATIONS = 600_000;
 const SALT = Buffer.from("CrewRadio channel key v4", "utf8");
 const RETICULUM_LABEL = Buffer.from("CrewRadio reticulum v1", "ascii");
+const RETICULUM_CONFIRM_LABEL = Buffer.from("CrewRadio reticulum confirm v1", "ascii");
 
 const derived = new Map();   // channel key -> 32-byte key, for the process lifetime
 
@@ -76,11 +77,22 @@ class ChannelCrypto {
   /**
    * The channel's Reticulum destination aspect: the first 8 bytes of HMAC-SHA256(packet key,
    * "CrewRadio reticulum v1") in lower-case hex, as the app's ChannelCrypto.reticulumTag. Our
-   * destination is `crewradio.channel.<tag>`; without the key nobody can tell which channel an
-   * announce belongs to, nor make one that a crew member dials.
+   * destination is `crewradio.channel.<tag>`; without the key nobody can work out the tag. The
+   * name hash itself is in clear in every announce, so anyone may copy it and announce or link
+   * under it: a link carries nothing until its far end has proved the key ([reticulumConfirmKey]).
    */
   get reticulumTag() {
     return crypto.createHmac("sha256", this.key).update(RETICULUM_LABEL).digest().subarray(0, 8).toString("hex");
+  }
+
+  /**
+   * The key of each Reticulum link's key proof: HMAC-SHA256(packet key, "CrewRadio reticulum
+   * confirm v1"), as the app's ChannelCrypto.reticulumConfirmKey. The proof on a link is an HMAC
+   * of its role and link id under this key (lib/rns/carry.js), so it cannot be copied to another
+   * link nor sent back to its maker.
+   */
+  get reticulumConfirmKey() {
+    return crypto.createHmac("sha256", this.key).update(RETICULUM_CONFIRM_LABEL).digest();
   }
 
   /**

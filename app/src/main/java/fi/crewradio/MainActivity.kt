@@ -445,7 +445,7 @@ class MainActivity : AppCompatActivity() {
             if (bt) list += BluetoothTransport(ctx, peer, e.senderId)
             val crypto = e.crypto
             if (aware && crypto != null) list += WifiAwareTransport(ctx, e.senderId, crypto.awarePassphrase, crypto::awareIdTag)
-            if (rns != null && crypto != null) list += ReticulumTransport(ctx, rns.first, rns.second, crypto.reticulumTag)
+            if (rns != null && crypto != null) list += ReticulumTransport(ctx, rns.first, rns.second, crypto.reticulumTag, crypto.reticulumConfirmKey)
             list
         }
         syncUi()

@@ -5,10 +5,14 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.ParcelFileDescriptor
+import android.system.Os
+import android.system.OsConstants
 import fi.crewradio.R
 import fi.crewradio.rns.ReticulumNode
 import fi.crewradio.rns.RnsPacket
 import java.io.IOException
+import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -43,13 +47,16 @@ class ReticulumTransport(
     context: Context,
     private val host: String,
     private val port: Int,
-    tag: String
+    tag: String,
+    confirmKey: ByteArray
 ) : Transport {
     override val name = "Reticulum"
     override val relayWithin = false
     override val ready: Boolean get() = connected
 
     private val appContext = context.applicationContext
+    /** host:port as the crew reads it, an IPv6 address in brackets. */
+    private val where = if (':' in host) "[$host]:$port" else "$host:$port"
     private val backoff = Backoff()
     private val waiter = Waiter()
     @Volatile private var running = false
@@ -73,6 +80,7 @@ class ReticulumTransport(
     private lateinit var onStatus: (String) -> Unit
     private val node = ReticulumNode(
         tag,
+        confirmKey,
         write = { raw -> enqueue(raw) },
         onLinks = { n -> if (running) onStatus(appContext.resources.getQuantityString(R.plurals.status_rns_links, n, n)) }
     )
@@ -82,20 +90,32 @@ class ReticulumTransport(
     override fun start(onPacket: (packet: ByteArray, transport: Transport, link: Any?) -> Unit, onStatus: (String) -> Unit) {
         this.onStatus = onStatus
         running = true
-        // The default request asks for internet, unrestricted, trusted and not a VPN: the networks worth trying.
-        connectivity.registerNetworkCallback(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), networkCallback)
+        // Internet, unrestricted and trusted: the networks worth trying. A VPN too (the default
+        // request leaves them out): a phone whose traffic must go through one, or a hub reached
+        // only through one, would otherwise be bound past it.
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        connectivity.registerNetworkCallback(request, networkCallback)
         transportThread("ptt-rns-rx", { onStatus(str(R.string.status_rns_stopped, it.message)) }) { rxLoop(onPacket) }
     }
 
     override fun send(packet: ByteArray, except: Any?): Boolean = node.send(packet, except)
 
-    override fun confirmPeer(link: Any?) = node.confirm(link)
-
     override fun stop() {
+        // The polite closes first, while the reader still runs: it clears the links the moment it
+        // sees `running` false, and the tx thread flushes these before the socket goes.
+        node.closeAll()
         running = false
         try { connectivity.unregisterNetworkCallback(networkCallback) } catch (_: Exception) {}
-        node.closeAll()                       // polite closes, flushed by the tx thread before the socket goes
+        closeSocketIfConnecting()
         waiter.wake()
+    }
+
+    /** A connect still in progress is cut short; a connected socket closes after the flush. */
+    private fun closeSocketIfConnecting() {
+        if (!connected) closeSocket()
     }
 
     /** One Reticulum packet to the tx thread; a queue stuck full means the connection is dead, so it is closed and re-opened. */
@@ -117,7 +137,8 @@ class ReticulumTransport(
         val candidates = networks.entries.map { (n, caps) ->
             NetworkChoice.Candidate(
                 n,
-                local = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET),
+                local = !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                    (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)),
                 validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
                 isDefault = n == default
             )
@@ -135,9 +156,9 @@ class ReticulumTransport(
         }
         // A name that turns out to be a private address (boat.local) is on the local network after all,
         // or with none behind this phone's own hotspot, like a private address.
+        // The address is already in hand; the boat's router may have no upstream DNS to ask again.
         if (target == NetworkChoice.Target.NAME && NetworkChoice.target(address.hostAddress ?: "") == NetworkChoice.Target.PRIVATE) {
-            val local = NetworkChoice.pick(candidates, NetworkChoice.Target.PRIVATE) ?: return Route(null, address)
-            return Route(local, local.getByName(name))
+            return Route(NetworkChoice.pick(candidates, NetworkChoice.Target.PRIVATE), address)
         }
         return Route(network, address)
     }
@@ -146,26 +167,36 @@ class ReticulumTransport(
         if (networks.isEmpty()) waiter.await(FIRST_NETWORK_MS)   // the callback reports the networks a moment after it is registered
         while (running) {
             val s = Socket()
+            socket = s                                   // published first, so stop() can cut a connect short
+            val out: OutputStream
             try {
                 val way = route() ?: throw IOException(str(R.string.status_rns_no_network))
-                way.network?.bindSocket(s)
-                bound = way.network
+                way.network?.let { n ->
+                    try {
+                        n.bindSocket(s)
+                        bound = n
+                    } catch (_: IOException) {
+                        bound = null                     // refused (a lockdown VPN): the routing table decides
+                    }
+                }
                 s.connect(InetSocketAddress(way.address, port), CONNECT_TIMEOUT_MS)
+                if (!running) throw IOException(str(R.string.status_rns_closed))
                 s.tcpNoDelay = true
                 s.soTimeout = TICK_MS.toInt()
+                failFast(s)
+                out = s.getOutputStream()
             } catch (e: Exception) {
                 bound = null
+                socket = null
                 try { s.close() } catch (_: IOException) {}
                 if (!running) break
                 val wait = backoff.next()
-                onStatus(str(R.string.status_rns_cant_connect, "$host:$port", e.message, wait / 1000))
+                onStatus(str(R.string.status_rns_cant_connect, where, e.message, wait / 1000))
                 waiter.await(wait)
                 continue
             }
-            socket = s
             val q = SendQueue(capacity = QUEUE_FRAMES)
             queue = q
-            val out = s.getOutputStream()
             transportThread("ptt-rns-tx", {}) {
                 try {
                     while (true) {
@@ -174,12 +205,12 @@ class ReticulumTransport(
                         out.flush()
                     }
                 } catch (_: IOException) {
-                    closeSocket()                  // the reader sees it and reconnects
+                    try { s.close() } catch (_: IOException) {}   // its own socket, never a newer one: the reader sees it and reconnects
                 }
             }
             connected = true
-            backoff.reset()
-            onStatus(str(R.string.status_rns_connected, "$host:$port"))
+            val connectedAt = System.nanoTime()
+            onStatus(str(R.string.status_rns_connected, where))
             node.connected()
             var why: String? = null
             try {
@@ -197,8 +228,11 @@ class ReticulumTransport(
                 socket = null
             }
             if (!running) break
+            // Only a connection that held resets the backoff: one accepted and dropped at once (a
+            // port forward with nothing behind it, rnsd restarting) must not be redialled every second.
+            if (System.nanoTime() - connectedAt >= STABLE_MS * 1_000_000) backoff.reset()
             val wait = backoff.next()
-            onStatus(str(R.string.status_rns_lost, "$host:$port", why ?: str(R.string.status_rns_closed), wait / 1000))
+            onStatus(str(R.string.status_rns_lost, where, why ?: str(R.string.status_rns_closed), wait / 1000))
             waiter.await(wait)
         }
     }
@@ -207,9 +241,13 @@ class ReticulumTransport(
     private fun readLoop(s: Socket, onPacket: (ByteArray, Transport, Any?) -> Unit) {
         val input = s.getInputStream()
         val buf = ByteArray(4096)
-        var lastTick = System.currentTimeMillis()
+        var lastTick = System.nanoTime() / 1_000_000
         val deframer = RnsPacket.Deframer { raw ->
-            for ((packet, via) in node.onFrame(raw)) onPacket(packet, this, via)   // the node's lock is not held here
+            try {
+                for ((packet, via) in node.onFrame(raw)) onPacket(packet, this, via)   // the node's lock is not held here
+            } catch (_: RuntimeException) {
+                // One bad frame must not end reception for the session (LanTransport does the same).
+            }
         }
         while (running) {
             var n: Int
@@ -220,7 +258,7 @@ class ReticulumTransport(
             }
             if (n < 0) throw IOException(str(R.string.status_rns_closed))
             if (n > 0) deframer.push(buf, n)
-            val now = System.currentTimeMillis()
+            val now = System.nanoTime() / 1_000_000       // monotonic: a clock stepped back must not stop the ticks
             if (now - lastTick >= TICK_MS) {
                 lastTick = now
                 node.tick()
@@ -228,8 +266,27 @@ class ReticulumTransport(
         }
     }
 
+    /**
+     * A connection that dies without a word (a marina uplink gone while the Wi-Fi stays up, a NAT
+     * mapping dropped, the hub losing power) is given up once data has gone unacknowledged for
+     * [USER_TIMEOUT_MS], instead of after TCP's quarter of an hour of retransmissions; a confirmed
+     * link carries a hello every second, so there is always data to notice it by. Best effort.
+     */
+    private fun failFast(s: Socket) {
+        try {
+            s.keepAlive = true
+            ParcelFileDescriptor.fromSocket(s).use {
+                Os.setsockoptInt(it.fileDescriptor, OsConstants.IPPROTO_TCP, OsConstants.TCP_USER_TIMEOUT, USER_TIMEOUT_MS)
+            }
+        } catch (_: Exception) {
+            // Not supported here: TCP's own limits apply.
+        }
+    }
+
     private companion object {
         const val CONNECT_TIMEOUT_MS = 10_000
+        const val USER_TIMEOUT_MS = 20_000
+        const val STABLE_MS = 30_000L
         const val TICK_MS = 1_000L
         const val FLUSH_MS = 150L
         const val FIRST_NETWORK_MS = 1_000L

@@ -234,7 +234,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
 
   /** The Reticulum transport: started once the packet key (and with it the channel's tag) is there. */
   function startReticulum(c) {
-    rns = new Rns({ host: cfg.reticulum.host, port: cfg.reticulum.port, tag: c.reticulumTag });
+    rns = new Rns({ host: cfg.reticulum.host, port: cfg.reticulum.port, tag: c.reticulumTag, confirmKey: c.reticulumConfirmKey });
     rns.on("status", (line) => {
       if (line === rnsStatus) return;
       rnsStatus = line;

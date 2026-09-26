@@ -65,6 +65,18 @@ class RnsVectorTest {
     }
 
     @Test
+    fun theKeyProofOfEachEndOfALink() {
+        val ck = TestKeys.crypto.reticulumConfirmKey
+        assertArrayEquals(b("keyProof", "confirmKey"), ck)
+        val id = b("keyProof", "linkId")
+        assertArrayEquals(b("keyProof", "initiator"), Carry.keyProof(ck, id, initiator = true))
+        assertArrayEquals(b("keyProof", "responder"), Carry.keyProof(ck, id, initiator = false))
+        assertEquals(true, Carry.proofMatches(b("keyProof", "initiator"), ck, id, initiator = true))
+        assertEquals("bound to the role", false, Carry.proofMatches(b("keyProof", "initiator"), ck, id, initiator = false))
+        assertEquals("bound to the link", false, Carry.proofMatches(b("keyProof", "initiator"), ck, ByteArray(16), initiator = true))
+    }
+
+    @Test
     fun aPcmSizedPacketIsCutTheSameWay() {
         val parts = Regex("\"parts\"\\s*:\\s*\\[(.*?)\\]", RegexOption.DOT_MATCHES_ALL).find(json)!!.groupValues[1]
             .split(",").map { h(it.trim().trim('"')) }

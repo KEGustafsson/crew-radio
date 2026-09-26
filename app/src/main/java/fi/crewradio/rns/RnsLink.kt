@@ -1,6 +1,9 @@
 package fi.crewradio.rns
 
 import java.nio.ByteBuffer
+import java.security.MessageDigest
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * A Reticulum link, either end, as the manual's "Link Establishment in Detail" describes it:
@@ -128,6 +131,13 @@ internal class RnsLink(val id: ByteArray, private val key: ByteArray, val initia
  * order, so a lost part drops that one 20 ms frame and nothing after it:
  *
  *     whole: 0x01 | packet            part: count (2-3) | index | id u8 | bytes
+ *     proof: 0x80 | HMAC-SHA256(confirm key, role | link id)   (role 1 = the end that dialled)
+ *
+ * The proof is how a link is confirmed: each end sends its own as soon as the link is up, and
+ * nothing else goes either way until the far end's has checked out. It is bound to the link id
+ * (fresh keys on every link) and to the sender's role, so a proof seen on one link is worthless on
+ * any other and cannot be echoed back to its maker; a sealed channel packet, which anyone can copy
+ * from anywhere, proves nothing about the link it arrives on.
  *
  * The same as the plugin's lib/rns/carry.js.
  */
@@ -135,6 +145,25 @@ internal object Carry {
     private const val WHOLE = 1
     private const val MAX_PARTS = 3
     private const val PART_HEAD = 3
+    private const val KEYPROOF = 0x80
+    private const val PROOF_BYTES = 32
+
+    /** The key proof the end in [initiator]'s role sends on the link [linkId]. */
+    fun keyProof(confirmKey: ByteArray, linkId: ByteArray, initiator: Boolean): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256").run {
+            init(SecretKeySpec(confirmKey, "HmacSHA256"))
+            update(if (initiator) 1 else 0)
+            doFinal(linkId)
+        }
+        return byteArrayOf(KEYPROOF.toByte()) + mac
+    }
+
+    /** True when [payload] is a key proof frame, whatever it proves. */
+    fun isKeyProof(payload: ByteArray): Boolean = payload.size == 1 + PROOF_BYTES && payload[0] == KEYPROOF.toByte()
+
+    /** True when [payload] is the far end's proof for this link, made in [initiator]'s role (compared in constant time). */
+    fun proofMatches(payload: ByteArray, confirmKey: ByteArray, linkId: ByteArray, initiator: Boolean): Boolean =
+        isKeyProof(payload) && MessageDigest.isEqual(payload, keyProof(confirmKey, linkId, initiator))
 
     fun cut(packet: ByteArray, id: Int): List<ByteArray> {
         if (packet.size + 1 <= RnsLink.MDU) return listOf(byteArrayOf(WHOLE.toByte()) + packet)

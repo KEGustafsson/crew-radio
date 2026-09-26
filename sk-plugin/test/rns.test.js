@@ -9,12 +9,14 @@ const P = require("../lib/rns/packet");
 const I = require("../lib/rns/identity");
 const L = require("../lib/rns/link");
 const Carry = require("../lib/rns/carry");
-const { ReticulumTransport, STALE_MS, CONFIRM_MS, LINK_TIMEOUT_MS } = require("../lib/rns/transport");
+const { ReticulumTransport, STALE_MS, CONFIRM_MS, LINK_TIMEOUT_MS, GRACE_MS, STABLE_MS, GATE_BURST } = require("../lib/rns/transport");
 const { ChannelCrypto } = require("../lib/crypto");
 const CP = require("../lib/packet");
 
 const V = require("./rns.vector.json");
 const hex = (s) => Buffer.from(s, "hex");
+/** The key proof key of the tests' channel; a stranger has another. */
+const CK = Buffer.alloc(32, 7);
 const seq = (start, n) => Buffer.from(Array.from({ length: n }, (_, i) => (start + i) & 0xff));
 
 // ---- the cross-language vector (checked against the reference implementation when it was made) ----
@@ -54,6 +56,18 @@ test("vector: link request, link id, proof, derived key, token and RTT", () => {
   assert.equal(token.toString("hex"), V.token.token);
   assert.equal(P.encode({ packetType: P.PacketType.DATA, destType: P.DestType.LINK, destination: link.id, data: token }).toString("hex"), V.token.dataRaw);
   assert.equal(L.packRtt(V.rtt.seconds).toString("hex"), V.rtt.packed);
+});
+
+test("vector: the key proof of each end of a link", () => {
+  const ck = ChannelCrypto.forChannelKeySync(V.channelKey).reticulumConfirmKey;
+  assert.equal(ck.toString("hex"), V.keyProof.confirmKey);
+  const id = hex(V.keyProof.linkId);
+  assert.equal(Carry.keyProof(ck, id, true).toString("hex"), V.keyProof.initiator);
+  assert.equal(Carry.keyProof(ck, id, false).toString("hex"), V.keyProof.responder);
+  assert.ok(Carry.proofMatches(hex(V.keyProof.initiator), ck, id, true));
+  assert.ok(!Carry.proofMatches(hex(V.keyProof.initiator), ck, id, false), "bound to the role");
+  assert.ok(!Carry.proofMatches(hex(V.keyProof.initiator), ck, Buffer.alloc(16), true), "bound to the link");
+  assert.ok(!Carry.isKeyProof(Buffer.alloc(33)) && !Carry.isKeyProof(hex(V.keyProof.initiator).subarray(1)));
 });
 
 test("vector: a PCM-sized packet is cut into the same parts", () => {
@@ -244,16 +258,16 @@ function sealed(crypto, codec, payload, senderId = 7, seqNo = 1) {
   return Buffer.concat([header, crypto.seal(CP.aadOf(header), payload)]);
 }
 
-function pair(medium, tag = "a2ddc18dee75e2bd", clock) {
+function pair(medium, tag = "a2ddc18dee75e2bd", clock, keys = [CK, CK]) {
   const now = clock ?? (() => Date.now());
-  const mk = () => new ReticulumTransport({ host: "hub", port: 4242, tag, connect: () => medium.connect(), now });
-  let a = mk();
-  let b = mk();
+  const mk = (confirmKey) => new ReticulumTransport({ host: "hub", port: 4242, tag, confirmKey, connect: () => medium.connect(), now });
+  let a = mk(keys[0]);
+  let b = mk(keys[1]);
   if (!a.weDial(b.destination)) [a, b] = [b, a];            // a dials
   return { a, b };
 }
 
-test("transport: two nodes find each other, link, and carry hellos before and audio after confirmation", async () => {
+test("transport: two nodes find each other, link, prove the key to each other and carry the channel", async () => {
   const medium = new Medium();
   const { a, b } = pair(medium);
   const got = { a: [], b: [] };
@@ -269,36 +283,97 @@ test("transport: two nodes find each other, link, and carry hellos before and au
   a.tick();
   b.reannounceAt = 1; b.tick();
   await settle();
-  assert.equal(a.linkCount, 1);
-  assert.equal(b.linkCount, 1, "the RTT made the responder's link active");
+  assert.equal(a.linkCount, 1, "each end's key proof checked out at the other");
+  assert.equal(b.linkCount, 1);
   assert.deepEqual(states, [true]);
   const crypto = ChannelCrypto.forChannelKeySync("north-star-2026");
   const hello = sealed(crypto, CP.Codec.HELLO, CP.encodeHello({ name: "A", transports: 8, ttl: 4 }));
   const opus = sealed(crypto, CP.Codec.OPUS, Buffer.alloc(60, 1), 7, 2);
-  assert.equal(a.send(opus), false, "audio waits for the far end to prove the key");
-  assert.equal(a.send(hello), true);
-  await settle();
-  assert.equal(got.b.length, 1);
-  assert.deepEqual(got.b[0].buf, hello);
-  b.confirm(got.b[0].via);
-  b.send(hello);
-  await settle();
-  a.confirm(got.a[0].via);
   const pcm = sealed(crypto, CP.Codec.PCM, Buffer.alloc(640, 2), 7, 3);
+  assert.equal(a.send(hello), true);
   assert.equal(a.send(opus), true);
   assert.equal(a.send(pcm), true);
   await settle();
   assert.deepEqual(got.b.map((g) => g.buf.length), [hello.length, opus.length, pcm.length], "PCM arrives whole, in two parts");
   assert.equal(b.send(opus, got.b[0].via), false, "never back where it came from");
-  a.confirm({ key: "nothing" });
+  assert.equal(b.send(opus), true);
+  await settle();
+  assert.equal(got.a.length, 1);
+  a.stop();
+  b.stop();
+});
+
+test("transport: a stranger who copies the name hash gets and passes nothing, however it replays or reflects", async () => {
+  let t = 5_000_000;
+  const medium = new Medium();
+  const { a, b } = pair(medium, "a2ddc18dee75e2bd", () => t, [CK, Buffer.alloc(32, 9)]);
+  const mine = a.confirmKey.equals(CK) ? a : b;
+  const stranger = mine === a ? b : a;
+  // The stranger sends back, on the same link, whatever proof it is given: a reflection.
+  stranger.onKeyProof = (e, payload) => stranger.write(e.link.dataPacket(payload));
+  const got = [];
+  mine.on("packet", (buf) => got.push(buf));
+  mine.start();
+  stranger.start();
+  await settle();
+  mine.tick(); stranger.tick();
+  mine.reannounceAt = 1; stranger.reannounceAt = 1; mine.tick(); stranger.tick();
+  await settle();
+  assert.equal(mine.links.size, 1, "linked");
+  const first = [...mine.links.keys()][0];
+  assert.equal(mine.linkCount, 0, "but its proof (made with another key) and our own reflected back prove nothing");
+  const crypto = ChannelCrypto.forChannelKeySync("north-star-2026");
+  const hello = sealed(crypto, CP.Codec.HELLO, CP.encodeHello({ name: "A", transports: 8, ttl: 4 }));
+  assert.equal(mine.send(hello), false, "nothing of ours goes to it, hellos included");
+  // A genuine sealed packet copied from anywhere, sent on its link, is dropped unread.
+  const e = [...stranger.links.values()][0];
+  for (const part of Carry.cut(hello, 0)) stranger.write(e.link.dataPacket(part));
+  await settle();
+  assert.deepEqual(got, []);
+  // Our proof keeps going out every couple of seconds; after CONFIRM_MS the link is closed,
+  // although it never fell silent (the proofs kept it fresh), so it is the confirm rule that did it.
+  for (let s = 0; s < CONFIRM_MS / 1000; s += 2) { t += 2000; mine.tick(); await settle(); }
+  t += 1000;
+  mine.tick();
+  await settle();
+  assert.ok(!mine.links.has(first), "closed (a redial may already have made the next one)");
+  assert.equal(mine.linkCount, 0);
+  mine.stop();
+  stranger.stop();
+});
+
+test("transport: a key proof lost on the way is sent again, and the ends still confirm", async () => {
+  let t = 7_000_000;
+  const medium = new Medium();
+  const { a, b } = pair(medium, "7777777777777777", () => t);
+  // The first proof each end sends is lost.
+  for (const n of [a, b]) {
+    const real = n.sendProof.bind(n);
+    let dropped = false;
+    n.sendProof = (e) => { if (!dropped) { dropped = true; e.proofAt = t; return; } real(e); };
+  }
+  a.start();
+  b.start();
+  await settle();
+  b.tick(); a.tick(); b.reannounceAt = 1; b.tick();
+  await settle();
+  assert.equal(a.linkCount + b.linkCount, 0);
+  // Both resend; the end that confirms first answers the other's next resend with its own again.
+  for (let round = 0; round < 2; round++) {
+    t += 2000;
+    a.tick(); b.tick();
+    await settle();
+  }
+  assert.equal(a.linkCount, 1);
+  assert.equal(b.linkCount, 1);
   a.stop();
   b.stop();
 });
 
 test("transport: another channel's node is never dialled, and a replayed older announce changes nothing", async () => {
   const medium = new Medium();
-  const mine = new ReticulumTransport({ host: "h", port: 1, tag: "1111111111111111", connect: () => medium.connect() });
-  const other = new ReticulumTransport({ host: "h", port: 1, tag: "2222222222222222", connect: () => medium.connect() });
+  const mine = new ReticulumTransport({ host: "h", port: 1, tag: "1111111111111111", confirmKey: CK, connect: () => medium.connect() });
+  const other = new ReticulumTransport({ host: "h", port: 1, tag: "2222222222222222", confirmKey: CK, connect: () => medium.connect() });
   mine.start();
   other.start();
   await settle();
@@ -319,7 +394,7 @@ test("transport: another channel's node is never dialled, and a replayed older a
   other.stop();
 });
 
-test("transport: silent links and unconfirmed links are closed; the dialler redials, unproven requests time out", async () => {
+test("transport: silent links are closed, the dialler redials, unproven requests time out", async () => {
   let t = 1_000_000;
   const clock = () => t;
   const medium = new Medium();
@@ -330,8 +405,8 @@ test("transport: silent links and unconfirmed links are closed; the dialler redi
   b.reannounceAt = 1; b.tick(); a.tick();
   await settle();
   assert.equal(a.linkCount, 1);
-  // Nothing sealed with the key arrives: both ends close after CONFIRM_MS.
-  t += CONFIRM_MS + 1;
+  // A link that goes silent is dropped, at both ends.
+  t += STALE_MS + 1;
   a.tick();
   await settle();
   assert.equal(a.links.size, 0);
@@ -341,11 +416,6 @@ test("transport: silent links and unconfirmed links are closed; the dialler redi
   a.tick();
   await settle();
   assert.equal(a.linkCount, 1);
-  // A link that goes silent is dropped.
-  for (const e of a.links.values()) e.confirmed = true;
-  t += STALE_MS + 1;
-  a.tick();
-  assert.equal(a.links.size, 0);
   // A request nobody answers is given up after LINK_TIMEOUT_MS.
   b.stop();
   t += 20_000;
@@ -357,55 +427,62 @@ test("transport: silent links and unconfirmed links are closed; the dialler redi
   a.stop();
 });
 
-test("transport: a refused or dropped connection is retried with backoff and reported", async () => {
+test("transport: a refused or dropped connection is retried with backoff, reset only by a connection that held", async () => {
+  let t = 0;
   const medium = new Medium();
   medium.refuse = true;
-  const r = new ReticulumTransport({ host: "hub", port: 4242, tag: "4444444444444444", connect: () => medium.connect() });
+  const r = new ReticulumTransport({ host: "hub", port: 4242, tag: "4444444444444444", confirmKey: CK, connect: () => medium.connect(), now: () => t });
   const lines = [];
   r.on("status", (l) => lines.push(l));
   r.start();
   assert.match(lines[0], /refused; retrying in 1 s/);
   assert.equal(r.ready, false);
   assert.equal(r.send(Buffer.alloc(40)), false);
+  const redial = async () => { clearTimeout(r.retryTimer); r.retryTimer = null; r.dial(); await settle(); };
   medium.refuse = false;
-  clearTimeout(r.retryTimer);
-  r.retryTimer = null;
-  r.dial();
-  await settle();
+  await redial();
   assert.equal(r.ready, true);
-  const s = [...medium.socks][0];
-  s.emit("error", new Error("reset"));
+  // Accepted and dropped at once (a proxy with nothing behind it): the backoff keeps growing.
+  [...medium.socks][0].emit("error", new Error("reset"));
   assert.equal(r.ready, false);
+  assert.match(lines.at(-1), /reset; retrying in 2 s/);
+  // A connection that held for STABLE_MS starts the backoff over.
+  await redial();
+  t += STABLE_MS;
+  [...medium.socks][0].emit("error", new Error("reset"));
   assert.match(lines.at(-1), /reset; retrying in 1 s/);
   r.stop();
   assert.equal(r.retryTimer, null);
+  assert.throws(() => new ReticulumTransport({ host: "h", port: 1, tag: "4444444444444444" }), /confirmKey/);
 });
 
 test("transport: full tables make room for the crew by dropping what never proved the key, never what did", async () => {
+  let t = 2_000_000;
   const medium = new Medium();
-  const me = new ReticulumTransport({ host: "h", port: 1, tag: "5555555555555555", connect: () => medium.connect() });
+  const me = new ReticulumTransport({ host: "h", port: 1, tag: "5555555555555555", confirmKey: CK, connect: () => medium.connect(), now: () => t });
+  me.gate = { allow: () => true };                                   // the flood budget has its own test
   me.start();
   await settle();
   const { MAX_PEERS, MAX_LINKS } = require("../lib/rns/transport");
-  const announce = (id, t) => {
-    const a = I.buildAnnounce(id, me.nameHash, Buffer.alloc(0), undefined, t);
+  const announce = (id, at) => {
+    const a = I.buildAnnounce(id, me.nameHash, Buffer.alloc(0), undefined, at);
     return P.encode({ packetType: P.PacketType.ANNOUNCE, destType: P.DestType.SINGLE, destination: a.destination, data: a.data });
   };
   // Strangers announcing under our (public) name hash fill the peer table...
-  let t = 1000;
+  let at = 1000;
   const first = I.Identity.generate();
-  me.onFrame(announce(first, t));
-  for (let i = 1; i < MAX_PEERS; i++) me.onFrame(announce(I.Identity.generate(), ++t));
+  me.onFrame(announce(first, at));
+  t += 10;
+  for (let i = 1; i < MAX_PEERS; i++) me.onFrame(announce(I.Identity.generate(), ++at));
   assert.equal(me.peers.size, MAX_PEERS);
   // ...and the next announce still gets in, in place of the stalest.
-  me.peers.get(I.destinationHash(me.nameHash, first.hash).toString("hex")).seenAt = 0;
   const late = I.Identity.generate();
-  me.onFrame(announce(late, ++t));
+  me.onFrame(announce(late, ++at));
   assert.equal(me.peers.size, MAX_PEERS);
   assert.ok(me.peers.has(I.destinationHash(me.nameHash, late.hash).toString("hex")));
   assert.ok(!me.peers.has(I.destinationHash(me.nameHash, first.hash).toString("hex")));
 
-  // Link requests fill the link table; a new one closes the oldest unconfirmed link.
+  // Link requests fill the link table.
   me.links.clear();
   me.pending.clear();
   const request = () => {
@@ -420,43 +497,91 @@ test("transport: full tables make room for the crew by dropping what never prove
   const bad = L.requestLink({ destination: me.destination, sigPub: me.identity.sigPub });
   me.onFrame(Buffer.concat([bad.raw, Buffer.alloc(1)]));
   assert.deepEqual([...me.links.keys()], ids, "a malformed request evicts nothing");
-  me.links.get(ids[0]).createdAt -= 10_000;
+  // While every link is younger than GRACE_MS none is pushed out: a new request is refused.
+  const early = request();
+  assert.ok(!me.links.has(early));
+  assert.deepEqual([...me.links.keys()], ids);
+  // Past the grace the oldest unconfirmed link makes room.
+  me.links.get(ids[0]).createdAt -= 1;
+  t += GRACE_MS;
   const newest = request();
   assert.equal(me.links.size, MAX_LINKS);
   assert.ok(me.links.has(newest));
   assert.ok(!me.links.has(ids[0]), "the oldest unconfirmed link made room");
   // Once every link has proved the key, nothing is evicted and a request is refused.
   for (const e of me.links.values()) e.confirmed = true;
+  t += GRACE_MS;
   const refused = request();
   assert.ok(!me.links.has(refused));
   assert.equal(me.links.size, MAX_LINKS);
-  // And a peer behind a confirmed link is never the one forgotten.
+  // A peer behind a confirmed link is never the one forgotten...
   me.peers.clear();
   const kept = I.Identity.generate();
-  me.onFrame(announce(kept, ++t));
+  me.onFrame(announce(kept, ++at));
   const keptKey = I.destinationHash(me.nameHash, kept.hash).toString("hex");
   me.peers.get(keptKey).link = [...me.links.values()][0];
   me.peers.get(keptKey).seenAt = 0;
-  for (let i = 1; i < MAX_PEERS; i++) me.onFrame(announce(I.Identity.generate(), ++t));
-  me.onFrame(announce(I.Identity.generate(), ++t));
+  for (let i = 1; i < MAX_PEERS; i++) me.onFrame(announce(I.Identity.generate(), ++at));
+  me.onFrame(announce(I.Identity.generate(), ++at));
   assert.ok(me.peers.has(keptKey));
+  // ...and one whose link has only just dropped is as fresh as that link was, not its old announce.
+  const e = me.peers.get(keptKey).link;
+  e.peer = keptKey;
+  e.lastIn = t;
+  me.forget(e);
+  assert.equal(me.peers.get(keptKey).seenAt, t);
+  me.stop();
+});
+
+test("transport: announces and link requests past the flood budget cost no signature work", async () => {
+  const t = 3_000_000;
+  const medium = new Medium();
+  const me = new ReticulumTransport({ host: "h", port: 1, tag: "8888888888888888", confirmKey: CK, connect: () => medium.connect(), now: () => t });
+  me.start();
+  await settle();
+  const { MAX_LINKS } = require("../lib/rns/transport");
+  let accepted = 0;
+  const realAccept = L.acceptLink;
+  L.acceptLink = (...args) => { accepted++; return realAccept(...args); };
+  try {
+    for (let i = 0; i < MAX_LINKS; i++) me.onFrame(L.requestLink({ destination: me.destination, sigPub: me.identity.sigPub }).raw);
+  } finally {
+    L.acceptLink = realAccept;
+  }
+  assert.equal(accepted, GATE_BURST, "the rest of the burst is refused before any key agreement");
+  assert.equal(me.links.size, GATE_BURST);
+  let verified = 0;
+  const realParse = I.parseAnnounce;
+  I.parseAnnounce = (...args) => { verified++; return realParse(...args); };
+  try {
+    for (let i = 0; i < 2 * GATE_BURST; i++) {
+      const a = I.buildAnnounce(I.Identity.generate(), me.nameHash);
+      me.onFrame(P.encode({ packetType: P.PacketType.ANNOUNCE, destType: P.DestType.SINGLE, destination: a.destination, data: a.data }));
+    }
+  } finally {
+    I.parseAnnounce = realParse;
+  }
+  assert.equal(verified, GATE_BURST, "announces have a budget of their own, and past it no signature is checked");
   me.stop();
 });
 
 test("transport: requests of ours that nobody answers never lock the crew out", async () => {
+  let t = 4_000_000;
   const medium = new Medium();
-  const me = new ReticulumTransport({ host: "h", port: 1, tag: "6666666666666666", connect: () => medium.connect() });
+  const me = new ReticulumTransport({ host: "h", port: 1, tag: "6666666666666666", confirmKey: CK, connect: () => medium.connect(), now: () => t });
+  me.gate = { allow: () => true };
   me.start();
   await settle();
   const { MAX_LINKS } = require("../lib/rns/transport");
-  let t = 1000;
+  let at = 1000;
   while (me.pending.size < MAX_LINKS) {
     const id = I.Identity.generate();
     if (!me.weDial(I.destinationHash(me.nameHash, id.hash))) continue;          // it would dial us
-    const a = I.buildAnnounce(id, me.nameHash, Buffer.alloc(0), undefined, ++t);
+    const a = I.buildAnnounce(id, me.nameHash, Buffer.alloc(0), undefined, ++at);
     me.onFrame(P.encode({ packetType: P.PacketType.ANNOUNCE, destType: P.DestType.SINGLE, destination: a.destination, data: a.data }));
   }
   assert.equal(me.links.size, 0);
+  t += GRACE_MS;
   const crew = L.requestLink({ destination: me.destination, sigPub: me.identity.sigPub });
   me.onFrame(crew.raw);
   assert.deepEqual([...me.links.keys()], [crew.id.toString("hex")], "the oldest unanswered request made room");
