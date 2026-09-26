@@ -1,7 +1,10 @@
 # Security policy
 
-Crew Radio is a voice intercom for a small group of phones. It has no server, no account and no
-internet traffic; everything stays on the phones and the links between them. The threat model,
+Crew Radio is a voice intercom for a small group of phones. It has no server of its own and no
+account. By default everything stays on the phones and the links between them; the two
+exceptions are opt-in and off until set up: **Reticulum**, which opens one TCP connection to a
+Reticulum transport node the crew names (possibly across the internet), and **Ask boat data**,
+which talks to the boat's Signal K server on the boat's network. The threat model,
 what the app does about each threat, and how that maps to the EU Cyber Resilience Act's
 essential requirements are in [docs/SECURITY.md](docs/SECURITY.md).
 

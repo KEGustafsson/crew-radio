@@ -205,8 +205,10 @@ repeat of the previous one rather than a click. The developer notes in
   Opus, the audio output and the Reticulum settings centrally. A setting your organisation has set wins, and its row in
   Settings is greyed out and reads *Set by your organisation*; everything else stays with whoever
   carries the phone.
-- **Privacy and security.** Nothing leaves the phones and there is no server, unless you switch
-  Reticulum on and point it at a transport node across the internet. Every packet is
+- **Privacy and security.** There is no server of the app's own. The channel stays on the phones
+  and their links, except that with Reticulum on it also goes through the transport node you
+  set, possibly across the internet; and Ask boat data, when you set it up, asks the boat's
+  Signal K server on the boat's network. Every packet is
   encrypted and authenticated with the crew's channel key (AES‑256‑GCM), so someone on the same
   WLAN without the key can neither listen nor inject; a flooding sender is rate-limited. The
   full threat model and what the app does about each threat is in

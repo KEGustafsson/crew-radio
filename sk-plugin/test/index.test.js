@@ -621,3 +621,29 @@ test("Reticulum settings: defaults, a bad port falls back and is named, and the 
   const s = plugin(fakeApp(), deps).schema();
   assert.deepEqual(Object.keys(s.properties.reticulum.properties), ["enabled", "host", "port"]);
 });
+
+test("Reticulum: with the LAN down the channel runs on Reticulum alone, and moves back onto the LAN when it returns", async () => {
+  FakeLink.last = undefined;
+  FakeRns.last = undefined;
+  FakeLink.failOpen = true;
+  const app = fakeApp();
+  const p = plugin(app, { ...deps, Reticulum: FakeRns });
+  try {
+    p.start({ channelKey: KEY, reticulum: { enabled: true } });
+    await until(() => FakeRns.last && FakeRns.last.sent.length > 0);
+    const r = FakeRns.last;
+    assert.ok(app.errors.some((e) => /no usable IPv4 interface/.test(e)));
+    assert.match(app.status.at(-1), /LAN down/);
+    assert.equal(P.parseHeader(r.sent[0]).codec, P.Codec.HELLO, "our hellos go out over Reticulum while the LAN retries");
+    const before = r.sent.length;
+    const firstLink = FakeLink.last;
+    await until(() => FakeLink.last !== firstLink, 2500);        // a retry failed too; the Reticulum node is not rebuilt for it
+    assert.ok(r.sent.length >= before);
+    FakeLink.failOpen = false;
+    await until(() => FakeLink.last && !FakeLink.last.closed && FakeLink.last.sent.length > 0, 6000);
+    assert.doesNotMatch(app.status.at(-1), /LAN down/);
+  } finally {
+    FakeLink.failOpen = false;
+    p.stop();
+  }
+});

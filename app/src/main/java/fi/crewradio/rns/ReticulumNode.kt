@@ -70,6 +70,10 @@ internal class ReticulumNode(
     @get:Synchronized val linkCount: Int get() = links.values.count { it.link.active }
     @get:Synchronized val peerCount: Int get() = peers.size
 
+    /** For tests: whether a peer is known, and the links held, confirmed or not. */
+    @Synchronized internal fun knows(peerDestination: ByteArray) = peers.containsKey(peerDestination.toHex())
+    @Synchronized internal fun entries(): List<Entry> = links.values.toList()
+
     /** The transport node is reachable: announce at once. */
     @Synchronized fun connected() {
         connected = true
@@ -129,10 +133,10 @@ internal class ReticulumNode(
         if (p.destination.contentEquals(destination)) return            // our own, echoed back
         val key = p.destination.toHex()
         var peer = peers[key]
-        if (peer == null && peers.size >= MAX_PEERS) return
         val a = RnsIdentity.parseAnnounce(p) ?: return
         if (peer != null && a.emitted < peer.emitted) return            // an older announce replayed
         val fresh = peer == null
+        if (peer == null && peers.size >= MAX_PEERS && !evictPeer()) return
         if (peer == null) peer = Peer(a).also { peers[key] = it }
         peer.announce = a
         peer.emitted = a.emitted
@@ -151,7 +155,8 @@ internal class ReticulumNode(
     private fun onLinkRequest(p: RnsPacket) {
         if (p.destType != RnsPacket.SINGLE || !p.destination.contentEquals(destination)) return
         val id = RnsLink.linkIdOf(p.raw, p.data.size).toHex()
-        if (links.containsKey(id) || links.size >= MAX_LINKS) return
+        if (links.containsKey(id)) return
+        if (links.size + pending.size >= MAX_LINKS && !evictLink()) return
         val (link, proof) = RnsLink.accept(identity, p) ?: return
         addLink(link, null)
         write(proof)
@@ -193,8 +198,32 @@ internal class ReticulumNode(
 
     private fun pendingFor(peer: String) = pending.values.any { it.peer == peer }
 
+    /*
+     * The name hash we announce under is public, so anyone can announce under it (each with an
+     * identity of their own) or open links to us. With a hard cap alone, a stranger who filled
+     * the tables first would keep the crew out. So a full table makes room: the link that has
+     * waited longest without proving the key, the peer heard from longest ago with no confirmed
+     * link. A link that has proved the key, and the peer behind it, is never the one to go.
+     */
+
+    /** Closes the oldest unconfirmed link; false when every link is confirmed. */
+    private fun evictLink(): Boolean {
+        val victim = links.values.filter { !it.confirmed }.minByOrNull { it.createdAt } ?: return false
+        close(victim)
+        return true
+    }
+
+    /** Forgets the stalest peer without a confirmed link, and its request or link; false when there is none. */
+    private fun evictPeer(): Boolean {
+        val (key, victim) = peers.entries.filter { it.value.link?.confirmed != true }.minByOrNull { it.value.seenAt } ?: return false
+        pending.entries.removeAll { it.value.peer == key }
+        victim.link?.let { close(it) }
+        peers.remove(key)
+        return true
+    }
+
     private fun linkTo(key: String, peer: Peer) {
-        if (!connected || links.size + pending.size >= MAX_LINKS) return
+        if (!connected || (links.size + pending.size >= MAX_LINKS && !evictLink())) return
         val req = RnsLink.request(peer.announce, if (peer.hops > 1) peer.transportId else null)
         pending[req.id.toHex()] = Pending(req, key, clock())
         write(req.raw)

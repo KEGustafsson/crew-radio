@@ -215,11 +215,11 @@ class ReticulumTransport extends EventEmitter {
     if (p.destination.equals(this.destination)) return;                                                          // our own, echoed back
     const key = p.destination.toString("hex");
     let peer = this.peers.get(key);
-    if (!peer && this.peers.size >= MAX_PEERS) return;
     const a = I.parseAnnounce(p);
     if (!a) return;
     if (peer && a.emitted < peer.emitted) return;                                                                 // an older announce replayed
     const fresh = !peer;
+    if (fresh && this.peers.size >= MAX_PEERS && !this.evictPeer()) return;
     if (fresh) {
       peer = { announce: a, transportId: null, hops: 0, seenAt: 0, emitted: 0, dialAt: 0, backoffMs: 1000, link: null };
       this.peers.set(key, peer);
@@ -244,7 +244,7 @@ class ReticulumTransport extends EventEmitter {
     if (p.destType !== P.DestType.SINGLE || !p.destination.equals(this.destination)) return;
     const id = L.linkIdOf(p.raw, p.data.length).toString("hex");
     if (this.links.has(id)) return;                                     // a copy of one we already answered
-    if (this.links.size >= MAX_LINKS) return;
+    if (this.links.size + this.pending.size >= MAX_LINKS && !this.evictLink()) return;
     const r = L.acceptLink(this.identity, p);
     if (!r) return;
     this.addLink(r.link, null);
@@ -295,8 +295,37 @@ class ReticulumTransport extends EventEmitter {
     return false;
   }
 
+  // Our name hash is public: anyone can announce under it or link to us, and with a hard cap
+  // alone a stranger who filled the tables first would keep the crew out. So a full table makes
+  // room - the link waiting longest without proving the key, the peer heard from longest ago
+  // with no confirmed link - and a link that has proved the key is never the one to go.
+
+  /** Closes the oldest unconfirmed link; false when every link is confirmed. */
+  evictLink() {
+    let victim = null;
+    for (const e of this.links.values()) if (!e.confirmed && (!victim || e.createdAt < victim.createdAt)) victim = e;
+    if (!victim) return false;
+    this.close(victim);
+    return true;
+  }
+
+  /** Forgets the stalest peer without a confirmed link, and its request or link; false when there is none. */
+  evictPeer() {
+    let key = null;
+    let victim = null;
+    for (const [k, p] of this.peers) {
+      if (p.link?.confirmed) continue;
+      if (!victim || p.seenAt < victim.seenAt) { key = k; victim = p; }
+    }
+    if (!victim) return false;
+    for (const [id, pend] of this.pending) if (pend.peer === key) this.pending.delete(id);
+    if (victim.link) this.close(victim.link);
+    this.peers.delete(key);
+    return true;
+  }
+
   linkTo(key, peer) {
-    if (!this.connected || this.links.size + this.pending.size >= MAX_LINKS) return;
+    if (!this.connected || (this.links.size + this.pending.size >= MAX_LINKS && !this.evictLink())) return;
     const transportId = peer.hops > 1 ? peer.transportId : null;
     const req = L.requestLink(peer.announce, transportId);
     this.pending.set(req.id.toString("hex"), { req, peer: key, sentAt: this.now() });

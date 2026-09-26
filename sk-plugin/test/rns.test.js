@@ -380,3 +380,61 @@ test("transport: a refused or dropped connection is retried with backoff and rep
   r.stop();
   assert.equal(r.retryTimer, null);
 });
+
+test("transport: full tables make room for the crew by dropping what never proved the key, never what did", async () => {
+  const medium = new Medium();
+  const me = new ReticulumTransport({ host: "h", port: 1, tag: "5555555555555555", connect: () => medium.connect() });
+  me.start();
+  await settle();
+  const { MAX_PEERS, MAX_LINKS } = require("../lib/rns/transport");
+  const announce = (id, t) => {
+    const a = I.buildAnnounce(id, me.nameHash, Buffer.alloc(0), undefined, t);
+    return P.encode({ packetType: P.PacketType.ANNOUNCE, destType: P.DestType.SINGLE, destination: a.destination, data: a.data });
+  };
+  // Strangers announcing under our (public) name hash fill the peer table...
+  let t = 1000;
+  const first = I.Identity.generate();
+  me.onFrame(announce(first, t));
+  for (let i = 1; i < MAX_PEERS; i++) me.onFrame(announce(I.Identity.generate(), ++t));
+  assert.equal(me.peers.size, MAX_PEERS);
+  // ...and the next announce still gets in, in place of the stalest.
+  me.peers.get(I.destinationHash(me.nameHash, first.hash).toString("hex")).seenAt = 0;
+  const late = I.Identity.generate();
+  me.onFrame(announce(late, ++t));
+  assert.equal(me.peers.size, MAX_PEERS);
+  assert.ok(me.peers.has(I.destinationHash(me.nameHash, late.hash).toString("hex")));
+  assert.ok(!me.peers.has(I.destinationHash(me.nameHash, first.hash).toString("hex")));
+
+  // Link requests fill the link table; a new one closes the oldest unconfirmed link.
+  me.links.clear();
+  me.pending.clear();
+  const request = () => {
+    const r = L.requestLink({ destination: me.destination, sigPub: me.identity.sigPub });
+    me.onFrame(r.raw);
+    return r.id.toString("hex");
+  };
+  const ids = [];
+  for (let i = 0; i < MAX_LINKS; i++) ids.push(request());
+  assert.equal(me.links.size, MAX_LINKS);
+  me.links.get(ids[0]).createdAt -= 10_000;
+  const newest = request();
+  assert.equal(me.links.size, MAX_LINKS);
+  assert.ok(me.links.has(newest));
+  assert.ok(!me.links.has(ids[0]), "the oldest unconfirmed link made room");
+  // Once every link has proved the key, nothing is evicted and a request is refused.
+  for (const e of me.links.values()) e.confirmed = true;
+  const refused = request();
+  assert.ok(!me.links.has(refused));
+  assert.equal(me.links.size, MAX_LINKS);
+  // And a peer behind a confirmed link is never the one forgotten.
+  me.peers.clear();
+  const kept = I.Identity.generate();
+  me.onFrame(announce(kept, ++t));
+  const keptKey = I.destinationHash(me.nameHash, kept.hash).toString("hex");
+  me.peers.get(keptKey).link = [...me.links.values()][0];
+  me.peers.get(keptKey).seenAt = 0;
+  for (let i = 1; i < MAX_PEERS; i++) me.onFrame(announce(I.Identity.generate(), ++t));
+  me.onFrame(announce(I.Identity.generate(), ++t));
+  assert.ok(me.peers.has(keptKey));
+  me.stop();
+});

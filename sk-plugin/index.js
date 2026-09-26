@@ -138,7 +138,11 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
         status();
         return;
       }
-      node = new ChannelNode({ name: cfg.nodeName, crypto, link, rns, ttl: cfg.hops, guard });
+      if (node) { node.stop(); node = null; }      // the Reticulum-only node that kept the channel while the LAN was down
+      startNode(link);
+    };
+    const startNode = (on) => {
+      node = new ChannelNode({ name: cfg.nodeName, crypto, link: on, rns, ttl: cfg.hops, guard });
       node.on("roster", (r) => publishRoster(r));
       node.on("speaking", (on) => { publishSpeaking(on); status(); });
       node.on("stale", (n) => app.error(`Clock: ${n} packets more than ${REPLAY_WINDOW_S} s off (the server's clock or a phone's is wrong)`));
@@ -147,9 +151,12 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     };
     const scheduleReopen = () => {
       if (!running || reopenTimer) return;
-      if (node) { node.stop(); node = null; }
+      if (node && node.link !== OFFLINE) { node.stop(); node = null; }
       if (link) { link.close(); link = null; }
       linkInfo = null;
+      // With Reticulum on, the channel does not wait for the LAN: a node on Reticulum alone keeps
+      // the crew ashore on it (and announcements going to them) until the LAN is back.
+      if (rns && !node && crypto) startNode(OFFLINE);
       reopenTimer = setTimeout(() => { reopenTimer = null; openLink().catch(onLinkCrash); }, backoffMs);
       backoffMs = Math.min(backoffMs * 2, 15_000);
     };
@@ -404,6 +411,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     if (!running) return;
     const r = roster ?? node?.roster() ?? [];
     const parts = [node ? `${r.length} online` : crypto ? "network link down" : "starting"];
+    if (node && !linkInfo) parts.push("LAN down");
     const talking = r.filter((n) => n.talking).map((n) => n.name);
     if (talking.length) parts.push(`talking: ${talking.join(", ")}`);
     if (node?.speaking) parts.push("announcing");
@@ -418,6 +426,9 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
 
   return plugin;
 };
+
+/** The LAN link while the LAN is down: sends nothing, hears nothing. The channel node then runs on Reticulum alone. */
+const OFFLINE = Object.freeze({ send: () => false, on() {}, off() {} });
 
 /**
  * The settings with defaults, validated: a value out of range falls back to the default and is

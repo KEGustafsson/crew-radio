@@ -114,6 +114,46 @@ class ReticulumNodeTest {
         assertFalse(a.send(ByteArray(40), null))
     }
 
+    @Test
+    fun fullTablesDropWhatNeverProvedTheKeyAndNeverWhatDid() {
+        val me = node("5555555555555555")
+        me.connected()
+        queue.clear()
+        fun announce(id: RnsIdentity): ByteArray {
+            val (d, data) = RnsIdentity.buildAnnounce(id, me.nameHash, ByteArray(0), ByteArray(5), now / 1000)
+            return RnsPacket.encode(RnsPacket.ANNOUNCE, RnsPacket.SINGLE, d, data = data)
+        }
+        // Strangers announcing under our public name hash fill the peer table; the next one still gets in.
+        val first = RnsIdentity.generate()
+        me.onFrame(announce(first))
+        repeat(ReticulumNode.MAX_PEERS - 1) { now += 10; me.onFrame(announce(RnsIdentity.generate())) }
+        assertEquals(ReticulumNode.MAX_PEERS, me.peerCount)
+        now += 10
+        val late = RnsIdentity.generate()
+        me.onFrame(announce(late))
+        assertEquals(ReticulumNode.MAX_PEERS, me.peerCount)
+        assertTrue(me.knows(RnsIdentity.destinationHash(me.nameHash, late.hash)))
+        assertFalse("the stalest made room", me.knows(RnsIdentity.destinationHash(me.nameHash, first.hash)))
+
+        // Link requests fill the link table (with whatever requests we sent ourselves); a new one closes the oldest unconfirmed link.
+        val target = RnsIdentity.parseAnnounce(RnsPacket.decode(RnsPacket.encode(RnsPacket.ANNOUNCE, RnsPacket.SINGLE, me.destination,
+            data = RnsIdentity.buildAnnounce(me.identity, me.nameHash).second))!!)!!
+        fun request(): String { now += 10; val r = RnsLink.request(target, null); me.onFrame(r.raw); return r.id.toHex() }
+        val ids = (0 until ReticulumNode.MAX_LINKS).map { request() }
+        val oldest = me.entries().minByOrNull { it.createdAt }!!.key
+        val newest = request()
+        val held = me.entries().map { it.key }
+        assertTrue(newest in held)
+        assertFalse("the oldest unconfirmed link made room", oldest in held)
+        assertTrue(held.size <= ReticulumNode.MAX_LINKS && ids.isNotEmpty())
+        // Once every link has proved the key, a request is refused rather than evicting one.
+        for (e in me.entries()) me.confirm(e)
+        val count = me.entries().size
+        val refused = request()
+        assertFalse(refused in me.entries().map { it.key })
+        assertEquals(count, me.entries().size)
+    }
+
     private fun compare(x: ByteArray, y: ByteArray): Int {
         for (i in x.indices) {
             val d = (x[i].toInt() and 0xFF) - (y[i].toInt() and 0xFF)
