@@ -1,5 +1,5 @@
 // Exports every generated diagram and screen mock-up to PNG without draw.io desktop: the draw.io
-// viewer (viewer-static.min.js, fetched once from viewer.diagrams.net into the OS temp directory)
+// viewer (viewer-static.min.js, fetched from viewer.diagrams.net on every run, or read from VIEWER_JS)
 // renders each .drawio in headless Chromium through Playwright, and the page is cropped to the
 // drawing plus a border, the way draw.io's own export crops.
 //
@@ -16,7 +16,6 @@
 // (make_diagrams.py explains why the phone mock-ups must all share one).
 "use strict";
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const https = require("https");
 
@@ -41,18 +40,14 @@ function playwright() {
 }
 
 function viewer() {
-  const cached = path.join(os.tmpdir(), "drawio-viewer-static.min.js");
-  if (fs.existsSync(cached)) return Promise.resolve(fs.readFileSync(cached, "utf8"));
+  // A copy already on disk (VIEWER_JS=path) saves the 4 MB download; nothing is written anywhere.
+  if (process.env.VIEWER_JS) return Promise.resolve(fs.readFileSync(process.env.VIEWER_JS, "utf8"));
   return new Promise((resolve, reject) => {
     https.get(VIEWER_URL, (res) => {
       if (res.statusCode !== 200) return reject(new Error(`${VIEWER_URL}: HTTP ${res.statusCode}`));
       const parts = [];
       res.on("data", (d) => parts.push(d));
-      res.on("end", () => {
-        const js = Buffer.concat(parts).toString("utf8");
-        fs.writeFileSync(cached, js);
-        resolve(js);
-      });
+      res.on("end", () => resolve(Buffer.concat(parts).toString("utf8")));
     }).on("error", reject);
   });
 }
