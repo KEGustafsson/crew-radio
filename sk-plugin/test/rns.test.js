@@ -583,7 +583,10 @@ test("transport: copies of a checked announce and requests with no slot spend no
     I.parseAnnounce = realParse;
   }
   assert.equal(verified, 1, "checked once");
-  // A full table of links still in their grace: requests that could get no slot spend nothing...
+  // A full table of links still in their grace (from empty: that announce may have made us dial it,
+  // and our request would hold a slot): requests that could get no slot spend nothing...
+  me.pending.clear();
+  me.peers.clear();
   for (let i = 0; i < MAX_LINKS; i++) { t += 100; me.onFrame(L.requestLink({ destination: me.destination, sigPub: me.identity.sigPub }).raw); }
   assert.equal(me.links.size, MAX_LINKS);
   let accepted = 0;

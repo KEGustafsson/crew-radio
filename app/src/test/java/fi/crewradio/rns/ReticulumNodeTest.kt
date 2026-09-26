@@ -265,12 +265,15 @@ class ReticulumNodeTest {
         assertEquals(1, me.peerCount)
         assertEquals("one check, one token", ReticulumNode.GATE_BURST - 1.0, me.budgetLeft().first, 0.001)
         // A full table of links still in their grace: requests that could get no slot spend nothing.
-        repeat(ReticulumNode.MAX_LINKS) { now += 100; me.onFrame(request(me).raw) }
+        // A fresh node: that announce may have made this one dial it, and the request holds a slot.
+        val full = node("aaaaaaaaaaaaaaaa")
+        full.connected(); queue.clear()
+        repeat(ReticulumNode.MAX_LINKS) { now += 100; full.onFrame(request(full).raw) }
         queue.clear()
-        assertEquals(ReticulumNode.MAX_LINKS, me.entries().size)
-        val before = me.budgetLeft().second
-        repeat(40) { me.onFrame(request(me).raw) }
-        assertEquals("no slot, no token", before, me.budgetLeft().second, 0.001)
+        assertEquals(ReticulumNode.MAX_LINKS, full.entries().size)
+        val before = full.budgetLeft().second
+        repeat(40) { full.onFrame(request(full).raw) }
+        assertEquals("no slot, no token", before, full.budgetLeft().second, 0.001)
     }
 
     @Test
