@@ -178,6 +178,12 @@ _ICONS = {
               '<path d="M12,10 A2,2 0 1 1 12,14 A2,2 0 1 1 12,10 Z"/>'
               '<path d="M8.5,8.5 A5,5 0 0 0 8.5,15.5"/><path d="M15.5,8.5 A5,5 0 0 1 15.5,15.5"/>'
               '<path d="M5.5,5.5 A9,9 0 0 0 5.5,18.5"/><path d="M18.5,5.5 A9,9 0 0 1 18.5,18.5"/></g>'),
+    "reticulum": ("0 0 24 24",
+                  '<g fill="none" stroke="{c}" stroke-width="2" stroke-linecap="round">'
+                  '<path d="M12,2.5 A2.5,2.5 0 1 1 12,7.5 A2.5,2.5 0 1 1 12,2.5 Z"/>'
+                  '<path d="M5,15.5 A2.5,2.5 0 1 1 5,20.5 A2.5,2.5 0 1 1 5,15.5 Z"/>'
+                  '<path d="M19,15.5 A2.5,2.5 0 1 1 19,20.5 A2.5,2.5 0 1 1 19,15.5 Z"/>'
+                  '<path d="M10.8,7.2 L6.2,15.8 M13.2,7.2 L17.8,15.8 M7.5,18 L16.5,18"/></g>'),
     "volume": ("0 0 24 24",
                '<path fill="{c}" d="M3,9v6h4l5,5V4L7,9H3zm13.5,3c0,-1.77 -1.02,-3.29 -2.5,-4.03v8.05c1.48,'
                '-0.73 2.5,-2.25 2.5,-4.02zM14,3.23v2.06c2.89,0.86 5,3.54 5,6.71s-2.11,5.85 -5,6.71v2.06c4.01,'
@@ -272,7 +278,8 @@ def toggle(nid, x, y, on):
 # ---------------------------------------------------------------- the main screen
 
 def main_screen(p, x, y, state, peers=None, talking=None, ask_row=False, scrim=1.0, level=3,
-                tiles=((False, "wifi", "WLAN"), (True, "bluetooth", "BLUETOOTH"), (True, "aware", "AWARE"))):
+                tiles=((False, "wifi", "WLAN"), (True, "bluetooth", "BLUETOOTH"), (True, "aware", "AWARE"),
+                       (False, "reticulum", "RETICULUM"))):
     """activity_main.xml. state: 'off' | 'on' | 'air'; `scrim` dims it under the ask sheet.
 
     The tiles are dimmed while the phone is on the channel (they are a before-Connect choice), and
@@ -311,17 +318,18 @@ def main_screen(p, x, y, state, peers=None, talking=None, ask_row=False, scrim=1
     n.append(icon(p + "hm", "more", cl + CW - 34, top + 16, 24, 24, c(SECONDARY)))
 
     # Transport tiles: an icon over a label, teal and filled in when the transport is switched on.
+    # Four across: 8 dp apart and 11 sp labels (activity_main.xml), 76/76/76/76 of the 328 dp.
     ty = top + 56 + 12
     tile_alpha = 0.55 if on else 1.0
     tx = cl
-    for i, ((active, glyph, name), tw) in enumerate(zip(tiles, (103, 102, 103))):
+    for i, ((active, glyph, name), tw) in enumerate(zip(tiles, (76, 76, 76, 76))):
         fill = c(TILE_ON, tile_alpha) if active else "none"
         tint = c(PRIMARY if active else TEXT_DIM, tile_alpha)
         n.append(rect(p + f"t{i}", tx, ty, tw, 76, fill=fill,
                       stroke=c(PRIMARY if active else OUTLINE, tile_alpha), r=14, sw=2 if active else 1))
         n.append(icon(p + f"ti{i}", glyph, tx + tw // 2 - 13, ty + 14, 26, 26, tint))
-        n.append(txt(p + f"tl{i}", name, tx, ty + 46, tw, 16, 12, tint, align="center", tracking=0.08))
-        tx += tw + 10
+        n.append(txt(p + f"tl{i}", name, tx, ty + 46, tw, 16, 11, tint, align="center", tracking=0.06))
+        tx += tw + 8
     ry = ty + 76
 
     # The Bluetooth peer row: a before-Connect choice, so the app hides it while on the channel.

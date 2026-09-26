@@ -218,9 +218,13 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 - Wire format has no legacy mode: every phone must run the same build (README says so).
 - Wi-Fi Aware: every node publishes and subscribes; lower senderId initiates the
   data path (one link per pair). Publisher uses accept-any on API 31+.
-- Reticulum (`rns/` + `transport/ReticulumTransport`, off by default; Settings **Use Reticulum** +
-  **Transport node** `host[:port]`, 4242 default, both managed keys, not a main-screen tile because
-  it needs an address): one TCP connection (HDLC framing) to a Reticulum transport node, Reticulum
+- Reticulum (`rns/` + `transport/ReticulumTransport`, off by default): the fourth main-screen tile
+  (`use_reticulum`, per phone like the others, not managed; four tiles means 8 dp gaps and 11 sp
+  labels), whose first tap with no node asks for one in a dialog; Settings keeps **Transport node**
+  `host[:port]` (4242 default, a managed key). The socket goes over the network `NetworkChoice`
+  (pure, tested) picks: validated internet for a hub (default, then Wi-Fi/Ethernet, then mobile),
+  Wi-Fi for a private address; bound with `Network.bindSocket`, re-opened when that network is lost.
+  One TCP connection (HDLC framing) to a Reticulum transport node, Reticulum
   links inside it, the channel's sealed packets carried unchanged behind a one-byte `Carry` header
   (a PCM frame, 686 bytes, goes in two parts: the base-MTU link payload is 431). Written from the
   Reticulum manual, no Reticulum code included, no dependency: `Curve25519` is X25519/Ed25519 by

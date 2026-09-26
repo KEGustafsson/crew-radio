@@ -85,7 +85,8 @@
             android:contentDescription="@string/menu_settings" />
     </LinearLayout>
 
-    <!-- Transport tiles. -->
+    <!-- Transport tiles: four across a 360 dp phone, so 8 dp apart and 11 sp labels (BLUETOOTH and
+         RETICULUM are the longest and just fit). -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="76dp"
@@ -101,31 +102,43 @@
             android:gravity="center"
             android:background="@drawable/bg_tile_off">
             <ImageView android:id="@+id/tileLanIcon" android:layout_width="26dp" android:layout_height="26dp" android:src="@drawable/ic_wifi" android:contentDescription="@null" />
-            <TextView android:id="@+id/tileLanLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="@string/tile_lan" android:fontFamily="monospace" android:letterSpacing="0.08" android:textSize="12sp" />
+            <TextView android:id="@+id/tileLanLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:maxLines="1" android:text="@string/tile_lan" android:fontFamily="monospace" android:letterSpacing="0.06" android:textSize="11sp" />
         </LinearLayout>
         <LinearLayout
             android:id="@+id/tileBt"
             android:layout_width="0dp"
             android:layout_weight="1"
             android:layout_height="match_parent"
-            android:layout_marginStart="10dp"
+            android:layout_marginStart="8dp"
             android:orientation="vertical"
             android:gravity="center"
             android:background="@drawable/bg_tile_off">
             <ImageView android:id="@+id/tileBtIcon" android:layout_width="26dp" android:layout_height="26dp" android:src="@drawable/ic_bluetooth" android:contentDescription="@null" />
-            <TextView android:id="@+id/tileBtLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="@string/tile_bt" android:fontFamily="monospace" android:letterSpacing="0.08" android:textSize="12sp" />
+            <TextView android:id="@+id/tileBtLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:maxLines="1" android:text="@string/tile_bt" android:fontFamily="monospace" android:letterSpacing="0.06" android:textSize="11sp" />
         </LinearLayout>
         <LinearLayout
             android:id="@+id/tileAware"
             android:layout_width="0dp"
             android:layout_weight="1"
             android:layout_height="match_parent"
-            android:layout_marginStart="10dp"
+            android:layout_marginStart="8dp"
             android:orientation="vertical"
             android:gravity="center"
             android:background="@drawable/bg_tile_off">
             <ImageView android:id="@+id/tileAwareIcon" android:layout_width="26dp" android:layout_height="26dp" android:src="@drawable/ic_aware" android:contentDescription="@null" />
-            <TextView android:id="@+id/tileAwareLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="@string/tile_aware" android:fontFamily="monospace" android:letterSpacing="0.08" android:textSize="12sp" />
+            <TextView android:id="@+id/tileAwareLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:maxLines="1" android:text="@string/tile_aware" android:fontFamily="monospace" android:letterSpacing="0.06" android:textSize="11sp" />
+        </LinearLayout>
+        <LinearLayout
+            android:id="@+id/tileRns"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="match_parent"
+            android:layout_marginStart="8dp"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/bg_tile_off">
+            <ImageView android:id="@+id/tileRnsIcon" android:layout_width="26dp" android:layout_height="26dp" android:src="@drawable/ic_reticulum" android:contentDescription="@null" />
+            <TextView android:id="@+id/tileRnsLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:maxLines="1" android:text="@string/tile_reticulum" android:fontFamily="monospace" android:letterSpacing="0.06" android:textSize="11sp" />
         </LinearLayout>
     </LinearLayout>
 

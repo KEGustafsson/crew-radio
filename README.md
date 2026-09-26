@@ -14,7 +14,8 @@ no account, no internet, no subscription. Connecting people, with what is in the
 - **Press to talk**, radio style: hold the big button and the whole crew hears you. Or switch to
   full duplex and talk over each other like a phone conference.
 - **Any link, all at once.** Tick WLAN, Bluetooth, Wi‑Fi Aware — whatever the phones have. A
-  phone with two kinds of link bridges them. Optionally Reticulum too, for a crew member ashore.
+  phone with two kinds of link bridges them. **RETICULUM** takes the channel beyond the boat, for
+  a crew member ashore.
 - **Mesh and relay.** What one phone hears on one link it repeats on its others, up to four hops.
   Two phones that cannot reach each other still talk through a third.
 - **Works with the screen off**, in a pocket, with a headset on, or with the phone at your ear
@@ -59,8 +60,9 @@ no account, no internet, no subscription. Connecting people, with what is in the
    router (most recent Samsung and Pixel phones have it; the tile is greyed out and says so on a
    phone without the radio, and on Android 12 and older it also needs the phone's location
    services switched on — with them off the app stops before joining and offers a **Location
-   settings** button); **BLUETOOTH** for any two phones paired in the phone's Bluetooth settings.
-   Tick more than one if you have them.
+   settings** button); **BLUETOOTH** for any two phones paired in the phone's Bluetooth settings;
+   **RETICULUM** to reach the crew through a Reticulum hub, from ashore (see
+   [From ashore: Reticulum](#from-ashore-reticulum)). Tick more than one if you have them.
 2. **Bluetooth only:** before joining, on one phone choose *Listen only* in the peer row, on the
    other pick that phone from the list. Bluetooth links pairs of phones; a phone can be the
    listening end for several others. The peer is fixed when you join, so the row disappears
@@ -157,8 +159,7 @@ the Releases page.
 | **Pair with server** | Asks the server to let this phone in; somebody approves it once in the server's admin page. Nothing secret is typed or read out. Whole-crew answers need write access — the row says which you have. |
 | **Speed / depth unit** | Knots or metres per second; metres or feet. |
 | **WLAN group and port** | The multicast group every phone listens to. Change only if it clashes with something on your network, and change it on every phone. |
-| **Use Reticulum** | Off (default). On: the phone also joins the channel through the Reticulum transport node below — see [From ashore: Reticulum](#from-ashore-reticulum). |
-| **Transport node** | The Reticulum transport node to connect to, as `host` or `host:port` (4242 when left out). |
+| **Transport node** | The Reticulum hub the **RETICULUM** tile connects to, as `host` or `host:port` (4242 when left out). The tile asks for it the first time; change it here. |
 | **Hop limit** | How many phones a packet may be relayed through (4). |
 
 ## How it works, briefly
@@ -202,7 +203,7 @@ repeat of the previous one rather than a click. The developer notes in
   the head count reads "N aboard".
 - **For a fleet.** The app publishes managed configuration, so an administrator can set the
   channel key, channel name, announced name, WLAN group and port, hop limit, relay, full duplex,
-  Opus, the audio output and the Reticulum settings centrally. A setting your organisation has set wins, and its row in
+  Opus, the audio output and the Reticulum transport node centrally. A setting your organisation has set wins, and its row in
   Settings is greyed out and reads *Set by your organisation*; everything else stays with whoever
   carries the phone.
 - **Privacy and security.** There is no server of the app's own. The channel stays on the phones
@@ -233,8 +234,11 @@ further: a crew member ashore, on mobile data, stays on the channel, and so can 
    hub ashore (or reachable from the internet itself). Turn on **Reticulum** in the
    [signalk-crewradio](sk-plugin/README.md) plugin too: the server then relays between Reticulum and
    the boat's WLAN, so the phones aboard need nothing new.
-2. On the phone ashore, **Settings › Use Reticulum** and **Transport node**: the hub (or the
-   boat's node), as `host:port`. Join the channel as usual; the WLAN tile may stay on or off.
+2. On the phone ashore, tap the **RETICULUM** tile. The first time it asks for the transport node:
+   the hub (or the boat's node), as `host:port`. Join the channel as usual; the other tiles may
+   stay on or off. The phone reaches the hub over whatever it has — the boat's Wi‑Fi, a marina's,
+   or mobile data — preferring a network that actually reaches the internet, and moves over when
+   that network goes away.
 3. The phone shows on everyone's roster with **Reticulum** among its links.
 
 Everything is still encrypted end to end with the channel key; the Reticulum network only

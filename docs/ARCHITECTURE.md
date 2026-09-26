@@ -156,9 +156,16 @@ the two to the same bytes, and its values were checked against the reference imp
   channel packets instead of calling the engine, so the engine is never entered under the node's
   lock.
 - Reticulum does the multi-hop part and every node links to every other, so `relayWithin` is
-  false; a phone with Reticulum and WLAN, or the plugin, bridges the two. It is a Settings choice
-  (**Use Reticulum**, **Transport node**) rather than a main-screen tile, because it needs an
-  address to be of any use; the identity is new for every session.
+  false; a phone with Reticulum and WLAN, or the plugin, bridges the two. It is the fourth
+  main-screen tile (`use_reticulum`); the first tap with no transport node set asks for one in a
+  dialog, and Settings keeps only the node (`reticulum_node`). The identity is new for every session.
+- The connection goes over "whatever the phone has" by a rule (`NetworkChoice`, pure and tested):
+  for a hub on the internet, a network that has actually reached it (validated), the default
+  first, then Wi‑Fi or Ethernet, then mobile data; for a node at a private address, the Wi‑Fi.
+  `ReticulumTransport` keeps the networks from a `NetworkCallback`, binds its socket to the chosen
+  one, and drops and re-opens the connection when that network is lost. So a boat Wi‑Fi without
+  internet does not swallow the connection, and WLAN aboard and Reticulum over mobile data run at
+  once.
 
 Reconnect lives inside each transport, never in the engine: Bluetooth re-dials its chosen peer
 from the reader's `finally`, and waits for the adapter to come back on when it is switched off;

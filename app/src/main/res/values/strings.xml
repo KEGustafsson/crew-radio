@@ -22,6 +22,7 @@
     <string name="tile_lan">WLAN</string>
     <string name="tile_bt">BLUETOOTH</string>
     <string name="tile_aware">AWARE</string>
+    <string name="tile_reticulum">RETICULUM</string>
     <string name="peer_listen_only">PEER · LISTEN ONLY</string>
     <string name="peer_line">PEER · %1$s</string>
     <string name="bt_listen_only">Listen only (act as server)</string>
@@ -66,6 +67,7 @@
     <string name="a11y_tile_lan">WLAN transport</string>
     <string name="a11y_tile_bt">Bluetooth transport</string>
     <string name="a11y_tile_aware">Wi-Fi Aware transport</string>
+    <string name="a11y_tile_reticulum">Reticulum transport</string>
     <string name="a11y_unavailable">not available on this phone</string>
     <string name="a11y_peer">Bluetooth peer</string>
     <!-- %1$s is the "N aboard" text above. -->
@@ -249,12 +251,18 @@
     <string name="status_rns_cant_connect">Reticulum: can\'t reach %1$s (%2$s), retry in %3$ds</string>
     <string name="status_rns_lost">Reticulum: %1$s lost (%2$s), retry in %3$ds</string>
     <string name="status_rns_closed">connection closed</string>
+    <string name="status_rns_no_network">no network</string>
     <string name="status_rns_stopped">Reticulum stopped: %1$s</string>
     <plurals name="status_rns_links">
         <item quantity="one">Reticulum: %1$d link</item>
         <item quantity="other">Reticulum: %1$d links</item>
     </plurals>
-    <string name="reticulum_no_node">Set a Reticulum transport node in Settings first</string>
+    <string name="reticulum_no_node">Set the Reticulum transport node first</string>
+    <!-- The dialog the RETICULUM tile opens when no transport node is set yet. -->
+    <string name="rns_dialog_title">Reticulum transport node</string>
+    <string name="rns_dialog_message">The hub the crew meets on, as host or host:port. The phone reaches it over whatever it has: the boat\'s Wi‑Fi, a marina\'s, or mobile data.</string>
+    <string name="rns_dialog_hint">hub.example.org:4242</string>
+    <string name="rns_dialog_save">Save</string>
 
     <!-- Status screen -->
     <string name="state_off">OFF</string>
@@ -349,9 +357,7 @@
     <string name="pref_cat_wlan">WLAN — takes effect on the next Connect</string>
     <string name="pref_cat_mesh">Mesh</string>
     <string name="pref_cat_reticulum">Reticulum — takes effect on the next Connect</string>
-    <string name="pref_reticulum_title">Use Reticulum</string>
-    <string name="pref_reticulum_on">Also on the channel through the transport node below: from ashore over mobile data, or across a Reticulum network</string>
-    <string name="pref_reticulum_off">Off. Turn on to reach the crew through a Reticulum transport node</string>
+    <string name="pref_reticulum_help">Switched on and off with the RETICULUM tile on the main screen. It goes over whatever network the phone has — the boat\'s Wi‑Fi, a marina\'s, or mobile data — and follows it when that changes.</string>
     <string name="pref_reticulum_node_title">Transport node</string>
     <string name="pref_reticulum_node_message">The TCP server interface of a Reticulum transport node, as host or host:port (4242 when left out): the boat\'s rnsd, or a hub the crew uses. Every phone and the boat must reach the same Reticulum network.</string>
     <string name="pref_name_title">My name</string>
@@ -431,8 +437,6 @@
     <string name="restriction_hops_desc">How many relays a packet may cross, 1 to 16.</string>
     <string name="restriction_relay_title">Relay</string>
     <string name="restriction_relay_desc">Forward what this phone hears to its other links.</string>
-    <string name="restriction_reticulum_title">Use Reticulum</string>
-    <string name="restriction_reticulum_desc">Also join the channel through the Reticulum transport node below.</string>
     <string name="restriction_reticulum_node_title">Reticulum transport node</string>
     <string name="restriction_reticulum_node_desc">host or host:port of a Reticulum transport node\'s TCP server interface.</string>
     <string name="restriction_full_duplex_title">Full duplex</string>

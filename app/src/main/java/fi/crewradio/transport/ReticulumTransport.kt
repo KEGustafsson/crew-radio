@@ -1,10 +1,15 @@
 package fi.crewradio.transport
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import fi.crewradio.R
 import fi.crewradio.rns.ReticulumNode
 import fi.crewradio.rns.RnsPacket
 import java.io.IOException
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
@@ -19,6 +24,12 @@ import java.net.SocketTimeoutException
  * relayed within this transport ([relayWithin] is false); a phone running it beside WLAN, or the
  * Signal K plugin, relays between the two like any bridge. The identity is new for every
  * session and never stored.
+ *
+ * The connection goes over whatever network the phone has that can reach the node
+ * ([NetworkChoice]): for a hub on the internet, one that has actually reached the internet (so a
+ * boat Wi-Fi without it does not swallow the connection while mobile data is up); for a node at a
+ * private address, the Wi-Fi. The socket is bound to that network, and when the network goes away
+ * the connection is dropped and re-opened over whatever is there then.
  *
  * Threads: `ptt-rns-rx` owns the socket, reads frames and ticks the node once a second (a read
  * timeout); `ptt-rns-tx` writes from a [SendQueue], so a stalled connection never blocks the
@@ -42,6 +53,20 @@ class ReticulumTransport(
     @Volatile private var connected = false
     @Volatile private var socket: Socket? = null
     @Volatile private var queue: SendQueue? = null
+    @Volatile private var bound: Network? = null
+    private val connectivity = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    /** Every network that says it offers the internet, with what it says about itself, kept by [networkCallback]. */
+    private val networks = java.util.concurrent.ConcurrentHashMap<Network, NetworkCapabilities>()
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            val fresh = networks.put(network, caps) == null
+            if (fresh && bound == null) waiter.wake()          // something to connect over, now
+        }
+        override fun onLost(network: Network) {
+            networks.remove(network)
+            if (network == bound) closeSocket()                // the reader ends, and reconnects over what is left
+        }
+    }
     private lateinit var onStatus: (String) -> Unit
     private val node = ReticulumNode(
         tag,
@@ -54,6 +79,8 @@ class ReticulumTransport(
     override fun start(onPacket: (packet: ByteArray, transport: Transport, link: Any?) -> Unit, onStatus: (String) -> Unit) {
         this.onStatus = onStatus
         running = true
+        // The default request asks for internet, unrestricted, trusted and not a VPN: the networks worth trying.
+        connectivity.registerNetworkCallback(NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), networkCallback)
         transportThread("ptt-rns-rx", { onStatus(str(R.string.status_rns_stopped, it.message)) }) { rxLoop(onPacket) }
     }
 
@@ -63,6 +90,7 @@ class ReticulumTransport(
 
     override fun stop() {
         running = false
+        try { connectivity.unregisterNetworkCallback(networkCallback) } catch (_: Exception) {}
         node.closeAll()                       // polite closes, flushed by the tx thread before the socket goes
         waiter.wake()
     }
@@ -77,14 +105,41 @@ class ReticulumTransport(
         try { socket?.close() } catch (_: IOException) {}
     }
 
+    /** The network to try now and the node's address resolved on it, or null when there is none. */
+    private fun route(): Pair<Network, InetAddress>? {
+        val default = connectivity.activeNetwork
+        fun candidates() = networks.entries.map { (n, caps) ->
+            NetworkChoice.Candidate(
+                n,
+                local = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET),
+                validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
+                isDefault = n == default
+            )
+        }
+        val target = NetworkChoice.target(host)
+        val network = NetworkChoice.pick(candidates(), target) ?: return null
+        val address = network.getByName(host.removePrefix("[").removeSuffix("]"))
+        // A name that turns out to be a private address (boat.local) is on the local network after all.
+        if (target == NetworkChoice.Target.NAME && NetworkChoice.target(address.hostAddress ?: "") == NetworkChoice.Target.PRIVATE) {
+            val local = NetworkChoice.pick(candidates(), NetworkChoice.Target.PRIVATE) ?: return null
+            return local to local.getByName(host)
+        }
+        return network to address
+    }
+
     private fun rxLoop(onPacket: (ByteArray, Transport, Any?) -> Unit) {
+        if (networks.isEmpty()) waiter.await(FIRST_NETWORK_MS)   // the callback reports the networks a moment after it is registered
         while (running) {
             val s = Socket()
             try {
-                s.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+                val (network, address) = route() ?: throw IOException(str(R.string.status_rns_no_network))
+                network.bindSocket(s)
+                bound = network
+                s.connect(InetSocketAddress(address, port), CONNECT_TIMEOUT_MS)
                 s.tcpNoDelay = true
                 s.soTimeout = TICK_MS.toInt()
             } catch (e: Exception) {
+                bound = null
                 try { s.close() } catch (_: IOException) {}
                 if (!running) break
                 val wait = backoff.next()
@@ -121,6 +176,7 @@ class ReticulumTransport(
                 node.disconnected()
                 if (!running) sleepQuietly(FLUSH_MS)   // the closes queued by stop() get their moment
                 queue = null
+                bound = null
                 q.close()
                 try { s.close() } catch (_: IOException) {}
                 socket = null
@@ -161,6 +217,7 @@ class ReticulumTransport(
         const val CONNECT_TIMEOUT_MS = 10_000
         const val TICK_MS = 1_000L
         const val FLUSH_MS = 150L
+        const val FIRST_NETWORK_MS = 1_000L
         /** Whole Reticulum packets: several links' worth of frames, a PCM frame being two of them. */
         const val QUEUE_FRAMES = 128
     }

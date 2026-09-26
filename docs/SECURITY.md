@@ -32,7 +32,7 @@ on and pointed across it, no stored recordings. The assets are the crew's conver
 
 ### Reticulum (optional, off by default)
 
-The one transport that can leave the boat. With **Use Reticulum** on, the phone (or the Signal K
+The one transport that can leave the boat. With the **RETICULUM** tile on, the phone (or the Signal K
 plugin) opens a TCP connection to the Reticulum transport node the crew set, and the channel's
 sealed packets travel inside Reticulum links through whatever network that node belongs to —
 possibly the public internet and other people's transport nodes.

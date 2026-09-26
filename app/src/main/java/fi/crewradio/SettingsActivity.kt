@@ -130,7 +130,6 @@ class SettingsActivity : AppCompatActivity() {
             Prefs.KEY_FULL_DUPLEX -> prefs.fullDuplex
             Prefs.KEY_OPUS -> prefs.opus
             Prefs.KEY_ASK_ENABLED -> prefs.askEnabled
-            Prefs.KEY_USE_RETICULUM -> prefs.useReticulum
             else -> null
         }
 
@@ -449,7 +448,7 @@ class SettingsActivity : AppCompatActivity() {
                 Prefs.KEY_ASK_ENABLED, Prefs.KEY_ASK_SERVER, Prefs.KEY_ASK_MODE,
                 Prefs.KEY_CREW_NAME, Prefs.KEY_NAME, Prefs.KEY_CHANNEL_KEY, Prefs.KEY_GROUP,
                 Prefs.KEY_PORT, Prefs.KEY_HOPS, Prefs.KEY_RELAY, Prefs.KEY_FULL_DUPLEX,
-                Prefs.KEY_OPUS, Prefs.KEY_AUDIO_ROUTE, Prefs.KEY_USE_RETICULUM, Prefs.KEY_RETICULUM_NODE
+                Prefs.KEY_OPUS, Prefs.KEY_AUDIO_ROUTE, Prefs.KEY_RETICULUM_NODE
             )
         }
     }

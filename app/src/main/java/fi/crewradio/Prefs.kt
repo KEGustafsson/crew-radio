@@ -163,7 +163,7 @@ class Prefs(context: Context) {
         KEY_PORT -> managedInt(key)?.let { SettingsRules.validPort(it.toString()) }
         KEY_HOPS -> managedInt(key)?.let { SettingsRules.validHops(it.toString()) }
         KEY_AUDIO_ROUTE -> managedString(key)?.let { validRoute(it) }
-        KEY_RELAY, KEY_FULL_DUPLEX, KEY_OPUS, KEY_ASK_ENABLED, KEY_USE_RETICULUM -> managedBool(key) != null
+        KEY_RELAY, KEY_FULL_DUPLEX, KEY_OPUS, KEY_ASK_ENABLED -> managedBool(key) != null
         KEY_RETICULUM_NODE -> managedString(key)?.let { SettingsRules.parseHostPort(it) } != null
         KEY_ASK_SERVER -> managedString(key)?.let { SignalKUrl.valid(it) }
         KEY_ASK_MODE -> managedString(key)?.let { validAskMode(it) }
@@ -245,9 +245,6 @@ class Prefs(context: Context) {
     val proximitySensor: Boolean get() = sp.getBoolean(KEY_PROXIMITY, true)
     val relay: Boolean get() = managedBool(KEY_RELAY) ?: sp.getBoolean(KEY_RELAY, true)
     val opus: Boolean get() = managedBool(KEY_OPUS) ?: sp.getBoolean(KEY_OPUS, true)
-
-    /** Join the channel through a Reticulum transport node as well; takes effect on the next Connect. */
-    val useReticulum: Boolean get() = managedBool(KEY_USE_RETICULUM) ?: sp.getBoolean(KEY_USE_RETICULUM, false)
 
     /** The transport node as typed (the managed one when valid), or null when none is set. */
     val reticulumNodeText: String?
@@ -373,7 +370,6 @@ class Prefs(context: Context) {
         const val KEY_FULL_DUPLEX = "full_duplex"
         const val KEY_RELAY = "relay"
         const val KEY_OPUS = "opus"
-        const val KEY_USE_RETICULUM = "use_reticulum"
         const val KEY_RETICULUM_NODE = "reticulum_node"
 
         // Ask the boat (see res/xml/preferences.xml and res/xml/app_restrictions.xml).
@@ -397,6 +393,7 @@ class Prefs(context: Context) {
         const val KEY_USE_LAN = "use_lan"
         const val KEY_USE_BT = "use_bt"
         const val KEY_USE_AWARE = "use_aware"
+        const val KEY_USE_RETICULUM = "use_reticulum"
         const val KEY_BT_PEER = "bt_peer"          // MAC address, or empty for "listen only"
     }
 }

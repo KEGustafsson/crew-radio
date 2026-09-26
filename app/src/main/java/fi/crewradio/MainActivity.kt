@@ -26,6 +26,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityManager
+import android.text.InputType
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -33,6 +36,7 @@ import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -77,7 +81,7 @@ internal fun View.padForWindowInsets() {
  * interrupts a running session.
  *
  * The "Radio" layout, top to bottom: channel header (crew name, how many aboard, menu),
- * three transport tiles, a strip with the Bluetooth peer, the channel switch, the playback
+ * four transport tiles, a strip with the Bluetooth peer, the channel switch, the playback
  * volume (an in-app gain with a mute), and the talk disc taking every pixel that is left. Settings
  * is behind the menu. Everything the user touches is at least 44 dp; the disc is
  * about 90% of the screen width.
@@ -231,7 +235,8 @@ class MainActivity : AppCompatActivity() {
         tiles = listOf(
             Tile(Prefs.KEY_USE_LAN, findViewById(R.id.tileLan), findViewById(R.id.tileLanIcon), findViewById(R.id.tileLanLabel), R.string.a11y_tile_lan),
             Tile(Prefs.KEY_USE_BT, findViewById(R.id.tileBt), findViewById(R.id.tileBtIcon), findViewById(R.id.tileBtLabel), R.string.a11y_tile_bt),
-            Tile(Prefs.KEY_USE_AWARE, findViewById(R.id.tileAware), findViewById(R.id.tileAwareIcon), findViewById(R.id.tileAwareLabel), R.string.a11y_tile_aware)
+            Tile(Prefs.KEY_USE_AWARE, findViewById(R.id.tileAware), findViewById(R.id.tileAwareIcon), findViewById(R.id.tileAwareLabel), R.string.a11y_tile_aware),
+            Tile(Prefs.KEY_USE_RETICULUM, findViewById(R.id.tileRns), findViewById(R.id.tileRnsIcon), findViewById(R.id.tileRnsLabel), R.string.a11y_tile_reticulum)
         )
         peerButton.contentDescription = getString(R.string.a11y_peer)
         // The channel row is one thing to a screen reader, not a row and a switch that do the same.
@@ -275,10 +280,15 @@ class MainActivity : AppCompatActivity() {
             tile.root.setOnClickListener {
                 if (!tile.available) { snack(getString(R.string.aware_unavailable), null) {}; return@setOnClickListener }
                 if (onChannel()) return@setOnClickListener   // takes effect on the next Connect anyway
+                // Reticulum is no use without a transport node: the first tap asks for one, right here.
+                if (tile.key == Prefs.KEY_USE_RETICULUM && !tile.on && prefs.reticulumNode == null) {
+                    askReticulumNode { tile.on = true; prefs.put(tile.key, true) }
+                    return@setOnClickListener
+                }
                 tile.on = !tile.on
                 prefs.put(tile.key, tile.on)
                 // Ask for what this transport needs, now, rather than at Connect on the water.
-                if (tile.on) askPermissions(thenConnect = false)
+                if (tile.on && tile.key != Prefs.KEY_USE_RETICULUM) askPermissions(thenConnect = false)   // Reticulum needs none
                 if (tile.key == Prefs.KEY_USE_BT) refreshPeer()
                 if (tile.key == Prefs.KEY_USE_AWARE && tile.on) warnIfLocationOff()
             }
@@ -410,10 +420,12 @@ class MainActivity : AppCompatActivity() {
      */
     private fun connect(s: PttService) {
         applySettings(s.engine)
-        // Reticulum is a Settings choice, not a tile: it needs a transport node to be of any use.
-        val rns = if (prefs.useReticulum) prefs.reticulumNode else null
-        if (prefs.useReticulum && rns == null) Toast.makeText(this, R.string.reticulum_no_node, Toast.LENGTH_SHORT).show()
-        if (tiles.none { it.on } && rns == null) {
+        // The Reticulum tile counts only with a transport node to go to (the tile asks for one, but
+        // Settings can clear it afterwards).
+        val rnsOn = tileOn(Prefs.KEY_USE_RETICULUM)
+        val rns = if (rnsOn) prefs.reticulumNode else null
+        if (rnsOn && rns == null) Toast.makeText(this, R.string.reticulum_no_node, Toast.LENGTH_SHORT).show()
+        if (tiles.none { it.on && (it.key != Prefs.KEY_USE_RETICULUM || rns != null) }) {
             Toast.makeText(this, R.string.pick_transport, Toast.LENGTH_SHORT).show()
             syncUi()
             return
@@ -779,6 +791,37 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** One line at the bottom of the screen, optionally with something to do about it. */
+    /**
+     * Asks for the Reticulum transport node, validated as Settings does ([SettingsRules.parseHostPort]),
+     * and stores it; [then] runs once a valid one is saved. The dialog stays open on a bad value.
+     */
+    private fun askReticulumNode(then: () -> Unit) {
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            hint = getString(R.string.rns_dialog_hint)
+            setSingleLine()
+        }
+        val box = FrameLayout(this).apply { setPadding(pad, 0, pad, 0); addView(input) }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.rns_dialog_title)
+            .setMessage(R.string.rns_dialog_message)
+            .setView(box)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.rns_dialog_save, null)
+            .show()
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val text = input.text.toString().trim()
+            if (SettingsRules.parseHostPort(text) == null) {
+                input.error = getString(R.string.why_reticulum_node)
+                return@setOnClickListener
+            }
+            prefs.put(Prefs.KEY_RETICULUM_NODE, text)
+            dialog.dismiss()
+            then()
+        }
+    }
+
     private fun snack(text: String, actionRes: Int?, action: () -> Unit) {
         val bar = Snackbar.make(root, text, Snackbar.LENGTH_LONG)
         if (actionRes != null) bar.setAction(actionRes) { action() }
