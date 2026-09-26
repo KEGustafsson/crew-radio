@@ -161,8 +161,10 @@ the two to the same bytes, and its values were checked against the reference imp
   dialog, and Settings keeps only the node (`reticulum_node`). The identity is new for every session.
 - The connection goes over "whatever the phone has" by a rule (`NetworkChoice`, pure and tested):
   for a hub on the internet, a network that has actually reached it (validated), the default
-  first, then Wi‑Fi or Ethernet, then mobile data; for a node at a private address, the Wi‑Fi.
-  `ReticulumTransport` keeps the networks from a `NetworkCallback`, binds its socket to the chosen
+  first, then Wi‑Fi or Ethernet, then mobile data; for a node at a private address, the Wi‑Fi, or
+  with none the routing table unbound (behind the phone's own hotspot, which is not a network it
+  joined). A name the chosen network cannot resolve (one only the boat's router knows) is asked of
+  the Wi‑Fi. `ReticulumTransport` keeps the networks from a `NetworkCallback`, binds its socket to the chosen
   one, and drops and re-opens the connection when that network is lost. So a boat Wi‑Fi without
   internet does not swallow the connection, and WLAN aboard and Reticulum over mobile data run at
   once.

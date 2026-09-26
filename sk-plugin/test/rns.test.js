@@ -416,6 +416,10 @@ test("transport: full tables make room for the crew by dropping what never prove
   const ids = [];
   for (let i = 0; i < MAX_LINKS; i++) ids.push(request());
   assert.equal(me.links.size, MAX_LINKS);
+  // A request no link can come of (65 bytes of data: not 64, not 67) takes nobody's slot.
+  const bad = L.requestLink({ destination: me.destination, sigPub: me.identity.sigPub });
+  me.onFrame(Buffer.concat([bad.raw, Buffer.alloc(1)]));
+  assert.deepEqual([...me.links.keys()], ids, "a malformed request evicts nothing");
   me.links.get(ids[0]).createdAt -= 10_000;
   const newest = request();
   assert.equal(me.links.size, MAX_LINKS);

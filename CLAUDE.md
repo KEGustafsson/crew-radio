@@ -223,7 +223,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   labels), whose first tap with no node asks for one in a dialog; Settings keeps **Transport node**
   `host[:port]` (4242 default, a managed key). The socket goes over the network `NetworkChoice`
   (pure, tested) picks: validated internet for a hub (default, then Wi-Fi/Ethernet, then mobile),
-  Wi-Fi for a private address; bound with `Network.bindSocket`, re-opened when that network is lost.
+  Wi-Fi for a private address, unbound over the routing table when there is no Wi-Fi (the phone's own
+  hotspot, which is not a network it joined), and a name mobile data cannot resolve is asked of the
+  Wi-Fi; bound with `Network.bindSocket`, re-opened when that network is lost.
   One TCP connection (HDLC framing) to a Reticulum transport node, Reticulum
   links inside it, the channel's sealed packets carried unchanged behind a one-byte `Carry` header
   (a PCM frame, 686 bytes, goes in two parts: the base-MTU link payload is 431). Written from the
@@ -236,7 +238,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   carries hellos at once and audio only after `confirmPeer`; silent 12 s or unconfirmed 15 s =
   closed; a full table (32 links, 64 peers) evicts the oldest unconfirmed link (else our oldest unanswered request) / stalest peer
   without a confirmed link, never a confirmed one (the name hash is public, so strangers can fill it);
-  in the plugin, with Reticulum on and the LAN down, a node on Reticulum alone keeps the channel; `onFrame` returns packets rather than calling the engine (no engine call under its lock).
+  a link request is validated before it may evict anything (a malformed one costs nobody a slot);
+  in the plugin, with Reticulum on and the LAN down, a node on Reticulum alone keeps the channel, and
+  hands over to the LAN node only after an announcement it is speaking has ended; `onFrame` returns packets rather than calling the engine (no engine call under its lock).
   `relayWithin` is false (every node links to every other; Reticulum does the multi-hop), so a
   phone or the plugin with Reticulum and WLAN bridges them. Hello transport flag 8. Group
   destinations are not used: Reticulum does not carry them over more than one hop. Interface access

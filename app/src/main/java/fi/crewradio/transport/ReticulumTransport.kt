@@ -13,6 +13,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 
 /**
  * The channel over Reticulum: one TCP connection to a Reticulum transport node (the boat's
@@ -28,8 +29,10 @@ import java.net.SocketTimeoutException
  * The connection goes over whatever network the phone has that can reach the node
  * ([NetworkChoice]): for a hub on the internet, one that has actually reached the internet (so a
  * boat Wi-Fi without it does not swallow the connection while mobile data is up); for a node at a
- * private address, the Wi-Fi. The socket is bound to that network, and when the network goes away
- * the connection is dropped and re-opened over whatever is there then.
+ * private address, the Wi-Fi, or with no Wi-Fi the routing table (this phone's own hotspot). A name
+ * the chosen network cannot resolve is asked of the local network too. The socket is bound to the
+ * network, and when the network goes away the connection is dropped and re-opened over whatever is
+ * there then.
  *
  * Threads: `ptt-rns-rx` owns the socket, reads frames and ticks the node once a second (a read
  * timeout); `ptt-rns-tx` writes from a [SendQueue], so a stalled connection never blocks the
@@ -105,10 +108,13 @@ class ReticulumTransport(
         try { socket?.close() } catch (_: IOException) {}
     }
 
-    /** The network to try now and the node's address resolved on it, or null when there is none. */
-    private fun route(): Pair<Network, InetAddress>? {
+    /** Where the socket goes: bound to [network], or over the routing table when it is null. */
+    private class Route(val network: Network?, val address: InetAddress)
+
+    /** The way to the node now and its address resolved on it, or null when there is none. */
+    private fun route(): Route? {
         val default = connectivity.activeNetwork
-        fun candidates() = networks.entries.map { (n, caps) ->
+        val candidates = networks.entries.map { (n, caps) ->
             NetworkChoice.Candidate(
                 n,
                 local = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET),
@@ -116,15 +122,24 @@ class ReticulumTransport(
                 isDefault = n == default
             )
         }
+        val name = host.removePrefix("[").removeSuffix("]")
         val target = NetworkChoice.target(host)
-        val network = NetworkChoice.pick(candidates(), target) ?: return null
-        val address = network.getByName(host.removePrefix("[").removeSuffix("]"))
-        // A name that turns out to be a private address (boat.local) is on the local network after all.
-        if (target == NetworkChoice.Target.NAME && NetworkChoice.target(address.hostAddress ?: "") == NetworkChoice.Target.PRIVATE) {
-            val local = NetworkChoice.pick(candidates(), NetworkChoice.Target.PRIVATE) ?: return null
-            return local to local.getByName(host)
+        val network = NetworkChoice.pick(candidates, target)
+            ?: return if (NetworkChoice.unboundWhenNone(target)) Route(null, InetAddress.getByName(name)) else null
+        val address = try {
+            network.getByName(name)
+        } catch (e: UnknownHostException) {
+            if (target != NetworkChoice.Target.NAME) throw e
+            val local = NetworkChoice.localRetry(candidates, network) ?: throw e
+            return Route(local, local.getByName(name))
         }
-        return network to address
+        // A name that turns out to be a private address (boat.local) is on the local network after all,
+        // or with none behind this phone's own hotspot, like a private address.
+        if (target == NetworkChoice.Target.NAME && NetworkChoice.target(address.hostAddress ?: "") == NetworkChoice.Target.PRIVATE) {
+            val local = NetworkChoice.pick(candidates, NetworkChoice.Target.PRIVATE) ?: return Route(null, address)
+            return Route(local, local.getByName(name))
+        }
+        return Route(network, address)
     }
 
     private fun rxLoop(onPacket: (ByteArray, Transport, Any?) -> Unit) {
@@ -132,10 +147,10 @@ class ReticulumTransport(
         while (running) {
             val s = Socket()
             try {
-                val (network, address) = route() ?: throw IOException(str(R.string.status_rns_no_network))
-                network.bindSocket(s)
-                bound = network
-                s.connect(InetSocketAddress(address, port), CONNECT_TIMEOUT_MS)
+                val way = route() ?: throw IOException(str(R.string.status_rns_no_network))
+                way.network?.bindSocket(s)
+                bound = way.network
+                s.connect(InetSocketAddress(way.address, port), CONNECT_TIMEOUT_MS)
                 s.tcpNoDelay = true
                 s.soTimeout = TICK_MS.toInt()
             } catch (e: Exception) {

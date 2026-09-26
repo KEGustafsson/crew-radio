@@ -156,8 +156,9 @@ internal class ReticulumNode(
         if (p.destType != RnsPacket.SINGLE || !p.destination.contentEquals(destination)) return
         val id = RnsLink.linkIdOf(p.raw, p.data.size).toHex()
         if (links.containsKey(id)) return
-        if (links.size + pending.size >= MAX_LINKS && !evictLink()) return
+        // Only a request a link can come of may cost another its slot.
         val (link, proof) = RnsLink.accept(identity, p) ?: return
+        if (links.size + pending.size >= MAX_LINKS && !evictLink()) return
         addLink(link, null)
         write(proof)
     }

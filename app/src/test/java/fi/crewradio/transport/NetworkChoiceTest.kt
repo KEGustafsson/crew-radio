@@ -3,7 +3,9 @@ package fi.crewradio.transport
 import fi.crewradio.transport.NetworkChoice.Candidate
 import fi.crewradio.transport.NetworkChoice.Target
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NetworkChoiceTest {
@@ -26,6 +28,20 @@ class NetworkChoiceTest {
     fun aNodeAtAPrivateAddressGoesOverTheLocalNetwork() {
         assertEquals("boat-wifi", NetworkChoice.pick(listOf(mobile, boatWifi), Target.PRIVATE))
         assertNull("no local network: no way to a private address", NetworkChoice.pick(listOf(mobile), Target.PRIVATE))
+    }
+
+    @Test
+    fun onlyAPrivateNodeGoesOverTheRoutingTableWhenNoNetworkFits() {
+        assertTrue("behind this phone's own hotspot", NetworkChoice.unboundWhenNone(Target.PRIVATE))
+        assertFalse(NetworkChoice.unboundWhenNone(Target.PUBLIC))
+        assertFalse(NetworkChoice.unboundWhenNone(Target.NAME))
+    }
+
+    @Test
+    fun aNameMobileDataCannotResolveIsAskedOfTheLocalNetwork() {
+        assertEquals("marina-wifi", NetworkChoice.localRetry(listOf(mobile, marinaWifi), "mobile"))
+        assertNull("the local network is the one that failed", NetworkChoice.localRetry(listOf(mobile, marinaWifi), "marina-wifi"))
+        assertNull("no local network to ask", NetworkChoice.localRetry(listOf(mobile), "mobile"))
     }
 
     @Test

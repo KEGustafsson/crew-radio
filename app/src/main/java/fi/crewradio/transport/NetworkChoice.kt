@@ -10,7 +10,9 @@ package fi.crewradio.transport
  *    boat Wi-Fi without internet does not swallow the connection while mobile data is up, and the
  *    phone can be on the WLAN aboard and on Reticulum over mobile data at once.
  *  - A transport node at a private address (the boat's own rnsd at 192.168.1.9) is on a local
- *    network, so it goes over Wi-Fi or Ethernet, whatever their internet status.
+ *    network, so it goes over Wi-Fi or Ethernet, whatever their internet status. With neither, it
+ *    is behind this phone's own hotspot or USB tethering ([unboundWhenNone]).
+ *  - A name the chosen network cannot resolve may be one only the boat's DNS knows ([localRetry]).
  */
 internal object NetworkChoice {
     class Candidate<T>(val id: T, val local: Boolean, val validated: Boolean, val isDefault: Boolean)
@@ -26,6 +28,23 @@ internal object NetworkChoice {
         return (validated.firstOrNull { it.isDefault } ?: validated.firstOrNull { it.local } ?: validated.firstOrNull()
             ?: candidates.firstOrNull { it.isDefault } ?: candidates.firstOrNull())?.id
     }
+
+    /**
+     * Whether a target with no network to [pick] still gets a connection, unbound, over the kernel's
+     * routing table. Only a private one: a Wi-Fi hotspot or USB tethering this phone provides is not
+     * a network it joined, so it is not among the networks it reports as having internet (on API 35
+     * and later it is a "local network", before that not a network at all), yet the routing table
+     * reaches the boat's rnsd behind it. A public node with no network has no way there.
+     */
+    fun unboundWhenNone(target: Target): Boolean = target == Target.PRIVATE
+
+    /**
+     * The network to ask next when [tried] could not resolve a name: the local one, since a name only
+     * the boat's router knows (boat.local, a hub in its DNS table) fails on mobile data. Null when
+     * the local network is the one that failed, or there is none.
+     */
+    fun <T> localRetry(candidates: List<Candidate<T>>, tried: T): T? =
+        pick(candidates, Target.PRIVATE)?.takeIf { it != tried }
 
     /**
      * What a host string is, without a DNS lookup: an address in a private, link-local, loopback

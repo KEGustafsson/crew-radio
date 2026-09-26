@@ -244,9 +244,9 @@ class ReticulumTransport extends EventEmitter {
     if (p.destType !== P.DestType.SINGLE || !p.destination.equals(this.destination)) return;
     const id = L.linkIdOf(p.raw, p.data.length).toString("hex");
     if (this.links.has(id)) return;                                     // a copy of one we already answered
-    if (this.links.size + this.pending.size >= MAX_LINKS && !this.evictLink()) return;
     const r = L.acceptLink(this.identity, p);
-    if (!r) return;
+    if (!r) return;                                                     // only a request a link can come of may cost another its slot
+    if (this.links.size + this.pending.size >= MAX_LINKS && !this.evictLink()) return;
     this.addLink(r.link, null);
     this.write(r.proof);
   }

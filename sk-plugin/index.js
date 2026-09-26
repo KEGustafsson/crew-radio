@@ -138,8 +138,20 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
         status();
         return;
       }
-      if (node) { node.stop(); node = null; }      // the Reticulum-only node that kept the channel while the LAN was down
-      startNode(link);
+      // The Reticulum-only node that kept the channel while the LAN was down hands over to a LAN
+      // node, but not mid-announcement: stopping it would cut the rest short, so it finishes first.
+      const takeOver = () => {
+        if (!running || link !== mine) return;     // stopped, or the LAN broke again in the meantime
+        if (node) { node.stop(); node = null; }
+        startNode(mine);
+      };
+      if (node?.speaking) {
+        const offline = node;
+        const ended = (on) => { if (!on) { offline.off("speaking", ended); takeOver(); } };
+        offline.on("speaking", ended);
+      } else {
+        takeOver();
+      }
     };
     const startNode = (on) => {
       node = new ChannelNode({ name: cfg.nodeName, crypto, link: on, rns, ttl: cfg.hops, guard });

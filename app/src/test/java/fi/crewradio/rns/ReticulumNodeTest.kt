@@ -140,6 +140,11 @@ class ReticulumNodeTest {
             data = RnsIdentity.buildAnnounce(me.identity, me.nameHash).second))!!)!!
         fun request(): String { now += 10; val r = RnsLink.request(target, null); me.onFrame(r.raw); return r.id.toHex() }
         val ids = (0 until ReticulumNode.MAX_LINKS).map { request() }
+        // A request no link can come of (65 bytes of data: not 64, not 67) takes nobody's slot.
+        val before = me.entries().map { it.key }
+        now += 10
+        me.onFrame(RnsLink.request(target, null).raw + byteArrayOf(0))
+        assertEquals("a malformed request evicts nothing", before, me.entries().map { it.key })
         val oldest = me.entries().minByOrNull { it.createdAt }!!.key
         val newest = request()
         val held = me.entries().map { it.key }

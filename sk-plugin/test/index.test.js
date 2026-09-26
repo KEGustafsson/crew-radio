@@ -22,6 +22,7 @@ class FakeLink extends EventEmitter {
   }
   open() {
     if (FakeLink.failOpen) return Promise.reject(new Error("no usable IPv4 interface"));
+    this.openedAt = Date.now();
     return Promise.resolve({ iface: "fake0", address: "10.0.0.2", broadcast: "10.0.0.255" });
   }
   send(buf) { this.sent.push(Buffer.from(buf)); return true; }
@@ -574,10 +575,16 @@ test("POST /say: a body cut short by the client going away is not said", async (
 
 /** A fake Reticulum transport, recording how it was made and driven. */
 class FakeRns extends EventEmitter {
-  constructor(opts) { super(); this.opts = opts; this.ready = false; this.linkCount = 0; this.sent = []; this.started = 0; this.stopped = 0; FakeRns.last = this; }
+  constructor(opts) { super(); this.opts = opts; this.ready = FakeRns.readyAtStart === true; this.linkCount = 0; this.sent = []; this.accepted = []; this.started = 0; this.stopped = 0; FakeRns.last = this; }
   start() { this.started++; }
   stop() { this.stopped++; }
-  send(buf) { this.sent.push(Buffer.from(buf)); return this.ready; }
+  /** Every packet offered is in `sent`; the ones a ready transport took are in `accepted` too. */
+  send(buf) {
+    const copy = Buffer.from(buf);
+    this.sent.push(copy);
+    if (this.ready) this.accepted.push(copy);
+    return this.ready;
+  }
   confirm() {}
 }
 
@@ -625,16 +632,17 @@ test("Reticulum settings: defaults, a bad port falls back and is named, and the 
 test("Reticulum: with the LAN down the channel runs on Reticulum alone, and moves back onto the LAN when it returns", async () => {
   FakeLink.last = undefined;
   FakeRns.last = undefined;
+  FakeRns.readyAtStart = true;
   FakeLink.failOpen = true;
   const app = fakeApp();
   const p = plugin(app, { ...deps, Reticulum: FakeRns });
   try {
     p.start({ channelKey: KEY, reticulum: { enabled: true } });
-    await until(() => FakeRns.last && FakeRns.last.sent.length > 0);
+    await until(() => FakeRns.last && FakeRns.last.accepted.length > 0);
     const r = FakeRns.last;
     assert.ok(app.errors.some((e) => /no usable IPv4 interface/.test(e)));
     assert.match(app.status.at(-1), /LAN down/);
-    assert.equal(P.parseHeader(r.sent[0]).codec, P.Codec.HELLO, "our hellos go out over Reticulum while the LAN retries");
+    assert.equal(P.parseHeader(r.accepted[0]).codec, P.Codec.HELLO, "our hellos go out over Reticulum while the LAN retries");
     const before = r.sent.length;
     const firstLink = FakeLink.last;
     await until(() => FakeLink.last !== firstLink, 2500);        // a retry failed too; the Reticulum node is not rebuilt for it
@@ -643,6 +651,41 @@ test("Reticulum: with the LAN down the channel runs on Reticulum alone, and move
     await until(() => FakeLink.last && !FakeLink.last.closed && FakeLink.last.sent.length > 0, 6000);
     assert.doesNotMatch(app.status.at(-1), /LAN down/);
   } finally {
+    FakeRns.readyAtStart = false;
+    FakeLink.failOpen = false;
+    p.stop();
+  }
+});
+
+test("Reticulum: an announcement going out on Reticulum alone is not cut short when the LAN comes back", async () => {
+  /** Four seconds of speech, so the LAN's next retry lands in the middle of it. */
+  class LongTts extends FakeTts {
+    synthesize(text) { this.texts.push(text); return Promise.resolve(Buffer.alloc(4 * 16000 * 2)); }
+  }
+  FakeLink.last = undefined;
+  FakeRns.last = undefined;
+  FakeRns.readyAtStart = true;
+  FakeLink.failOpen = true;
+  const app = fakeApp();
+  const p = plugin(app, { ...deps, Tts: LongTts, Reticulum: FakeRns });
+  const pcm = (list) => list.filter((b) => P.parseHeader(b).codec === P.Codec.PCM).length;
+  const speaking = () => app.deltas.flatMap((d) => d.delta.updates.flatMap((u) => u.values)).filter((v) => v.path === "communication.crewradio.speaking");
+  try {
+    p.start({ channelKey: KEY, waitForSilenceMs: 0, reticulum: { enabled: true } });
+    await until(() => FakeRns.last && FakeRns.last.accepted.length > 0);
+    const r = FakeRns.last;
+    app.props["signalk-crewradio.api"].say({ text: "Anchor dragging" });
+    await until(() => pcm(r.accepted) > 0);
+    FakeLink.failOpen = false;                                    // the LAN is back at its next retry, mid-announcement
+    await until(() => speaking().some((v) => v.value === true) && speaking().at(-1).value === false, 9000);
+    const endedAt = Date.now();
+    const lan = FakeLink.last;
+    assert.ok(lan.openedAt && lan.openedAt < endedAt - 200, "the LAN came back while the announcement was still going out");
+    assert.ok(pcm(r.accepted) >= 4 * 50, `the whole announcement went out on Reticulum (${pcm(r.accepted)} frames)`);
+    assert.equal(pcm(lan.sent), 0, "and none of it started over on the LAN");
+    await until(() => lan.sent.some((b) => P.parseHeader(b).codec === P.Codec.HELLO), 3000);   // then the LAN node took over
+  } finally {
+    FakeRns.readyAtStart = false;
     FakeLink.failOpen = false;
     p.stop();
   }
