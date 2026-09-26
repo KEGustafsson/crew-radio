@@ -108,7 +108,8 @@ class MainActivity : AppCompatActivity() {
     private var syncingVolume = false
     /** A headset button or the phone's own panel moved the level: follow it. */
     private val volumeChanged = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) { renderVolume() }
+        // Heard here as well as in the service: whichever receiver runs first, the slider shows the new level.
+        override fun onReceive(context: Context, intent: Intent) { callVolume.heard(intent); renderVolume() }
     }
     private lateinit var channelSwitch: MaterialSwitch
     private var syncingSwitch = false                  // true while syncUi() moves the switch itself
@@ -540,7 +541,8 @@ class MainActivity : AppCompatActivity() {
     /**
      * The volume row: the slider shows the call volume of the stream in use (the Bluetooth
      * headset's while it carries the audio), in the phone's own steps, and the number is the
-     * step. The mute glyph exists only on channel, so off channel it is dimmed.
+     * step. It is the level the crew chose, the same on and off channel (see [CallVolume]). The
+     * mute glyph exists only on channel, so off channel it is dimmed.
      */
     private fun renderVolume() {
         val connected = engine?.isConnected == true
@@ -548,7 +550,7 @@ class MainActivity : AppCompatActivity() {
         val stream = callVolume.stream(engine?.bluetoothHeadsetNow == true)
         val min = callVolume.min(stream)
         val max = maxOf(callVolume.max(stream), min + 1)
-        val level = callVolume.get(stream).coerceIn(min, max)
+        val level = callVolume.level(stream).coerceIn(min, max)
         syncingVolume = true
         volumeSlider.valueFrom = min.toFloat()
         volumeSlider.valueTo = max.toFloat()

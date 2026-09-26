@@ -112,9 +112,10 @@ phone is at your ear. **Settings › Talking › Audio output** can pin it to th
 Half duplex on a loudspeaker works well; **full duplex** (everyone heard at once) is far better
 with a headset, because a loudspeaker feeds back into the microphone.
 
-How loud the others are is the **volume slider** above the disc: the phone's call volume for
-whatever the sound goes to, so the loudspeaker, the earpiece and a headset each keep their own
-level, and a headset's own volume buttons move the slider too. The **speaker glyph** at its left
+How loud the others are is the **volume slider** above the disc: the phone's call volume, one
+level whatever the sound goes to, so it stays where you left it when you join or leave the channel
+or the sound moves between loudspeaker, earpiece and headset, and a headset's own volume buttons
+move the slider too. The **speaker glyph** at its left
 mutes the others without touching the level; you still hear your own talk-key tones, and the
 mute is cleared when you leave the channel.
 

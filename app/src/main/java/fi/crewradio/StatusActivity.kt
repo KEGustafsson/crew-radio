@@ -240,7 +240,7 @@ class StatusActivity : AppCompatActivity() {
         val muted = on && e.muted
         set(R.string.kv_call_volume, getString(
             if (muted) R.string.value_volume_muted else R.string.value_volume,
-            callVolume.get(stream), callVolume.max(stream)
+            callVolume.level(stream), callVolume.max(stream)
         ))
         set(R.string.kv_hop_limit, getString(R.string.value_number, prefs.hops))
         set(R.string.kv_version, getString(R.string.value_version, BuildConfig.VERSION_NAME, BuildConfig.GIT_SHA))
