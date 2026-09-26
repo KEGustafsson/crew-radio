@@ -282,13 +282,14 @@ class MainActivity : AppCompatActivity() {
                 if (onChannel()) return@setOnClickListener   // takes effect on the next Connect anyway
                 // Reticulum is no use without a transport node: the first tap asks for one, right here.
                 if (tile.key == Prefs.KEY_USE_RETICULUM && !tile.on && prefs.reticulumNode == null) {
-                    askReticulumNode { tile.on = true; prefs.put(tile.key, true) }
+                    askReticulumNode { tile.on = true; prefs.put(tile.key, true); askPermissions(thenConnect = false) }
                     return@setOnClickListener
                 }
                 tile.on = !tile.on
                 prefs.put(tile.key, tile.on)
-                // Ask for what this transport needs, now, rather than at Connect on the water.
-                if (tile.on && tile.key != Prefs.KEY_USE_RETICULUM) askPermissions(thenConnect = false)   // Reticulum needs none
+                // Ask for what this transport needs, now, rather than at Connect on the water
+                // (Reticulum: local network access for a node on the boat's network, else nothing).
+                if (tile.on) askPermissions(thenConnect = false)
                 if (tile.key == Prefs.KEY_USE_BT) refreshPeer()
                 if (tile.key == Prefs.KEY_USE_AWARE && tile.on) warnIfLocationOff()
             }
@@ -640,8 +641,23 @@ class MainActivity : AppCompatActivity() {
         askRow.visibility = if (controller.offered()) View.VISIBLE else View.GONE
     }
 
-    /** Opens the ask sheet, or says why it will not open. */
+    /**
+     * Opens the ask sheet, asking first for local network access when the boat's server needs it
+     * (Android 17 and later, [LocalNetwork.forServer]). The sheet opens whatever the answer: without
+     * it the question fails and the sheet says so, which is where the crew is looking.
+     */
     private fun openAsk() {
+        if (askController == null) return
+        if (LocalNetwork.forServer(Build.VERSION.SDK_INT, prefs.askServer) && !granted(LocalNetwork.PERMISSION)) {
+            askLocalNetwork.launch(LocalNetwork.PERMISSION)
+            return
+        }
+        openAskSheet()
+    }
+
+    private val askLocalNetwork = registerForActivityResult(ActivityResultContracts.RequestPermission()) { openAskSheet() }
+
+    private fun openAskSheet() {
         val controller = askController ?: return
         askSheet?.dismiss()
         askSheet = AskSheet.open(this, prefs, controller)
@@ -733,7 +749,18 @@ class MainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) list += Manifest.permission.NEARBY_WIFI_DEVICES
             else list += Manifest.permission.ACCESS_FINE_LOCATION
         }
+        list += localNetwork(LocalNetwork.Need.REQUIRED)
         return list
+    }
+
+    /**
+     * Local network access (Android 17 and later) when the transports switched on need it at
+     * [level]: WLAN always, Reticulum for a node on the boat's network ([LocalNetwork.forChannel]).
+     */
+    private fun localNetwork(level: LocalNetwork.Need): List<String> {
+        val node = if (tileOn(Prefs.KEY_USE_RETICULUM)) prefs.reticulumNode?.first else null
+        val need = LocalNetwork.forChannel(Build.VERSION.SDK_INT, tileOn(Prefs.KEY_USE_LAN), node)
+        return if (need == level && level != LocalNetwork.Need.NONE) listOf(LocalNetwork.PERMISSION) else emptyList()
     }
 
     /** What listing bonded devices and dialling one need; nothing before Android 12. */
@@ -747,11 +774,14 @@ class MainActivity : AppCompatActivity() {
      *   notification is what the crew is told to read.
      * - BLUETOOTH_SCAN: only used to cancel an in-progress system scan before dialling a peer,
      *   which makes RFCOMM connect faster; [BluetoothTransport] skips that step without it.
+     * - Local network access for a Reticulum node given by name: it may be on the boat's network
+     *   or on the internet, and only the lookup can tell.
      */
     private fun optionalPermissions(connecting: Boolean): List<String> {
         val list = mutableListOf<String>()
         if (connecting && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) list += Manifest.permission.POST_NOTIFICATIONS
         if (tileOn(Prefs.KEY_USE_BT) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) list += Manifest.permission.BLUETOOTH_SCAN
+        list += localNetwork(LocalNetwork.Need.OPTIONAL)
         return list
     }
 
@@ -780,6 +810,7 @@ class MainActivity : AppCompatActivity() {
         when (permission) {
             Manifest.permission.RECORD_AUDIO -> R.string.perm_mic_denied
             Manifest.permission.BLUETOOTH_CONNECT -> R.string.perm_bt_denied
+            LocalNetwork.PERMISSION -> R.string.perm_local_denied
             else -> R.string.perm_aware_denied
         }
     )

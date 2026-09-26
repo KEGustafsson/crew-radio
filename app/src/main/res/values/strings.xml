@@ -79,6 +79,7 @@
     <string name="perm_mic_denied">Crew Radio cannot talk without the microphone. Turn it on in App settings.</string>
     <string name="perm_bt_denied">Bluetooth is off for Crew Radio. Turn it on in App settings.</string>
     <string name="perm_aware_denied">Nearby devices is off for Crew Radio. Turn it on in App settings.</string>
+    <string name="perm_local_denied">Crew Radio cannot reach the boat\'s network without local network access (Nearby devices). Turn it on in App settings.</string>
     <string name="perm_needed">Crew Radio needs that permission to join the channel.</string>
 
     <!-- Wi-Fi Aware -->

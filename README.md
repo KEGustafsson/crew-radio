@@ -33,9 +33,12 @@ no account, no internet, no subscription. Connecting people, with what is in the
    the browser).
 2. The app asks for what it needs when it needs it: the microphone the first time you join,
    Bluetooth or nearby devices only if you switch those tiles on, notifications on the first
-   join. Grant them and it carries on by itself — you do not press again. If you turned one off
-   for good, a line at the bottom of the screen offers **App settings**, which takes you to the
-   switch. A crew member who only uses the boat's WLAN never has to grant Bluetooth anything.
+   join. On Android 17 and later the WLAN tile, a Reticulum node on the boat's network and Ask
+   boat data also need **local network access** (it sits under Nearby devices); a phone that
+   already allowed Nearby devices is not asked again. Grant them and it carries on by itself —
+   you do not press again. If you turned one off for good, a line at the bottom of the screen
+   offers **App settings**, which takes you to the switch. A crew member who only uses the
+   boat's WLAN never has to grant Bluetooth anything.
 3. **Share the channel key.** Each phone makes its own random key on first start (Settings ›
    Channel › Channel key). Pick one phone's and get it onto the others: **Share the key** sends
    it, **Show the key** puts it on screen to read out. Everything on the air is encrypted with

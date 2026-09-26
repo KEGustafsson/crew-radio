@@ -440,6 +440,13 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   the pre-34 NSD resolve and `Connection.setAudioRoute`, the self-managed PhoneAccount capability)
   goes in `LegacyPlatform.kt`, the only file with the suppression: a thin call, no policy, reached
   only behind its caller's API check. Anything new there needs the same justification in its KDoc.
+- Android 17 local network protection (targetSdk 37 enforces it): `ACCESS_LOCAL_NETWORK` (Nearby
+  devices group) gates every packet to or from a local address — WLAN, a private-address rnsd, the
+  Signal K server, mDNS — and without it TCP times out and UDP fails with EPERM. `LocalNetwork`
+  (pure, tested) decides when it is needed: required with the WLAN tile or a private Reticulum node,
+  optional for a node given by name, before opening the ask sheet or pairing, and for the Settings
+  mDNS search only once asking the boat is on. Its string is written out (`LocalNetwork.PERMISSION`)
+  and pinned by the test, so no API 37 constant is referenced from older code.
 - Anything blocking (sockets, AudioTrack.write) lives on its own named thread
   (`ptt-*`); never on the main thread.
 - Transport threads go through `transport/transportThread`: an uncaught throwable on a

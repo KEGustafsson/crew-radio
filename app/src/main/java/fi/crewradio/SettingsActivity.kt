@@ -2,13 +2,17 @@ package fi.crewradio
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.text.InputType
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
@@ -67,6 +71,30 @@ class SettingsActivity : AppCompatActivity() {
          * directly, which is what a discovery landing on an open Settings screen used to do.
          */
         private var discovered: String? = null
+
+        /** What runs once the local network access dialog is answered ([withLocalNetwork]). */
+        private var afterLocalNetwork: (() -> Unit)? = null
+        private val localNetworkRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            val next = afterLocalNetwork
+            afterLocalNetwork = null
+            if (isAdded) next?.invoke()
+        }
+
+        /** True when reaching the boat's server at [url] (or searching for one, null) needs no further permission. */
+        private fun localNetworkAllowed(url: String?): Boolean =
+            !LocalNetwork.forServer(Build.VERSION.SDK_INT, url) ||
+                ContextCompat.checkSelfPermission(requireContext(), LocalNetwork.PERMISSION) == PackageManager.PERMISSION_GRANTED
+
+        /**
+         * Runs [then] once the boat's server may be reached: at once where Android 17's local network
+         * access is not needed or already granted, else after asking. [then] runs whatever the answer;
+         * without the permission the search finds nothing and pairing fails, each saying so as it does.
+         */
+        private fun withLocalNetwork(url: String?, then: () -> Unit) {
+            if (localNetworkAllowed(url)) { then(); return }
+            afterLocalNetwork = then
+            localNetworkRequest.launch(LocalNetwork.PERMISSION)
+        }
 
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
@@ -195,7 +223,12 @@ class SettingsActivity : AppCompatActivity() {
 
             // Nothing set: look for a server on the network and fill it in. The crew can always
             // type an address instead, and a boat network that blocks multicast still works.
-            if (prefs.askServerTyped.isNullOrBlank() && !prefs.isManaged(Prefs.KEY_ASK_SERVER)) discover()
+            // On Android 17 the search needs local network access, asked for only once asking the boat
+            // is switched on: a crew that does not use Signal K is never shown the dialog for it.
+            if (prefs.askServerTyped.isNullOrBlank() && !prefs.isManaged(Prefs.KEY_ASK_SERVER)) {
+                if (prefs.askEnabled) withLocalNetwork(null) { discover() }
+                else if (localNetworkAllowed(null)) discover()
+            }
 
             askRowsEnabled(prefs)
             findPreference<Preference>(Prefs.KEY_ASK_ENABLED)?.setOnPreferenceChangeListener { _, value ->
@@ -204,6 +237,9 @@ class SettingsActivity : AppCompatActivity() {
                 for (key in ASK_CHILD_KEYS) {
                     if (prefs.isManaged(key)) continue
                     findPreference<Preference>(key)?.isEnabled = on
+                }
+                if (on && discovery == null && prefs.askServerTyped.isNullOrBlank() && !prefs.isManaged(Prefs.KEY_ASK_SERVER)) {
+                    withLocalNetwork(null) { discover() }
                 }
                 true
             }
@@ -216,8 +252,10 @@ class SettingsActivity : AppCompatActivity() {
                     Toast.makeText(requireContext(), R.string.pref_ask_server_none, Toast.LENGTH_LONG).show()
                     return@setOnPreferenceClickListener true
                 }
-                pair.summary = getString(R.string.pref_ask_pair_waiting)
-                startPairing(base, prefs, pair)
+                withLocalNetwork(base) {
+                    pair.summary = getString(R.string.pref_ask_pair_waiting)
+                    startPairing(base, prefs, pair)
+                }
                 true
             }
         }

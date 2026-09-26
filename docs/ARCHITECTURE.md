@@ -226,7 +226,7 @@ rejoin. The channel key is generated at random on first use
 
 | File | What it is |
 | --- | --- |
-| `MainActivity` | The screen, permissions derived from the enabled tiles, binds to the service |
+| `MainActivity` | The screen, permissions derived from the enabled tiles (local network access on Android 17+ by `LocalNetwork`), binds to the service |
 | `StatusActivity` | Crew detail, addresses, counters, the status log; polls once a second |
 | `SettingsActivity`, `Prefs`, `SettingsRules` | Settings screen, validated reads, pure validation rules |
 | `PttService` | Foreground service: engine owner, locks, notification, `MediaSession`, ear screen-off lock |
