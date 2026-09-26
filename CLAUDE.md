@@ -384,7 +384,8 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   summary for the crew, so a change to the signing variables or the prerequisites has to be
   made in both. The diagrams and the screen mock-ups are generated:
   `python docs/diagrams/make_diagrams.py` writes the `.drawio` files, draw.io desktop exports the
-  PNGs (command at the top of the script). No real screenshots in the repo: they carry device names.
+  PNGs (command at the top of the script), or `node docs/diagrams/export_png.js` does it headlessly
+  (draw.io's viewer in Playwright's Chromium; Roboto Mono installed, or the mock-ups mis-measure). No real screenshots in the repo: they carry device names.
   The screen mock-ups stand in for those screenshots, so they are drawn from the layouts, not from
   memory: every position, colour, letter spacing, icon and word in `make_diagrams.py` comes from
   `app/src/main/res`, the phone is a real 360 x 800 dp screen and a longer screen is cut off at the

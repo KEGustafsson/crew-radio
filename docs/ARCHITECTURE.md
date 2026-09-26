@@ -340,4 +340,5 @@ the Status screen, so every merge is a new version and a phone can always say wh
   and report rather than swallow, except transient send failures.
 - Every phone must run the same build; the wire format has no compatibility mode.
 - The diagrams on this page are generated: edit `docs/diagrams/make_diagrams.py`, run it, and
-  export with draw.io desktop (the command is at the top of the script).
+  export with draw.io desktop (the command is at the top of the script) or headlessly with
+  `node docs/diagrams/export_png.js`.

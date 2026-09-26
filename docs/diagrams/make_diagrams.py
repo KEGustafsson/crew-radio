@@ -13,6 +13,9 @@ screen-settings.png was once exported with a 10-pixel border and came out 3 % la
 beside it. Every phone is now the same 360 x 800 frame, a real phone's screen, so all of them
 export the same and a screen longer than that is cut off at the bottom edge as a screenshot is.
 
+Without draw.io desktop, `node docs/diagrams/export_png.js` renders every PNG in headless Chromium
+through the draw.io viewer, at the same scales and canvas sizes (its header lists what it needs).
+
 Run:  python docs/diagrams/make_diagrams.py
 
 The screens are drawn, not photographed - they carry nobody's device name - but they are drawn

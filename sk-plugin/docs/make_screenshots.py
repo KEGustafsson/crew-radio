@@ -1,7 +1,7 @@
 """Draws the two illustrative App Store pictures and the icon for signalk-crewradio as draw.io files,
 the way docs/diagrams/make_diagrams.py draws the app's screens: mock-ups with example names, no real
 device names. The admin UI pictures (plugin-config.png, data-browser.png) are real captures of a
-Signal K server with the plugin installed, taken with docs/capture_admin_ui.md's recipe. Export to PNG with draw.io desktop from the repository root:
+Signal K server with the plugin installed, taken with docs/capture_admin_ui.md's recipe. `node docs/diagrams/export_png.js` renders the two pictures headlessly (no draw.io desktop needed). Or export to PNG with draw.io desktop from the repository root:
 
     python sk-plugin/docs/make_screenshots.py
     for n in announcement how-it-fits; do
