@@ -90,10 +90,11 @@ def phone(p, x, y, talker, peers, s=1.0):
     n.append(txt(p + "h2", "CREW RADIO", x + 22 * s, y + 60 * s, 220 * s, 40 * s, int(26 * s), CYAN, bold=True, mono=False))
     n.append(rect(p + "hc", x + 232 * s, y + 52 * s, 66 * s, 40 * s, arc=25, label="▮▮ " + peers, color=TALKING, size=int(14 * s)))
     n.append(txt(p + "m", "⋮", x + 316 * s, y + 52 * s, 30 * s, 40 * s, int(22 * s), TEXT, align="center"))
-    for i, (name, active) in enumerate([("WLAN", True), ("BLUETOOTH", True), ("AWARE", True)]):
-        tx = x + (20 + i * 108) * s
-        n.append(rect(p + f"t{i}", tx, y + 118 * s, 100 * s, 66 * s, fill=(CYAN_DIM if active else BG), stroke=(CYAN if active else OUTLINE), arc=18,
-                      label=name, color=(CYAN if active else MUTED), size=int(11 * s)))
+    # Four tiles, as the app has since Reticulum: 8 apart, 11 sp labels.
+    for i, (name, active) in enumerate([("WLAN", True), ("BLUETOOTH", True), ("AWARE", True), ("RETICULUM", False)]):
+        tx = x + (20 + i * 82) * s
+        n.append(rect(p + f"t{i}", tx, y + 118 * s, 74 * s, 66 * s, fill=(CYAN_DIM if active else BG), stroke=(CYAN if active else OUTLINE), arc=18,
+                      label=name, color=(CYAN if active else MUTED), size=int(10 * s)))
     row_y = y + 202 * s
     n.append(rect(p + "sw", x + 20 * s, row_y, 320 * s, 50 * s))
     n.append(txt(p + "swl", "ON CHANNEL", x + 36 * s, row_y + 8 * s, 200 * s, 34 * s, int(13 * s), CYAN))
@@ -168,7 +169,7 @@ def how_it_fits():
     for i, (name, y) in enumerate([("Skipper's phone", 220), ("Mate's phone", 380), ("Deck phone", 540)]):
         n.append(box(f"p{i}", name + "\nCrew Radio app", 950, y, 250, 90, "#E1F5FE", "#0288D1", 14, True))
     n.append(cap("c4", "16 kHz PCM · hellos · AES-256-GCM", 850, 262, 200, 44, 12))
-    n.append(cap("c5", "the phones relay on over Bluetooth and Wi-Fi Aware", 930, 660, 290, 36, 12))
+    n.append(cap("c5", "the phones relay on over Bluetooth and Wi-Fi Aware; with Reticulum on, the server reaches the crew ashore", 930, 650, 290, 52, 12))
     n.append(cap("legend", "no cloud, no containers, no other plugin: the voice is made inside the plugin; the phones hear the same packets as from any crew member", 60, 740, 1160, 24, 12))
 
     e = [

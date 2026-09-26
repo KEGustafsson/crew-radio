@@ -655,14 +655,16 @@ diagram("architecture", "How the app is built", nodes=[
     ("enc", "Opus encoder" + NL + "(platform codec)", 40, 500, 170, 60, AUDIO),
     ("pk", "Packet" + NL + "18-byte header +" + NL + "Opus/PCM frame, or a hello" + NL + "(roster heartbeat)", 280, 460, 170, 80, END),
     ("lan", "WLAN" + NL + "UDP multicast + broadcast", 530, 400, 160, 60, NET),
-    ("bt", "Bluetooth" + NL + "RFCOMM link to one peer", 530, 480, 160, 60, NET),
-    ("aw", "Wi-Fi Aware" + NL + "phone-to-phone, no router", 530, 560, 160, 60, NET),
+    ("bt", "Bluetooth" + NL + "RFCOMM link to one peer", 530, 470, 160, 60, NET),
+    ("aw", "Wi-Fi Aware" + NL + "phone-to-phone, no router", 530, 540, 160, 60, NET),
+    ("rns", "Reticulum" + NL + "TCP to a transport node," + NL + "links to the crew ashore", 530, 610, 160, 60, NET),
     ("dec", "Opus decoder" + NL + "per talker", 800, 400, 190, 50, AUDIO),
     ("mix", "Mixer" + NL + "one queue per talker," + NL + "loss concealment, cue tones", 800, 480, 190, 70, AUDIO),
     ("play", "Speaker, earpiece or headset" + NL + "(AudioPlayback + AudioRoute)", 800, 580, 190, 60, AUDIO),
     ("n1", "Every phone is the same: there is no server and no master. Each phone sends its own frames on every"
      + NL + "transport it has on and, with Relay on (the default) and hops remaining, forwards what it hears to its"
-     + NL + "other transports, so a phone that has both Wi-Fi Aware and Bluetooth bridges the two.", 40, 660, 900, 60, NOTE),
+     + NL + "other transports, so a phone that has both Wi-Fi Aware and Bluetooth bridges the two. Reticulum reaches the"
+     + NL + "crew ashore through a transport node; the Signal K plugin bridges it to the boat's WLAN.", 40, 690, 900, 70, NOTE),
 ], edges=[
     ("ui", "svc", "binds while visible", EDGE),
     ("st", "eng", "polls once a second", EDGE_DASH + "exitX=1;exitY=0.5;entryX=0;entryY=0.3;"),
@@ -674,13 +676,15 @@ diagram("architecture", "How the app is built", nodes=[
     ("pk", "lan", "", EDGE + "exitX=1;exitY=0.3;entryX=0;entryY=0.5;"),
     ("pk", "bt", "", EDGE + "exitX=1;exitY=0.5;entryX=0;entryY=0.5;"),
     ("pk", "aw", "", EDGE + "exitX=1;exitY=0.7;entryX=0;entryY=0.5;"),
+    ("pk", "rns", "", EDGE + "exitX=1;exitY=0.9;entryX=0;entryY=0.5;"),
     ("lan", "eng", "", EDGE_DASH + "exitX=0.5;exitY=0;entryX=0.85;entryY=1;"),
-    ("bt", "eng", "received" + NL + "packets", EDGE_DASH + "exitX=1;exitY=0.5;entryX=1;entryY=0.7;", [(740, 510), (740, 293)]),
-    ("aw", "eng", "", EDGE_DASH + "exitX=1;exitY=0.5;entryX=1;entryY=0.85;", [(720, 590), (720, 306)]),
+    ("bt", "eng", "received" + NL + "packets", EDGE_DASH + "exitX=1;exitY=0.5;entryX=1;entryY=0.7;", [(740, 500), (740, 293)]),
+    ("aw", "eng", "", EDGE_DASH + "exitX=1;exitY=0.5;entryX=1;entryY=0.85;", [(720, 570), (720, 306)]),
+    ("rns", "eng", "", EDGE_DASH + "exitX=1;exitY=0.5;entryX=1;entryY=0.95;", [(705, 640), (705, 315)]),
     ("eng", "dec", "decode and play", EDGE + "exitX=1;exitY=0.3;entryX=0.5;entryY=0;"),
     ("dec", "mix", "", EDGE),
     ("mix", "play", "", EDGE),
-], width=1020, height=740)
+], width=1020, height=780)
 
 # ---------------------------------------------------------------- 2. packet flow (receive path)
 diagram("packet-flow", "What happens to a received packet", nodes=[
@@ -795,13 +799,16 @@ diagram("links", "One app, every link", nodes=[
     ("l1", "WLAN" + NL + "the boat's router or a hotspot:" + NL + "everyone on the same network", 40, 80, 220, 70, NET),
     ("l2", "Wi-Fi Aware" + NL + "phone to phone, no router," + NL + "Wi-Fi range", 40, 320, 220, 70, NET),
     ("l3", "Bluetooth" + NL + "phone to phone, close range," + NL + "any Android 10+ phone", 580, 80, 220, 70, NET),
+    ("l5", "Reticulum" + NL + "through a transport node:" + NL + "the crew ashore, over any network", 580, 320, 220, 70, NET),
     ("l4", "Relay (a setting, on by default, not a link):" + NL + "what this phone hears on one link it repeats on its other links,"
-     + NL + "up to the hop limit, so it bridges them", 300, 320, 480, 60, ENGINE + "dashed=1;"),
-    ("n", "Tick the links you have (WLAN, Wi-Fi Aware, Bluetooth). Phones find each other, no server, no account, no internet."
-     + NL + "Lose one link and the others carry on; a phone in the middle bridges the rest.", 40, 440, 760, 40, NOTE),
+     + NL + "up to the hop limit, so it bridges them", 180, 430, 480, 60, ENGINE + "dashed=1;"),
+    ("n", "Tick the links you have (WLAN, Wi-Fi Aware, Bluetooth, and Reticulum for the crew ashore). Phones find each other,"
+     + NL + "no server, no account; only Reticulum needs a transport node and a network to reach it. Lose one link and the"
+     + NL + "others carry on; a phone in the middle bridges the rest.", 40, 530, 780, 60, NOTE),
 ], edges=[
     ("p", "l1", "", EDGE_BI + "strokeColor=#7B1FA2;"),
     ("p", "l2", "", EDGE_BI + "strokeColor=#7B1FA2;"),
     ("p", "l3", "", EDGE_BI + "strokeColor=#0288D1;"),
+    ("p", "l5", "", EDGE_BI + "strokeColor=#2E7D32;"),
     ("p", "l4", "", EDGE_DASH + "strokeColor=#F9A825;endArrow=none;"),
-], width=860, height=520)
+], width=860, height=620)
