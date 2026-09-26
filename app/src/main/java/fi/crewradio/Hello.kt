@@ -37,6 +37,7 @@ class Hello(val name: String, val transports: Int, val ttl: Int, val versionCode
         const val LAN = 1
         const val BT = 2
         const val AWARE = 4
+        const val RETICULUM = 8
 
         /**
          * Parses [length] bytes at [offset]; null for anything off the wire contract — an unknown
@@ -93,6 +94,7 @@ class Hello(val name: String, val transports: Int, val ttl: Int, val versionCode
             "LAN" -> LAN
             "BT" -> BT
             "Aware" -> AWARE
+            "Reticulum" -> RETICULUM
             else -> 0
         }
 
@@ -101,6 +103,7 @@ class Hello(val name: String, val transports: Int, val ttl: Int, val versionCode
             if ((flags and LAN) != 0) add("LAN")
             if ((flags and BT) != 0) add("BT")
             if ((flags and AWARE) != 0) add("Aware")
+            if ((flags and RETICULUM) != 0) add("Reticulum")
         }.joinToString("+")
 
         /** The longest prefix of [s] whose UTF-8 form fits in [max] bytes, never cutting a code point. */

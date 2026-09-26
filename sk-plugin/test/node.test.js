@@ -300,3 +300,79 @@ test("the caller's cancel flag stops an announcement even before its first frame
   await node.speak(Buffer.alloc(FRAME_BYTES * 2));
   assert.equal(sent, 2, "the next one still goes out");
 });
+
+/** A fake Reticulum transport: records what it is given, and 'packet' is what arrived on a link. */
+function fakeRns(ready = true) {
+  const r = new EventEmitter();
+  r.ready = ready;
+  r.sent = [];
+  r.send = (buf, except) => { r.sent.push({ buf: Buffer.from(buf), except }); return true; };
+  return r;
+}
+
+test("with Reticulum: our packets go both ways, the hello says so, and the node relays between the LAN and Reticulum", async () => {
+  const lan = new EventEmitter();
+  lan.sent = [];
+  lan.send = (buf, targets) => { lan.sent.push({ buf: Buffer.from(buf), targets }); return true; };
+  const rns = fakeRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 4, heartbeatMs: 100000 });
+  n.start();
+  assert.equal(lan.sent.length, 1);
+  assert.equal(rns.sent.length, 1, "the hello goes over Reticulum too");
+  const hello = P.decodeHello(crypto.open(P.aadOf(rns.sent[0].buf), rns.sent[0].buf.subarray(P.HEADER)));
+  assert.equal(hello.transports, P.Transports.LAN | P.Transports.RETICULUM);
+
+  // From the LAN to Reticulum, ttl lowered by one; the first copy only.
+  const fromLan = packet({ senderId: 11, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60, 3) });
+  lan.emit("packet", fromLan, { address: "10.0.0.7" });
+  lan.emit("packet", fromLan, { address: "10.0.0.7" });
+  assert.equal(rns.sent.length, 2);
+  assert.equal(P.parseHeader(rns.sent[1].buf).ttl, 3);
+  assert.equal(n.stats.relayed, 1);
+
+  // From Reticulum to the LAN, with the unicast copies.
+  const via = { key: "link" };
+  const fromRns = packet({ senderId: 12, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60, 4) });
+  rns.emit("packet", fromRns, via);
+  const relayed = lan.sent.at(-1);
+  assert.equal(P.parseHeader(relayed.buf).ttl, 3);
+  assert.deepEqual(relayed.targets, ["10.0.0.7"]);
+  assert.equal(rns.sent.length, 2, "nothing goes back into Reticulum");
+
+  // A packet at the end of its budget is heard but not relayed; a forgery is not heard at all.
+  rns.emit("packet", packet({ senderId: 13, seq: 1, codec: P.Codec.OPUS, ttl: 1, payload: Buffer.alloc(60) }), via);
+  assert.equal(n.stats.relayed, 2);
+  const forged = Buffer.from(fromRns);
+  forged[forged.length - 1] ^= 1;
+  rns.emit("packet", forged, { key: "stranger" });
+  assert.equal(n.roster().length, 3);
+  // A Reticulum with no confirmed link takes nothing, and that is not counted as relayed.
+  rns.send = () => false;
+  lan.emit("packet", packet({ senderId: 14, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60, 5) }), { address: "10.0.0.8" });
+  assert.equal(n.stats.relayed, 2);
+  n.stop();
+  assert.equal(rns.listenerCount("packet"), 0);
+});
+
+test("with Reticulum down the hello does not claim it, and relaying can be turned off", () => {
+  const lan = new EventEmitter();
+  lan.sent = [];
+  lan.send = (buf) => { lan.sent.push(buf); return true; };
+  const rns = fakeRns(false);
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, relay: false, heartbeatMs: 100000 });
+  n.start();
+  const hello = P.decodeHello(crypto.open(P.aadOf(lan.sent[0]), lan.sent[0].subarray(P.HEADER)));
+  assert.equal(hello.transports, P.Transports.LAN);
+  lan.emit("packet", packet({ senderId: 21, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60) }), { address: "10.0.0.8" });
+  assert.equal(rns.sent.length, 1, "only our own hello");
+  n.stop();
+});
+
+test("relayTtl follows the app: capped at the signed budget, and never past our own hop limit", () => {
+  assert.equal(P.relayTtl({ ttl: 4, hops: 4 }, 4), 3);
+  assert.equal(P.relayTtl({ ttl: 9, hops: 4 }, 4), 3, "a bumped ttl buys nothing");
+  assert.equal(P.relayTtl({ ttl: 1, hops: 4 }, 4), 0);
+  assert.equal(P.relayTtl({ ttl: 2, hops: 4 }, 4), 1, "two relays passed, a third is still within 4 hops");
+  assert.equal(P.relayTtl({ ttl: 2, hops: 4 }, 3), 0, "but not within 3");
+  assert.equal(P.relayTtl({ ttl: 4, hops: 4 }, 1), 0);
+});

@@ -1,7 +1,10 @@
 # Security policy
 
-Crew Radio is a voice intercom for a small group of phones. It has no server, no account and no
-internet traffic; everything stays on the phones and the links between them. The threat model,
+Crew Radio is a voice intercom for a small group of phones. It has no server of its own and no
+account. By default everything stays on the phones and the links between them; the two
+exceptions are opt-in and off until set up: **Reticulum**, which opens one TCP connection to a
+Reticulum transport node the crew names (possibly across the internet), and **Ask boat data**,
+which talks to the boat's Signal K server on the boat's network. The threat model,
 what the app does about each threat, and how that maps to the EU Cyber Resilience Act's
 essential requirements are in [docs/SECURITY.md](docs/SECURITY.md).
 
@@ -14,7 +17,7 @@ crew must run the same version anyway; updating the crew is the fix for anything
 
 Please do not open a public issue for a security problem. Use GitHub's private reporting:
 **Security › Report a vulnerability** on this repository. Include the app version (Status screen),
-the phone model and Android version, the links in use (WLAN, Bluetooth, Wi‑Fi Aware) and what
+the phone model and Android version, the links in use (WLAN, Bluetooth, Wi‑Fi Aware, Reticulum) and what
 you observed.
 
 You will get an acknowledgement within 7 days and, for a confirmed problem, a fix or a mitigation

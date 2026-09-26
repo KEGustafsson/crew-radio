@@ -5,6 +5,21 @@ All notable changes to signalk-crewradio. The format follows
 
 ## Unreleased
 
+### Added
+
+- The channel over Reticulum (`lib/rns/`, off by default): a TCP connection to a Reticulum
+  transport node, the crew's other Reticulum nodes found by announce under a destination named
+  from the packet key, and the channel's sealed packets carried unchanged inside Reticulum links.
+  The plugin relays between Reticulum and the LAN, so a phone ashore on the same Reticulum network
+  is on the channel. Written from the Reticulum manual on Node's own crypto, no new dependency, and
+  checked against rnsd 1.5.4 and the reference implementation's own functions
+  (`test/rns.vector.json`, shared with the app). Settings under Reticulum; the web page and
+  `GET /status` show the link count while it is on, and why it is down when it is. A link carries
+  nothing until its far end has proved the channel key with a proof bound to that link, and
+  announces and link requests past 10 a second cost no signature work. With the LAN down the
+  channel keeps going on Reticulum alone; an announcement then waits 10 s for the LAN before going
+  to the shore alone, and is said again on the LAN if it comes back mid-way.
+
 ### Security
 
 - Ingress budgets on the wire, which the plugin did not have at all while the app has had three.

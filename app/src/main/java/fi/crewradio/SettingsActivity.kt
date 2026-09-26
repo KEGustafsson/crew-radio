@@ -2,13 +2,17 @@ package fi.crewradio
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.text.InputType
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
@@ -68,7 +72,36 @@ class SettingsActivity : AppCompatActivity() {
          */
         private var discovered: String? = null
 
+        /** False when the screen is re-created (a rotation): the permission is asked only on the first. */
+        private var firstShow = true
+
+        /** What runs once the local network access dialog is answered ([withLocalNetwork]). */
+        private var afterLocalNetwork: (() -> Unit)? = null
+        private val localNetworkRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            val next = afterLocalNetwork
+            afterLocalNetwork = null
+            if (isAdded) next?.invoke()
+        }
+
+        /** True when reaching the boat's server at [url] (or searching for one, null) needs no further permission. */
+        private fun localNetworkAllowed(url: String?): Boolean =
+            !LocalNetwork.forServer(Build.VERSION.SDK_INT, url) ||
+                ContextCompat.checkSelfPermission(requireContext(), LocalNetwork.PERMISSION) == PackageManager.PERMISSION_GRANTED
+
+        /**
+         * Runs [then] once the boat's server may be reached: at once where Android 17's local network
+         * access is not needed or already granted, else after asking. [then] runs whatever the answer;
+         * without the permission the search finds nothing and pairing fails, each saying so as it does.
+         */
+        private fun withLocalNetwork(url: String?, then: () -> Unit) {
+            if (localNetworkAllowed(url)) { then(); return }
+            if (afterLocalNetwork != null) return                  // a request is already on screen
+            afterLocalNetwork = then
+            localNetworkRequest.launch(LocalNetwork.PERMISSION)
+        }
+
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
+            firstShow = savedInstanceState == null
             setPreferencesFromResource(R.xml.preferences, rootKey)
             val prefs = Prefs(requireContext())
 
@@ -79,6 +112,7 @@ class SettingsActivity : AppCompatActivity() {
             rule(Prefs.KEY_HOPS, R.string.why_hops, numeric = true) { SettingsRules.validHops(it) }
             rule(Prefs.KEY_CHANNEL_KEY, R.string.why_channel_key) { SettingsRules.validChannelKey(it) }
             rule(Prefs.KEY_ASK_SERVER, R.string.why_ask_server) { it.isBlank() || SignalKUrl.valid(it) }
+            rule(Prefs.KEY_RETICULUM_NODE, R.string.why_reticulum_node) { it.isBlank() || SettingsRules.parseHostPort(it) != null }
             channelKey(prefs)
             ask(prefs)
 
@@ -142,6 +176,7 @@ class SettingsActivity : AppCompatActivity() {
                 Prefs.KEY_HOPS -> prefs.hops.toString()
                 Prefs.KEY_AUDIO_ROUTE -> prefs.audioRoute
                 Prefs.KEY_ASK_MODE -> prefs.askMode
+                Prefs.KEY_RETICULUM_NODE -> prefs.reticulumNodeText
                 else -> null
             } ?: return null
             if (row !is ListPreference) return raw
@@ -193,7 +228,14 @@ class SettingsActivity : AppCompatActivity() {
 
             // Nothing set: look for a server on the network and fill it in. The crew can always
             // type an address instead, and a boat network that blocks multicast still works.
-            if (prefs.askServerTyped.isNullOrBlank() && !prefs.isManaged(Prefs.KEY_ASK_SERVER)) discover()
+            // On Android 17 the search needs local network access, asked for only once asking the boat
+            // is switched on: a crew that does not use Signal K is never shown the dialog for it.
+            // Asked once, when the screen is first opened: not again on a rotation, which runs this
+            // again while the system dialog may still be up (a second request is refused at once).
+            if (prefs.askServerTyped.isNullOrBlank() && !prefs.isManaged(Prefs.KEY_ASK_SERVER)) {
+                if (prefs.askEnabled && firstShow) withLocalNetwork(null) { discover() }
+                else if (localNetworkAllowed(null)) discover()
+            }
 
             askRowsEnabled(prefs)
             findPreference<Preference>(Prefs.KEY_ASK_ENABLED)?.setOnPreferenceChangeListener { _, value ->
@@ -202,6 +244,9 @@ class SettingsActivity : AppCompatActivity() {
                 for (key in ASK_CHILD_KEYS) {
                     if (prefs.isManaged(key)) continue
                     findPreference<Preference>(key)?.isEnabled = on
+                }
+                if (on && discovery == null && prefs.askServerTyped.isNullOrBlank() && !prefs.isManaged(Prefs.KEY_ASK_SERVER)) {
+                    withLocalNetwork(null) { discover() }
                 }
                 true
             }
@@ -214,8 +259,10 @@ class SettingsActivity : AppCompatActivity() {
                     Toast.makeText(requireContext(), R.string.pref_ask_server_none, Toast.LENGTH_LONG).show()
                     return@setOnPreferenceClickListener true
                 }
-                pair.summary = getString(R.string.pref_ask_pair_waiting)
-                startPairing(base, prefs, pair)
+                withLocalNetwork(base) {
+                    pair.summary = getString(R.string.pref_ask_pair_waiting)
+                    startPairing(base, prefs, pair)
+                }
                 true
             }
         }
@@ -398,7 +445,8 @@ class SettingsActivity : AppCompatActivity() {
          * Refuses a value the rule rejects, explaining why and re-opening the dialog with the
          * refused text still in it. The keyboard is set per field: digits for the numbers, and for
          * the channel key a visible-password keyboard with no suggestions, so a key like `q7wk-…`
-         * is not autocorrected or capitalised on its way in.
+         * is not autocorrected or capitalised on its way in; an address keyboard for the Reticulum
+         * node, as the main screen's dialog has.
          */
         private fun rule(key: String, why: Int, numeric: Boolean = false, ok: (String) -> Boolean) {
             val pref = findPreference<EditTextPreference>(key) ?: return
@@ -409,6 +457,7 @@ class SettingsActivity : AppCompatActivity() {
                         InputType.TYPE_CLASS_TEXT or
                             InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
                             InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                    key == Prefs.KEY_RETICULUM_NODE -> field.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
                 }
                 refused.remove(key)?.let { field.setText(it); field.setSelection(it.length) }
             }
@@ -446,7 +495,7 @@ class SettingsActivity : AppCompatActivity() {
                 Prefs.KEY_ASK_ENABLED, Prefs.KEY_ASK_SERVER, Prefs.KEY_ASK_MODE,
                 Prefs.KEY_CREW_NAME, Prefs.KEY_NAME, Prefs.KEY_CHANNEL_KEY, Prefs.KEY_GROUP,
                 Prefs.KEY_PORT, Prefs.KEY_HOPS, Prefs.KEY_RELAY, Prefs.KEY_FULL_DUPLEX,
-                Prefs.KEY_OPUS, Prefs.KEY_AUDIO_ROUTE
+                Prefs.KEY_OPUS, Prefs.KEY_AUDIO_ROUTE, Prefs.KEY_RETICULUM_NODE
             )
         }
     }

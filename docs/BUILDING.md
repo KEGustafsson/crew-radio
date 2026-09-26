@@ -95,8 +95,21 @@ deprecated form of something, write the small replacement by hand and unit-test 
 The unit tests are pure Kotlin (JUnit 4) with no Android runtime, and cover the packet format and
 its replay window, the hello payload, the ingress pipeline, settings rules, the rate limiter,
 backoff, the send queue, the LAN addressing and peer table, the Aware discovery tag, the Bluetooth
-tie-break, the mixer, decimator, concealment, tones, the sequence tracker and the voice gate.
-Anything with a transport or a codec needs real phones.
+tie-break, the mixer, decimator, concealment, tones, the sequence tracker and the voice gate, and
+the Reticulum protocol (the curves against the RFC vectors, the shared byte vector
+`sk-plugin/test/rns.vector.json`, which the unit tests read from the plugin's directory, and the
+handshake over a fake network). Anything with a transport or a codec needs real phones.
+
+The Reticulum code can also be checked against a real Reticulum transport node. With Python, run
+one locally (`pip install rns`, then `rnsd` with a `TCPServerInterface` on 127.0.0.1:4242 and
+`enable_transport = Yes` in its config; [RETICULUM_HUB.md](RETICULUM_HUB.md) has a complete
+one), start the plugin or another phone on the channel key `north-star-2026`, and:
+
+```sh
+RNS_HUB=127.0.0.1:4242 ./gradlew testDebugUnitTest --tests '*ReticulumInteropTest*'
+```
+
+Without `RNS_HUB` that test is skipped, which is what CI does.
 
 ## 4. Release build with the debug key
 

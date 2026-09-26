@@ -200,6 +200,15 @@ tasks.register("printVersion") {
     }
 }
 
+/*
+ * RnsVectorTest reads the plugin's Reticulum vector from the checkout (sk-plugin/test/rns.vector.json)
+ * rather than a copy. Declared as an input, so a change to the vector alone reruns the tests instead
+ * of leaving them up to date.
+ */
+tasks.withType<Test>().configureEach {
+    inputs.file(rootProject.file("sk-plugin/test/rns.vector.json")).withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
 dependencies {
     implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.appcompat:appcompat:1.8.0")

@@ -36,6 +36,11 @@
         tools:ignore="UnusedAttribute" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="32" />
+    <!-- Local network protection (enforced from Android 17 for an app targeting it): every packet to
+         or from a local address, so WLAN, the boat's own rnsd and the Signal K server, plus mDNS.
+         A runtime permission in the Nearby devices group, asked for by LocalNetwork's rules;
+         earlier releases grant it with INTERNET. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
         android:maxSdkVersion="32" />
     <!-- Nothing here is required to install: a phone with no Bluetooth still has WLAN, a phone

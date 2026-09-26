@@ -93,6 +93,46 @@ object SettingsRules {
 
     /** Relays a packet may cross; 1 means no relaying at all. */
     fun validHops(s: String): Boolean = s.trim().toIntOrNull()?.let { it in 1..16 } == true
+
+    /** The port of a Reticulum transport node's TCP server interface when none is given. */
+    const val DEFAULT_RETICULUM_PORT = 4242
+
+    /**
+     * A Reticulum transport node as `host`, `host:port`, `[v6]` or `[v6]:port`: the host a name
+     * or an address (letters, digits, dots, hyphens; colons only inside brackets or as a bare
+     * IPv6 address), the port 1-65535, [DEFAULT_RETICULUM_PORT] when left out. Null for anything else.
+     */
+    fun parseHostPort(s: String): Pair<String, Int>? {
+        val t = s.trim()
+        if (t.isEmpty() || t.length > 260) return null
+        val host: String
+        val portText: String?
+        when {
+            t.startsWith("[") -> {
+                val end = t.indexOf(']')
+                if (end < 2) return null
+                host = t.substring(1, end)
+                val rest = t.substring(end + 1)
+                portText = if (rest.isEmpty()) null else if (rest.startsWith(":")) rest.substring(1) else return null
+                if (!host.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == ':' || it == '.' } || ':' !in host) return null
+            }
+            t.count { it == ':' } > 1 -> {                        // a bare IPv6 address, no port
+                host = t
+                portText = null
+                if (!host.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == ':' || it == '.' }) return null
+            }
+            else -> {
+                val colon = t.indexOf(':')
+                host = if (colon < 0) t else t.substring(0, colon)
+                portText = if (colon < 0) null else t.substring(colon + 1)
+                if (host.isEmpty() || host.length > 253 || host.startsWith("-") || host.startsWith(".") ||
+                    !host.all { it in 'a'..'z' || it in 'A'..'Z' || it.isDigit() || it == '.' || it == '-' }
+                ) return null
+            }
+        }
+        val port = if (portText == null) DEFAULT_RETICULUM_PORT else portText.toIntOrNull()?.takeIf { it in 1..65535 && portText == it.toString() } ?: return null
+        return host to port
+    }
 }
 
 /**
@@ -124,6 +164,7 @@ class Prefs(context: Context) {
         KEY_HOPS -> managedInt(key)?.let { SettingsRules.validHops(it.toString()) }
         KEY_AUDIO_ROUTE -> managedString(key)?.let { validRoute(it) }
         KEY_RELAY, KEY_FULL_DUPLEX, KEY_OPUS, KEY_ASK_ENABLED -> managedBool(key) != null
+        KEY_RETICULUM_NODE -> managedString(key)?.let { SettingsRules.parseHostPort(it) } != null
         KEY_ASK_SERVER -> managedString(key)?.let { SignalKUrl.valid(it) }
         KEY_ASK_MODE -> managedString(key)?.let { validAskMode(it) }
         else -> false
@@ -204,6 +245,17 @@ class Prefs(context: Context) {
     val proximitySensor: Boolean get() = sp.getBoolean(KEY_PROXIMITY, true)
     val relay: Boolean get() = managedBool(KEY_RELAY) ?: sp.getBoolean(KEY_RELAY, true)
     val opus: Boolean get() = managedBool(KEY_OPUS) ?: sp.getBoolean(KEY_OPUS, true)
+
+    /** The transport node as typed (the managed one when valid), or null when none is set. */
+    val reticulumNodeText: String?
+        get() = managedString(KEY_RETICULUM_NODE)?.takeIf { SettingsRules.parseHostPort(it) != null }
+            ?: sp.getString(KEY_RETICULUM_NODE, null)?.trim()?.takeIf { SettingsRules.parseHostPort(it) != null }
+
+    /** What this phone has stored for the node, valid or not: shown back when it asks again. */
+    val reticulumNodeTyped: String? get() = sp.getString(KEY_RETICULUM_NODE, null)
+
+    /** The transport node to connect to, host and port, or null when none is set. */
+    val reticulumNode: Pair<String, Int>? get() = reticulumNodeText?.let { SettingsRules.parseHostPort(it) }
 
     // ---- Ask the boat (Signal K) --------------------------------------------------
 
@@ -321,6 +373,7 @@ class Prefs(context: Context) {
         const val KEY_FULL_DUPLEX = "full_duplex"
         const val KEY_RELAY = "relay"
         const val KEY_OPUS = "opus"
+        const val KEY_RETICULUM_NODE = "reticulum_node"
 
         // Ask the boat (see res/xml/preferences.xml and res/xml/app_restrictions.xml).
         const val KEY_ASK_ENABLED = "ask_enabled"
@@ -343,6 +396,7 @@ class Prefs(context: Context) {
         const val KEY_USE_LAN = "use_lan"
         const val KEY_USE_BT = "use_bt"
         const val KEY_USE_AWARE = "use_aware"
+        const val KEY_USE_RETICULUM = "use_reticulum"
         const val KEY_BT_PEER = "bt_peer"          // MAC address, or empty for "listen only"
     }
 }

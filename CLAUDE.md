@@ -2,7 +2,8 @@
 
 Android push-to-talk / intercom app for a boat crew (package `fi.crewradio`, app name
 "Crew Radio"; the boat or crew name is the Channel name setting, shown in the header). Works over
-WLAN multicast, Bluetooth Classic RFCOMM and Wi-Fi Aware, with an app-level
+WLAN multicast, Bluetooth Classic RFCOMM and Wi-Fi Aware, and optionally Reticulum (a TCP
+connection to a Reticulum transport node, for a phone ashore or a second boat), with an app-level
 flooding relay so multiple transports and multi-hop topologies work.
 
 ## Stack
@@ -43,7 +44,7 @@ flooding relay so multiple transports and multi-hop topologies work.
 
 ## Architecture
 ```
-MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | BluetoothTransport | WifiAwareTransport)
+MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | BluetoothTransport | WifiAwareTransport | ReticulumTransport)
                                          |-> AudioCapture (mic, AEC/NS) -> OpusEncoder? -> Packet.encode -> transports
                                          |-> OpusDecoder per sender -> Mixer (per-sender jitter queue + sum) -> AudioPlayback
 ```
@@ -223,6 +224,48 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 - Wire format has no legacy mode: every phone must run the same build (README says so).
 - Wi-Fi Aware: every node publishes and subscribes; lower senderId initiates the
   data path (one link per pair). Publisher uses accept-any on API 31+.
+- Reticulum (`rns/` + `transport/ReticulumTransport`, off by default): the fourth main-screen tile
+  (`use_reticulum`, per phone like the others, not managed; four tiles means 8 dp gaps and 11 sp
+  labels), whose first tap with no node asks for one in a dialog; Settings keeps **Transport node**
+  `host[:port]` (4242 default, a managed key). The socket goes over the network `NetworkChoice`
+  (pure, tested) picks: validated internet for a hub (default, then Wi-Fi/Ethernet, then mobile),
+  Wi-Fi for a private address, unbound over the routing table when there is no Wi-Fi (the phone's own
+  hotspot, which is not a network it joined), and a name mobile data cannot resolve is asked of the
+  Wi-Fi; VPNs are candidates too (a bind a lockdown VPN refuses falls back to unbound); bound with
+  `Network.bindSocket`, re-opened when that network is lost; `TCP_USER_TIMEOUT` 20 s; the backoff
+  resets only after a connection held 30 s (the plugin: keepalive, the same backoff rule).
+  One TCP connection (HDLC framing) to a Reticulum transport node, Reticulum
+  links inside it, the channel's sealed packets carried unchanged behind a one-byte `Carry` header
+  (a PCM frame, 686 bytes, goes in two parts: the base-MTU link payload is 431). Written from the
+  Reticulum manual, no Reticulum code included, no dependency: `Curve25519` is X25519/Ed25519 by
+  hand (TweetNaCl design, constants computed from their definitions; the platform has neither
+  below API 33), checked against RFC 7748/8032. Destination `crewradio.channel.<tag>`,
+  `ChannelCrypto.reticulumTag` = first 8 bytes of HMAC(packet key, "CrewRadio reticulum v1") in hex;
+  identity fresh per session. `ReticulumNode` (pure, tested over a fake medium) announces on connect
+  and every 10 min; the lower destination hash dials, the other re-announces for a newcomer. A link
+  carries NOTHING until the far end's key proof checks out: `Carry.keyProof` = `0x80 | HMAC-SHA256(
+  ChannelCrypto.reticulumConfirmKey, role | link id)`, role 1 = the dialler, sent when the link comes
+  up and every 2 s while unanswered (the confirmed end answers a resend with its own). Bound to the
+  link and the role, so it cannot be copied or reflected; never confirm a link on a sealed channel
+  packet, which anyone can copy (that was the first design, and a stranger echoing a hello filled
+  the plugin's table with "confirmed" links). Silent 12 s or unconfirmed 15 s = closed; announces
+  and link requests are budgeted (10/s, bursts of 20) before their signature work, which in the app
+  runs outside the node lock (copies of an announce already checked, by packet hash, and requests
+  that could get no slot spend nothing); the plugin's transport clock is `performance.now()`; a full table (32 links, 64 peers) evicts the oldest unconfirmed link
+  older than 5 s (else our oldest unanswered request past 5 s) / stalest peer without a confirmed
+  link (a dropped link refreshes its peer), never a confirmed one (the name hash is public, so
+  strangers can fill it); timers on a monotonic clock;
+  a link request is validated before it may evict anything (a malformed one costs nobody a slot);
+  in the plugin, with Reticulum on and the LAN down, a node on Reticulum alone keeps the channel (its
+  hello without the LAN flag); an announcement made then waits 10 s for the LAN (the boat's own
+  phones are its first audience) before going to confirmed Reticulum links alone, and when the LAN
+  returns the LAN node takes over at once and an announcement that was cut is said again, whole; `onFrame` returns packets rather than calling the engine (no engine call under its lock).
+  `relayWithin` is false (every node links to every other; Reticulum does the multi-hop), so a
+  phone or the plugin with Reticulum and WLAN bridges them. Hello transport flag 8. Group
+  destinations are not used: Reticulum does not carry them over more than one hop. Interface access
+  codes are not supported. `sk-plugin/test/rns.vector.json` (checked against RNS 1.5.4's own
+  functions when made) is read by the app's `RnsVectorTest` and the plugin's `test/rns.test.js`;
+  `ReticulumInteropTest` runs only with `RNS_HUB=host:port` set, against a real rnsd.
 
 - Asking the boat (`ask/`): the main screen's `ASK BOAT DATA` row opens `AskSheet`, and
   `AskController` runs one question — on-device `SpeechRecognizer` (Android 12+; below that, and
@@ -293,7 +336,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   anything under `docs/` would be unreachable and the Webapps card would show a monogram. `lib/packet.js`, `lib/crypto.js` and
   `lib/node.js` mirror `Packet.kt`, `ChannelCrypto.kt`, `Hello.kt` and the engine's roster rules
   byte for byte; `sk-plugin/test/vector.json` and the app's `CrossLanguageVectorTest` check the
-  same packet, so change both when the wire changes.
+  same packet, so change both when the wire changes. `lib/rns/` mirrors the app's `rns/` package
+  (same design, Node's own crypto) and `lib/node.js` relays between the LAN and Reticulum with the
+  app's `relayTtl` rule when the plugin's Reticulum setting is on.
 - `lib/tts.js` (`FliteTts`): one WASI instance per sentence (Flite's entry point is not
   re-entrant), a WAV round trip through `tts-tmp` in the plugin's data directory (the OS temp dir when the
   server has no `getDataDirPath`), a byte-bounded cache, units
@@ -353,7 +398,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 
 ## Documentation
 - `README.md` is written for the crew (install, quick start, talk keys, headsets, settings);
-  `docs/ARCHITECTURE.md` for developers; `docs/BUILDING.md` holds every build and release
+  `docs/ARCHITECTURE.md` for developers; `docs/RETICULUM_HUB.md` is the crew's guide to running their
+  own Reticulum hub (rnsd install, config, systemd autostart; its configs were run against rnsd 1.5.4,
+  keep them so); `docs/BUILDING.md` holds every build and release
   procedure step by step (machine prerequisites, the debug loop, tests and the lint gate, creating
   the release keystore and the `CREWRADIO_*` environment variables, the workflow secrets and the
   certificate fingerprint variable, what a push to `main` publishes, the plugin, the verification
@@ -362,7 +409,8 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   summary for the crew, so a change to the signing variables or the prerequisites has to be
   made in both. The diagrams and the screen mock-ups are generated:
   `python docs/diagrams/make_diagrams.py` writes the `.drawio` files, draw.io desktop exports the
-  PNGs (command at the top of the script). No real screenshots in the repo: they carry device names.
+  PNGs (command at the top of the script), or `node docs/diagrams/export_png.js` does it headlessly
+  (draw.io's viewer in Playwright's Chromium; Roboto Mono installed, or the mock-ups mis-measure). No real screenshots in the repo: they carry device names.
   The screen mock-ups stand in for those screenshots, so they are drawn from the layouts, not from
   memory: every position, colour, letter spacing, icon and word in `make_diagrams.py` comes from
   `app/src/main/res`, the phone is a real 360 x 800 dp screen and a longer screen is cut off at the
@@ -411,6 +459,13 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   the pre-34 NSD resolve and `Connection.setAudioRoute`, the self-managed PhoneAccount capability)
   goes in `LegacyPlatform.kt`, the only file with the suppression: a thin call, no policy, reached
   only behind its caller's API check. Anything new there needs the same justification in its KDoc.
+- Android 17 local network protection (targetSdk 37 enforces it): `ACCESS_LOCAL_NETWORK` (Nearby
+  devices group) gates every packet to or from a local address — WLAN, a private-address rnsd, the
+  Signal K server, mDNS — and without it TCP times out and UDP fails with EPERM. `LocalNetwork`
+  (pure, tested) decides when it is needed: required with the WLAN tile or a private Reticulum node,
+  optional for a node given by name, before opening the ask sheet or pairing, and for the Settings
+  mDNS search only once asking the boat is on. Its string is written out (`LocalNetwork.PERMISSION`)
+  and pinned by the test, so no API 37 constant is referenced from older code.
 - Anything blocking (sockets, AudioTrack.write) lives on its own named thread
   (`ptt-*`); never on the main thread.
 - Transport threads go through `transport/transportThread`: an uncaught throwable on a
@@ -424,5 +479,6 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 ## Known gaps / roadmap
 Nothing planned. Field testing is continuous on the Nokia 7.2, S20 FE and S25 (with a Jabra
 Evolve2 65 on the S25): voice-keying thresholds in wind and engine noise, real Aware/Bluetooth
-ranges, multi-hop under way, a full day's battery. Transports are WLAN, Bluetooth Classic and
-Wi-Fi Aware, and that list is final.
+ranges, multi-hop under way, a full day's battery. Transports are WLAN, Bluetooth Classic,
+Wi-Fi Aware and Reticulum (added 2026-09-26, checked against rnsd 1.5.4 but not yet field-tested on
+the phones).

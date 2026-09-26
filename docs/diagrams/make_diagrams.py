@@ -4,7 +4,8 @@ with draw.io desktop:
 
     "C:/Program Files/draw.io/draw.io.exe" -x -f png -s 1.5 -b 16 -o docs/images/<name>.png docs/diagrams/<name>.drawio
 
-(scale 1 for the screen mock-ups, 1.5 for the flowcharts; the markdown gives each image a display width)
+(scale 1.5 for the flowcharts and the phone mock-ups, 1 for screen-settings, as export_png.js does; the markdown
+gives each image a display width)
 
 Keep `-b 16` for every phone mock-up. The export crops to the drawing, so the border is the only
 thing that sets the canvas size, and the README puts phones side by side: a mock-up exported with
@@ -12,6 +13,9 @@ a different border lands on a different canvas and its phone is then drawn a dif
 screen-settings.png was once exported with a 10-pixel border and came out 3 % larger than the phone
 beside it. Every phone is now the same 360 x 800 frame, a real phone's screen, so all of them
 export the same and a screen longer than that is cut off at the bottom edge as a screenshot is.
+
+Without draw.io desktop, `node docs/diagrams/export_png.js` renders every PNG in headless Chromium
+through the draw.io viewer, at the same scales and canvas sizes (its header lists what it needs).
 
 Run:  python docs/diagrams/make_diagrams.py
 
@@ -178,6 +182,12 @@ _ICONS = {
               '<path d="M12,10 A2,2 0 1 1 12,14 A2,2 0 1 1 12,10 Z"/>'
               '<path d="M8.5,8.5 A5,5 0 0 0 8.5,15.5"/><path d="M15.5,8.5 A5,5 0 0 1 15.5,15.5"/>'
               '<path d="M5.5,5.5 A9,9 0 0 0 5.5,18.5"/><path d="M18.5,5.5 A9,9 0 0 1 18.5,18.5"/></g>'),
+    "reticulum": ("0 0 24 24",
+                  '<g fill="none" stroke="{c}" stroke-width="2" stroke-linecap="round">'
+                  '<path d="M12,2.5 A2.5,2.5 0 1 1 12,7.5 A2.5,2.5 0 1 1 12,2.5 Z"/>'
+                  '<path d="M5,15.5 A2.5,2.5 0 1 1 5,20.5 A2.5,2.5 0 1 1 5,15.5 Z"/>'
+                  '<path d="M19,15.5 A2.5,2.5 0 1 1 19,20.5 A2.5,2.5 0 1 1 19,15.5 Z"/>'
+                  '<path d="M10.8,7.2 L6.2,15.8 M13.2,7.2 L17.8,15.8 M7.5,18 L16.5,18"/></g>'),
     "volume": ("0 0 24 24",
                '<path fill="{c}" d="M3,9v6h4l5,5V4L7,9H3zm13.5,3c0,-1.77 -1.02,-3.29 -2.5,-4.03v8.05c1.48,'
                '-0.73 2.5,-2.25 2.5,-4.02zM14,3.23v2.06c2.89,0.86 5,3.54 5,6.71s-2.11,5.85 -5,6.71v2.06c4.01,'
@@ -272,7 +282,8 @@ def toggle(nid, x, y, on):
 # ---------------------------------------------------------------- the main screen
 
 def main_screen(p, x, y, state, peers=None, talking=None, ask_row=False, scrim=1.0, level=3,
-                tiles=((False, "wifi", "WLAN"), (True, "bluetooth", "BLUETOOTH"), (True, "aware", "AWARE"))):
+                tiles=((False, "wifi", "WLAN"), (True, "bluetooth", "BLUETOOTH"), (True, "aware", "AWARE"),
+                       (False, "reticulum", "RETICULUM"))):
     """activity_main.xml. state: 'off' | 'on' | 'air'; `scrim` dims it under the ask sheet.
 
     The tiles are dimmed while the phone is on the channel (they are a before-Connect choice), and
@@ -311,17 +322,18 @@ def main_screen(p, x, y, state, peers=None, talking=None, ask_row=False, scrim=1
     n.append(icon(p + "hm", "more", cl + CW - 34, top + 16, 24, 24, c(SECONDARY)))
 
     # Transport tiles: an icon over a label, teal and filled in when the transport is switched on.
+    # Four across: 8 dp apart and 11 sp labels (activity_main.xml), 76/76/76/76 of the 328 dp.
     ty = top + 56 + 12
     tile_alpha = 0.55 if on else 1.0
     tx = cl
-    for i, ((active, glyph, name), tw) in enumerate(zip(tiles, (103, 102, 103))):
+    for i, ((active, glyph, name), tw) in enumerate(zip(tiles, (76, 76, 76, 76))):
         fill = c(TILE_ON, tile_alpha) if active else "none"
         tint = c(PRIMARY if active else TEXT_DIM, tile_alpha)
         n.append(rect(p + f"t{i}", tx, ty, tw, 76, fill=fill,
                       stroke=c(PRIMARY if active else OUTLINE, tile_alpha), r=14, sw=2 if active else 1))
         n.append(icon(p + f"ti{i}", glyph, tx + tw // 2 - 13, ty + 14, 26, 26, tint))
-        n.append(txt(p + f"tl{i}", name, tx, ty + 46, tw, 16, 12, tint, align="center", tracking=0.08))
-        tx += tw + 10
+        n.append(txt(p + f"tl{i}", name, tx, ty + 46, tw, 16, 11, tint, align="center", tracking=0.06))
+        tx += tw + 8
     ry = ty + 76
 
     # The Bluetooth peer row: a before-Connect choice, so the app hides it while on the channel.
@@ -647,14 +659,16 @@ diagram("architecture", "How the app is built", nodes=[
     ("enc", "Opus encoder" + NL + "(platform codec)", 40, 500, 170, 60, AUDIO),
     ("pk", "Packet" + NL + "18-byte header +" + NL + "Opus/PCM frame, or a hello" + NL + "(roster heartbeat)", 280, 460, 170, 80, END),
     ("lan", "WLAN" + NL + "UDP multicast + broadcast", 530, 400, 160, 60, NET),
-    ("bt", "Bluetooth" + NL + "RFCOMM link to one peer", 530, 480, 160, 60, NET),
-    ("aw", "Wi-Fi Aware" + NL + "phone-to-phone, no router", 530, 560, 160, 60, NET),
+    ("bt", "Bluetooth" + NL + "RFCOMM link to one peer", 530, 470, 160, 60, NET),
+    ("aw", "Wi-Fi Aware" + NL + "phone-to-phone, no router", 530, 540, 160, 60, NET),
+    ("rns", "Reticulum" + NL + "TCP to a transport node," + NL + "links to the crew ashore", 530, 610, 160, 60, NET),
     ("dec", "Opus decoder" + NL + "per talker", 800, 400, 190, 50, AUDIO),
     ("mix", "Mixer" + NL + "one queue per talker," + NL + "loss concealment, cue tones", 800, 480, 190, 70, AUDIO),
     ("play", "Speaker, earpiece or headset" + NL + "(AudioPlayback + AudioRoute)", 800, 580, 190, 60, AUDIO),
     ("n1", "Every phone is the same: there is no server and no master. Each phone sends its own frames on every"
      + NL + "transport it has on and, with Relay on (the default) and hops remaining, forwards what it hears to its"
-     + NL + "other transports, so a phone that has both Wi-Fi Aware and Bluetooth bridges the two.", 40, 660, 900, 60, NOTE),
+     + NL + "other transports, so a phone that has both Wi-Fi Aware and Bluetooth bridges the two. Reticulum reaches the"
+     + NL + "crew ashore through a transport node; the Signal K plugin bridges it to the boat's WLAN.", 40, 690, 900, 70, NOTE),
 ], edges=[
     ("ui", "svc", "binds while visible", EDGE),
     ("st", "eng", "polls once a second", EDGE_DASH + "exitX=1;exitY=0.5;entryX=0;entryY=0.3;"),
@@ -666,13 +680,15 @@ diagram("architecture", "How the app is built", nodes=[
     ("pk", "lan", "", EDGE + "exitX=1;exitY=0.3;entryX=0;entryY=0.5;"),
     ("pk", "bt", "", EDGE + "exitX=1;exitY=0.5;entryX=0;entryY=0.5;"),
     ("pk", "aw", "", EDGE + "exitX=1;exitY=0.7;entryX=0;entryY=0.5;"),
+    ("pk", "rns", "", EDGE + "exitX=1;exitY=0.9;entryX=0;entryY=0.5;"),
     ("lan", "eng", "", EDGE_DASH + "exitX=0.5;exitY=0;entryX=0.85;entryY=1;"),
-    ("bt", "eng", "received" + NL + "packets", EDGE_DASH + "exitX=1;exitY=0.5;entryX=1;entryY=0.7;", [(740, 510), (740, 293)]),
-    ("aw", "eng", "", EDGE_DASH + "exitX=1;exitY=0.5;entryX=1;entryY=0.85;", [(720, 590), (720, 306)]),
+    ("bt", "eng", "received" + NL + "packets", EDGE_DASH + "exitX=1;exitY=0.5;entryX=1;entryY=0.7;", [(740, 500), (740, 293)]),
+    ("aw", "eng", "", EDGE_DASH + "exitX=1;exitY=0.5;entryX=1;entryY=0.85;", [(720, 570), (720, 306)]),
+    ("rns", "eng", "", EDGE_DASH + "exitX=1;exitY=0.5;entryX=1;entryY=0.95;", [(705, 640), (705, 315)]),
     ("eng", "dec", "decode and play", EDGE + "exitX=1;exitY=0.3;entryX=0.5;entryY=0;"),
     ("dec", "mix", "", EDGE),
     ("mix", "play", "", EDGE),
-], width=1020, height=740)
+], width=1020, height=780)
 
 # ---------------------------------------------------------------- 2. packet flow (receive path)
 diagram("packet-flow", "What happens to a received packet", nodes=[
@@ -787,13 +803,16 @@ diagram("links", "One app, every link", nodes=[
     ("l1", "WLAN" + NL + "the boat's router or a hotspot:" + NL + "everyone on the same network", 40, 80, 220, 70, NET),
     ("l2", "Wi-Fi Aware" + NL + "phone to phone, no router," + NL + "Wi-Fi range", 40, 320, 220, 70, NET),
     ("l3", "Bluetooth" + NL + "phone to phone, close range," + NL + "any Android 10+ phone", 580, 80, 220, 70, NET),
+    ("l5", "Reticulum" + NL + "through a transport node:" + NL + "the crew ashore, over any network", 580, 320, 220, 70, NET),
     ("l4", "Relay (a setting, on by default, not a link):" + NL + "what this phone hears on one link it repeats on its other links,"
-     + NL + "up to the hop limit, so it bridges them", 300, 320, 480, 60, ENGINE + "dashed=1;"),
-    ("n", "Tick the links you have (WLAN, Wi-Fi Aware, Bluetooth). Phones find each other, no server, no account, no internet."
-     + NL + "Lose one link and the others carry on; a phone in the middle bridges the rest.", 40, 440, 760, 40, NOTE),
+     + NL + "up to the hop limit, so it bridges them", 180, 430, 480, 60, ENGINE + "dashed=1;"),
+    ("n", "Tick the links you have (WLAN, Wi-Fi Aware, Bluetooth, and Reticulum for the crew ashore). Phones find each other,"
+     + NL + "no server, no account; only Reticulum needs a transport node and a network to reach it. Lose one link and the"
+     + NL + "others carry on; a phone in the middle bridges the rest.", 40, 530, 780, 60, NOTE),
 ], edges=[
     ("p", "l1", "", EDGE_BI + "strokeColor=#7B1FA2;"),
     ("p", "l2", "", EDGE_BI + "strokeColor=#7B1FA2;"),
     ("p", "l3", "", EDGE_BI + "strokeColor=#0288D1;"),
+    ("p", "l5", "", EDGE_BI + "strokeColor=#2E7D32;"),
     ("p", "l4", "", EDGE_DASH + "strokeColor=#F9A825;endArrow=none;"),
-], width=860, height=520)
+], width=860, height=620)

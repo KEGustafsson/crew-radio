@@ -22,6 +22,7 @@ class FakeLink extends EventEmitter {
   }
   open() {
     if (FakeLink.failOpen) return Promise.reject(new Error("no usable IPv4 interface"));
+    this.openedAt = Date.now();
     return Promise.resolve({ iface: "fake0", address: "10.0.0.2", broadcast: "10.0.0.255" });
   }
   send(buf) { this.sent.push(Buffer.from(buf)); return true; }
@@ -570,4 +571,172 @@ test("POST /say: a body cut short by the client going away is not said", async (
     assert.ok(!FakeTts.last.texts.includes("Do not start the engine"), `${ending}: nothing said`);
   }
   p.stop();
+});
+
+/** A fake Reticulum transport, recording how it was made and driven. */
+class FakeRns extends EventEmitter {
+  constructor(opts) { super(); this.opts = opts; this.ready = FakeRns.readyAtStart === true; this.linkCount = 0; this.sent = []; this.accepted = []; this.started = 0; this.stopped = 0; FakeRns.last = this; }
+  start() { this.started++; }
+  stop() { this.stopped++; }
+  /** Every packet offered is in `sent`; the ones a ready transport took are in `accepted` too. */
+  send(buf) {
+    const copy = Buffer.from(buf);
+    this.sent.push(copy);
+    if (this.ready) this.accepted.push(copy);
+    return this.ready;
+  }
+  confirm() {}
+}
+
+test("Reticulum: off by default; when enabled it starts with the channel's tag and key proof key, carries our packets, shows in the status and stops with the plugin", async () => {
+  FakeRns.last = undefined;
+  FakeLink.last = undefined;
+  const app = fakeApp();
+  const off = plugin(app, { ...deps, Reticulum: FakeRns });
+  const p = plugin(app, { ...deps, Reticulum: FakeRns });
+  try {
+    off.start({ channelKey: KEY });
+    await until(() => FakeLink.last && FakeLink.last.sent.length > 0);   // this plugin's own link, not a leftover
+    assert.equal(FakeRns.last, undefined, "not enabled, not made");
+    off.stop();
+
+    p.start({ channelKey: KEY, reticulum: { enabled: true, host: "hub.example", port: 4965 } });
+    await until(() => FakeRns.last && FakeRns.last.sent.length > 0);
+    const r = FakeRns.last;
+    assert.deepEqual(r.opts, { host: "hub.example", port: 4965, tag: crypto.reticulumTag, confirmKey: crypto.reticulumConfirmKey });
+    assert.equal(r.started, 1);
+    assert.match(app.status.at(-1), /Reticulum down/);
+    r.emit("status", "Reticulum: hub.example:4965 connect ECONNREFUSED; retrying in 2 s");
+    assert.match(app.status.at(-1), /Reticulum down \(hub\.example:4965 connect ECONNREFUSED; retrying in 2 s\)/, "and why");
+    r.ready = true;
+    r.linkCount = 2;
+    r.emit("status", "Reticulum: 2 links");
+    assert.match(app.status.at(-1), /Reticulum 2 links/);
+    assert.ok(app.log.includes("Reticulum: 2 links"));
+    const logged = app.log.length;
+    r.emit("status", "Reticulum: 2 links");
+    assert.equal(app.log.length, logged, "the same line again is not logged again");
+    const router = fakeRouter(true);
+    p.registerWithRouter(router);
+    const res = fakeRes();
+    router.routes["GET /status"]({}, res);
+    assert.deepEqual(res.body.reticulum, { host: "hub.example", port: 4965, connected: true, links: 2, status: "Reticulum: 2 links" });
+    p.stop();
+    assert.equal(r.stopped, 1);
+  } finally {
+    off.stop();
+    p.stop();
+  }
+});
+
+test("Reticulum settings: defaults, a bad port falls back and is named, and the schema offers them", () => {
+  const d = plugin.withDefaults({ channelKey: KEY }, fakeApp());
+  assert.deepEqual(d.reticulum, { enabled: false, host: "127.0.0.1", port: 4242 });
+  const bad = plugin.withDefaults({ channelKey: KEY, reticulum: { enabled: true, host: "  ", port: 99999 } }, fakeApp());
+  assert.deepEqual(bad.reticulum, { enabled: true, host: "127.0.0.1", port: 4242 });
+  assert.ok(bad.warnings.some((w) => /Reticulum port/.test(w)));
+  // host:port as the phone takes it, [v6]:port, and a bare IPv6 address left whole.
+  assert.deepEqual(plugin.withDefaults({ channelKey: KEY, reticulum: { host: "hub.example:4965", port: 1 } }, fakeApp()).reticulum,
+    { enabled: false, host: "hub.example", port: 4965 });
+  assert.deepEqual(plugin.withDefaults({ channelKey: KEY, reticulum: { host: "[fd12::7]:4000" } }, fakeApp()).reticulum,
+    { enabled: false, host: "fd12::7", port: 4000 });
+  assert.deepEqual(plugin.withDefaults({ channelKey: KEY, reticulum: { host: "fd12::7", port: "4001" } }, fakeApp()).reticulum,
+    { enabled: false, host: "fd12::7", port: 4001 });
+  // An inline port that is not a number: the host without it, the port setting, and a warning.
+  for (const host of ["hub.example:bad", "[fd12::7]:bad", "hub.example:"]) {
+    const d = plugin.withDefaults({ channelKey: KEY, reticulum: { host, port: 4100 } }, fakeApp());
+    assert.deepEqual(d.reticulum, { enabled: false, host: host.startsWith("[") ? "fd12::7" : "hub.example", port: 4100 }, host);
+    assert.ok(d.warnings.some((w) => /has a port that is not a number/.test(w)), host);
+  }
+  const s = plugin(fakeApp(), deps).schema();
+  assert.deepEqual(Object.keys(s.properties.reticulum.properties), ["enabled", "host", "port"]);
+});
+
+test("Reticulum: with the LAN down the channel runs on Reticulum alone, and moves back onto the LAN when it returns", async () => {
+  FakeLink.last = undefined;
+  FakeRns.last = undefined;
+  FakeRns.readyAtStart = true;
+  FakeLink.failOpen = true;
+  const app = fakeApp();
+  const p = plugin(app, { ...deps, Reticulum: FakeRns });
+  try {
+    p.start({ channelKey: KEY, reticulum: { enabled: true } });
+    await until(() => FakeRns.last && FakeRns.last.accepted.length > 0);
+    const r = FakeRns.last;
+    assert.ok(app.errors.some((e) => /no usable IPv4 interface/.test(e)));
+    assert.match(app.status.at(-1), /LAN down/);
+    assert.equal(P.parseHeader(r.accepted[0]).codec, P.Codec.HELLO, "our hellos go out over Reticulum while the LAN retries");
+    const firstLink = FakeLink.last;
+    await until(() => FakeLink.last !== firstLink, 2500);        // a retry failed too; the Reticulum transport is not rebuilt for it
+    assert.equal(FakeRns.last, r);
+    assert.equal(r.stopped, 0);
+    FakeLink.failOpen = false;
+    await until(() => FakeLink.last && !FakeLink.last.closed && FakeLink.last.sent.length > 0, 6000);
+    assert.doesNotMatch(app.status.at(-1), /LAN down/);
+  } finally {
+    FakeRns.readyAtStart = false;
+    FakeLink.failOpen = false;
+    p.stop();
+  }
+});
+
+test("Reticulum: an announcement made while the LAN is down waits for it, and the boat hears it when the LAN is back within the grace", async () => {
+  FakeLink.last = undefined;
+  FakeRns.last = undefined;
+  FakeRns.readyAtStart = true;
+  FakeLink.failOpen = true;
+  const app = fakeApp();
+  const p = plugin(app, { ...deps, Reticulum: FakeRns, lanGraceMs: 5000 });
+  const pcm = (list) => list.filter((b) => P.parseHeader(b).codec === P.Codec.PCM).length;
+  try {
+    p.start({ channelKey: KEY, waitForSilenceMs: 0, reticulum: { enabled: true } });
+    await until(() => FakeRns.last && FakeRns.last.accepted.length > 0);
+    const r = FakeRns.last;
+    r.linkCount = 1;                                                   // the crew ashore is there, too
+    const said = app.props["signalk-crewradio.api"].say({ text: "Anchor dragging", priority: "urgent" });
+    await new Promise((res) => setTimeout(res, 300));
+    assert.equal(pcm(r.accepted), 0, "held for the LAN, not spoken to the shore alone");
+    FakeLink.failOpen = false;                                         // back at the next retry (1 s)
+    await said;                                                        // queued
+    await until(() => FakeLink.last && FakeLink.last.openedAt && pcm(FakeLink.last.sent) >= 5, 5000);
+    assert.equal(pcm(r.accepted) - pcm(FakeLink.last.sent), 0, "and the shore through the same LAN node, not before it");
+  } finally {
+    FakeRns.readyAtStart = false;
+    FakeLink.failOpen = false;
+    p.stop();
+  }
+});
+
+test("Reticulum: past the grace it goes to the shore alone, and if the LAN comes back mid-way it is said again, whole, on the LAN", async () => {
+  /** Two seconds of speech, so the LAN's next retry lands in the middle of it. */
+  class LongTts extends FakeTts {
+    synthesize(text) { this.texts.push(text); return Promise.resolve(Buffer.alloc(2 * 16000 * 2)); }
+  }
+  FakeLink.last = undefined;
+  FakeRns.last = undefined;
+  FakeRns.readyAtStart = true;
+  FakeLink.failOpen = true;
+  const app = fakeApp();
+  const p = plugin(app, { ...deps, Tts: LongTts, Reticulum: FakeRns, lanGraceMs: 200 });
+  const pcm = (list) => list.filter((b) => P.parseHeader(b).codec === P.Codec.PCM).length;
+  try {
+    p.start({ channelKey: KEY, waitForSilenceMs: 0, reticulum: { enabled: true } });
+    await until(() => FakeRns.last && FakeRns.last.accepted.length > 0);
+    const r = FakeRns.last;
+    r.linkCount = 1;
+    const hello = r.accepted.map((b) => P.decodeHello(crypto.open(P.aadOf(b), b.subarray(P.HEADER)))).find(Boolean);
+    assert.equal(hello.transports, P.Transports.RETICULUM, "while the LAN is down the hello does not claim it");
+    const said = app.props["signalk-crewradio.api"].say({ text: "Anchor dragging" });
+    await until(() => pcm(r.accepted) > 0, 3000);
+    FakeLink.failOpen = false;                                         // the LAN comes back mid-announcement
+    await said;                                                        // queued
+    await until(() => FakeLink.last && FakeLink.last.openedAt && pcm(FakeLink.last.sent) >= 2 * 50, 8000);
+    const onLan = pcm(FakeLink.last.sent);
+    const toShore = pcm(r.accepted);
+    assert.ok(toShore > onLan, `the shore had the cut first attempt and the whole second (${toShore} vs ${onLan})`);
+  } finally {
+    FakeRns.readyAtStart = false;
+    FakeLink.failOpen = false;
+    p.stop();
+  }
 });

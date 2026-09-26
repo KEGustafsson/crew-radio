@@ -15,6 +15,9 @@
  *  3. A notification bridge (lib/bridge.js): Signal K notifications at or above a chosen state
  *     are announced, urgent for emergencies, repeated until they clear.
  *  4. The channel's roster in Signal K: communication.crewradio.* (online, nodes, talking, speaking).
+ *  5. Optionally the channel over Reticulum (lib/rns/): a TCP connection to a Reticulum transport
+ *     node, links to the crew's other Reticulum nodes, and the plugin relaying between them and
+ *     the boat's LAN, so a phone ashore on a hub hears the boat and the boat hears it.
  */
 
 const fs = require("node:fs");
@@ -24,6 +27,7 @@ const { ChannelCrypto } = require("./lib/crypto");
 const { Transports, sanitiseName, REPLAY_WINDOW_S } = require("./lib/packet");
 const { LanLink } = require("./lib/lan");
 const { ChannelNode } = require("./lib/node");
+const { ReticulumTransport } = require("./lib/rns/transport");
 const { ReplayGuard } = require("./lib/replay");
 const { SourceLimiter } = require("./lib/ratelimit");
 const { FliteTts, VOICES, MAX_TEXT } = require("./lib/tts");
@@ -46,6 +50,8 @@ const KEY_MAX = 64;
 module.exports = function crewRadioPlugin(app, deps = {}) {
   const Link = deps.LanLink ?? LanLink;
   const Tts = deps.Tts ?? FliteTts;
+  const Rns = deps.Reticulum ?? ReticulumTransport;
+  const lanGraceMs = deps.lanGraceMs ?? LAN_GRACE_MS;
   const plugin = {
     id: "signalk-crewradio",
     name: "Crew Radio",
@@ -59,6 +65,8 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
   let cfg = null;
   let crypto = null;                               // the channel's ChannelCrypto once the key is derived
   let link = null;
+  let rns = null;                                  // the Reticulum transport, when enabled; outlives LAN reopens
+  let rnsStatus = "";
   let node = null;
   let tts = null;
   let queue = null;
@@ -131,7 +139,13 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
         status();
         return;
       }
-      node = new ChannelNode({ name: cfg.nodeName, crypto, link, ttl: cfg.hops, guard });
+      // The Reticulum-only node that kept the channel while the LAN was down hands over at once;
+      // an announcement it was speaking goes again, whole, on the LAN node (playOnChannel).
+      if (node) { node.stop(); node = null; }
+      startNode(mine);
+    };
+    const startNode = (on) => {
+      node = new ChannelNode({ name: cfg.nodeName, crypto, link: on, rns, ttl: cfg.hops, guard });
       node.on("roster", (r) => publishRoster(r));
       node.on("speaking", (on) => { publishSpeaking(on); status(); });
       node.on("stale", (n) => app.error(`Clock: ${n} packets more than ${REPLAY_WINDOW_S} s off (the server's clock or a phone's is wrong)`));
@@ -140,9 +154,12 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     };
     const scheduleReopen = () => {
       if (!running || reopenTimer) return;
-      if (node) { node.stop(); node = null; }
+      if (node && node.link !== OFFLINE) { node.stop(); node = null; }
       if (link) { link.close(); link = null; }
       linkInfo = null;
+      // With Reticulum on, the channel does not wait for the LAN: a node on Reticulum alone keeps
+      // the crew ashore on it (and announcements going to them) until the LAN is back.
+      if (rns && !node && crypto) startNode(OFFLINE);
       reopenTimer = setTimeout(() => { reopenTimer = null; openLink().catch(onLinkCrash); }, backoffMs);
       backoffMs = Math.min(backoffMs * 2, 15_000);
     };
@@ -195,11 +212,28 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     // The packet key takes a while to derive (600 000 rounds of PBKDF2); it runs on the thread
     // pool, and the link opens when it is there. start() itself returns at once.
     ChannelCrypto.forChannelKey(cfg.channelKey).then(
-      (c) => { if (running && gen === generation) { crypto = c; openLink().catch(onLinkCrash); } },
+      (c) => {
+        if (!running || gen !== generation) return;
+        crypto = c;
+        if (cfg.reticulum.enabled) startReticulum(c);
+        openLink().catch(onLinkCrash);
+      },
       (e) => { if (running && gen === generation) app.setPluginError(`Channel key: ${e.message}`); },
     );
     status();
   };
+
+  /** The Reticulum transport: started once the packet key (and with it the channel's tag) is there. */
+  function startReticulum(c) {
+    rns = new Rns({ host: cfg.reticulum.host, port: cfg.reticulum.port, tag: c.reticulumTag, confirmKey: c.reticulumConfirmKey });
+    rns.on("status", (line) => {
+      if (line === rnsStatus) return;
+      rnsStatus = line;
+      app.debug(line);
+      status();
+    });
+    rns.start();
+  }
 
   /**
    * REST: POST /plugins/signalk-crewradio/say with {text, priority} as application/json or a
@@ -260,6 +294,8 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     if (queue) { queue.stop(); queue = null; }
     if (node) { node.stop(); node = null; }
     if (link) { link.close(); link = null; }
+    if (rns) { rns.stop(); rns = null; }
+    rnsStatus = "";
     linkInfo = null;
     lastLinkError = null;
     if (tts && typeof tts.stop === "function") tts.stop();
@@ -314,10 +350,16 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
 
   async function playOnChannel(pcm, cancelled) {
     // The link reconnects on its own (1 s doubling to 15 s); an announcement made while it is
-    // down waits for it at the head of the queue instead of being thrown away.
+    // down waits for it at the head of the queue instead of being thrown away. With Reticulum on,
+    // the node that keeps the channel while the LAN is down reaches only the crew ashore, so the
+    // boat's own phones - the announcement's first audience - would miss it: it waits for the LAN
+    // for lanGraceMs first (an interface change or a Wi-Fi reconnect is over in a second or two),
+    // and goes out on Reticulum alone only after that, and only to confirmed links.
     const t0 = Date.now();
+    const onLan = () => node && node.link !== OFFLINE;
+    const ashoreOnly = () => node && node.link === OFFLINE && rns?.linkCount > 0 && Date.now() - t0 >= lanGraceMs;
     for (;;) {
-      while (!node) {
+      while (!onLan() && !ashoreOnly()) {
         if (!running || cancelled()) return;
         if (Date.now() - t0 > LINK_WAIT_MS) throw new Error("not on the channel (network link down)");
         await new Promise((r) => setTimeout(r, 100));
@@ -329,6 +371,9 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       if (!running || cancelled()) return;
       if (node !== n) continue;
       await n.speak(pcm, cancelled);   // the queue's own flag: an urgent one may cut in before the first frame
+      // Cut short because the LAN came back: the boat heard none of it, so it goes again, whole,
+      // on the LAN node (which carries it to Reticulum as well).
+      if (n.link === OFFLINE && node !== n && running && !cancelled()) continue;
       return;
     }
   }
@@ -343,12 +388,13 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       statusLine: lastStatus,
       warnings: cfg?.warnings ?? [],
       link: linkInfo ? { iface: linkInfo.iface, address: linkInfo.address } : null,
+      reticulum: rns ? { host: cfg.reticulum.host, port: cfg.reticulum.port, connected: rns.ready, links: rns.linkCount, status: rnsStatus } : null,
       group: cfg?.group ?? null, port: cfg?.port ?? null, hops: cfg?.hops ?? null,
       voice: cfg?.voice ?? null, voices: VOICES, rate: cfg?.rate ?? null,
       speaking: !!node?.speaking,
       queued: (queue?.size ?? 0) + (queue?.current && !node?.speaking ? 1 : 0),
       roster: roster.map((n) => ({ name: n.name, transports: describeTransports(n.transports), hops: n.hops, versionCode: n.versionCode, talking: n.talking, ageMs: n.ageMs })),
-      stats: { ...(node?.stats ?? { rx: 0, tx: 0, rejected: 0, stale: 0, late: 0 }), synthesized: tts?.stats?.synthesized ?? 0, cached: tts?.stats?.cached ?? 0 },
+      stats: { ...(node?.stats ?? { rx: 0, tx: 0, rejected: 0, stale: 0, late: 0, relayed: 0 }), synthesized: tts?.stats?.synthesized ?? 0, cached: tts?.stats?.cached ?? 0 },
       limits: { maxText: MAX_TEXT, perMinute: RATE_PER_MINUTE, queue: queue?.max ?? null, urgent: queue?.maxUrgent ?? null },
       uptimeSec: running ? Math.round((Date.now() - startedAt) / 1000) : 0,
     };
@@ -377,9 +423,12 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     if (!running) return;
     const r = roster ?? node?.roster() ?? [];
     const parts = [node ? `${r.length} online` : crypto ? "network link down" : "starting"];
+    if (node && !linkInfo) parts.push("LAN down");
     const talking = r.filter((n) => n.talking).map((n) => n.name);
     if (talking.length) parts.push(`talking: ${talking.join(", ")}`);
     if (node?.speaking) parts.push("announcing");
+    // Down, with the transport's own last word on why (a refused connection, a name that did not resolve).
+    if (rns) parts.push(rns.ready ? `Reticulum ${rns.linkCount} link${rns.linkCount === 1 ? "" : "s"}` : `Reticulum down${rnsStatus ? ` (${rnsStatus.replace(/^Reticulum: /, "")})` : ""}`);
     const waiting = (queue?.size ?? 0) + (queue?.current && !node?.speaking ? 1 : 0);   // held for the link, or for a gap in talk
     if (waiting) parts.push(`${waiting} waiting`);
     parts.push(`voice ${cfg?.voice ?? "-"}`);
@@ -391,13 +440,41 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
   return plugin;
 };
 
+/** The LAN link while the LAN is down: sends nothing, hears nothing. The channel node then runs on Reticulum alone. */
+const OFFLINE = Object.freeze({ offline: true, send: () => false, on() {}, off() {} });
+
+/** How long an announcement made while the LAN is down waits for it before going out on Reticulum alone. */
+const LAN_GRACE_MS = 10_000;
+
 /**
  * The settings with defaults, validated: a value out of range falls back to the default and is
  * named in `warnings`, so a typo in the port never leaves the plugin silently off the channel.
  */
+/**
+ * The Reticulum node's host and port. A host typed as `host:port` (the way the phone's setting takes
+ * it) is split, the port field then ignored; a bare IPv6 address is left whole, `[v6]:port` split.
+ * An inline port that is not a number is named in a warning and dropped, the port field used.
+ */
+function hostAndPort(r, warnings) {
+  let host = String(r.host ?? "127.0.0.1").trim() || "127.0.0.1";
+  let port = r.port;
+  const m = /^\[([^\]]+)\]:(.*)$/.exec(host) ?? /^([^:\s]+):([^:]*)$/.exec(host);
+  if (m) {
+    host = m[1];
+    if (/^\d+$/.test(m[2])) port = Number(m[2]);
+    else warnings.push(`Reticulum host ${JSON.stringify(r.host)} has a port that is not a number, using the port setting`);
+  }
+  const n = Number(port);
+  if (port === undefined || port === null || port === "") port = 4242;
+  else if (!Number.isInteger(n) || n < 1 || n > 65535) { warnings.push(`Reticulum port ${JSON.stringify(port)} is not 1-65535, using 4242`); port = 4242; }
+  else port = n;
+  return { host: host.replace(/^\[(.*)\]$/, "$1"), port };
+}
+
 function withDefaults(o, app) {
   o = o ?? {};
   const b = o.bridge ?? {};
+  const r = o.reticulum ?? {};
   const warnings = [];
   const number = (v, def, lo, hi, what, integer = false) => {
     if (v === undefined || v === null || v === "") return def;
@@ -431,6 +508,10 @@ function withDefaults(o, app) {
     rate: number(o.rate, 1, 0.5, 2, "speaking rate"),
     chime: o.chime ?? true,
     waitForSilenceMs: number(o.waitForSilenceMs, 2000, 0, 30_000, "wait for a gap in talk", true),
+    reticulum: {
+      enabled: r.enabled ?? false,
+      ...hostAndPort(r, warnings),
+    },
     bridge: {
       enabled: b.enabled ?? true,
       minState: b.minState ?? "alarm",
@@ -486,12 +567,13 @@ function readBody(req, limit) {
   });
 }
 
-/** Transport flags as the app writes them: LAN+BT+Aware. */
+/** Transport flags as the app writes them: LAN+BT+Aware+Reticulum. */
 function describeTransports(flags) {
   const names = [];
   if (flags & Transports.LAN) names.push("LAN");
   if (flags & Transports.BT) names.push("BT");
   if (flags & Transports.AWARE) names.push("Aware");
+  if (flags & Transports.RETICULUM) names.push("Reticulum");
   return names.join("+");
 }
 
@@ -529,6 +611,16 @@ function schema(app) {
       port: { type: "integer", title: "UDP port", default: 47474, minimum: 1024, maximum: 65535 },
       iface: { type: "string", title: "Network interface", default: "auto", description: "The server's interface on the boat network: wired LAN (eth0) or WLAN (wlan0), as long as it is the same network the phones' WLAN is on. auto: a wlan interface, else eth/en, else the first with an IPv4 address (container, bridge and VPN interfaces last); looked at again every 5 s." },
       hops: { type: "integer", title: "Hop budget", default: 4, minimum: 1, maximum: 16, description: "How far phones may relay the server's packets over Bluetooth and Wi-Fi Aware." },
+      reticulum: {
+        type: "object",
+        title: "Reticulum",
+        description: "The channel over Reticulum as well: a phone ashore with the RETICULUM tile on and the same transport node (or one on the same Reticulum network) is on the crew channel, with this server relaying between it and the boat's LAN. Needs a Reticulum transport node with a TCP server interface and enable_transport = Yes: a hub ashore, or the boat's own rnsd connected on to one (docs/RETICULUM_HUB.md in the repository). Interface access codes are not supported.",
+        properties: {
+          enabled: { type: "boolean", title: "Enabled", default: false },
+          host: { type: "string", title: "Transport node host", default: "127.0.0.1", description: "The rnsd TCPServerInterface to connect to: the hub's name or address, or 127.0.0.1 for one on this server. host:port is accepted too." },
+          port: { type: "integer", title: "Transport node port", default: 4242, minimum: 1, maximum: 65535 },
+        },
+      },
       bridge: {
         type: "object",
         title: "Announce Signal K notifications",
