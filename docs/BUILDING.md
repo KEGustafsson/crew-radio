@@ -102,8 +102,8 @@ handshake over a fake network). Anything with a transport or a codec needs real 
 
 The Reticulum code can also be checked against a real Reticulum transport node. With Python, run
 one locally (`pip install rns`, then `rnsd` with a `TCPServerInterface` on 127.0.0.1:4242 and
-`enable_transport = Yes` in its config), start the plugin or another phone on the channel key
-`north-star-2026`, and:
+`enable_transport = Yes` in its config; [RETICULUM_HUB.md](RETICULUM_HUB.md) has a complete
+one), start the plugin or another phone on the channel key `north-star-2026`, and:
 
 ```sh
 RNS_HUB=127.0.0.1:4242 ./gradlew testDebugUnitTest --tests '*ReticulumInteropTest*'

@@ -375,7 +375,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
 
 ## Documentation
 - `README.md` is written for the crew (install, quick start, talk keys, headsets, settings);
-  `docs/ARCHITECTURE.md` for developers; `docs/BUILDING.md` holds every build and release
+  `docs/ARCHITECTURE.md` for developers; `docs/RETICULUM_HUB.md` is the crew's guide to running their
+  own Reticulum hub (rnsd install, config, systemd autostart; its configs were run against rnsd 1.5.4,
+  keep them so); `docs/BUILDING.md` holds every build and release
   procedure step by step (machine prerequisites, the debug loop, tests and the lint gate, creating
   the release keystore and the `CREWRADIO_*` environment variables, the workflow secrets and the
   certificate fingerprint variable, what a push to `main` publishes, the plugin, the verification

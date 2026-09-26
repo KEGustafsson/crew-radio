@@ -140,6 +140,8 @@ dependency), not taken from the reference implementation, and checked against it
   `rnsd` with a `TCPServerInterface` and `enable_transport = Yes` (its other interfaces, a LoRa
   RNode or a TCP link to a hub ashore, then carry the channel onward), or a hub ashore directly.
   Interface access codes (a network name or passphrase on the interface) are not supported.
+  [docs/RETICULUM_HUB.md](../docs/RETICULUM_HUB.md) sets up a hub ashore, and optionally an
+  `rnsd` on the server itself, with autostart at boot.
 - **How it works.** The channel's sealed packets ride unchanged inside Reticulum links, so the
   channel key still does all the securing; Reticulum adds its own encryption around it. The
   plugin announces `crewradio.channel.<tag>`, the tag an HMAC of the packet key, so only a node

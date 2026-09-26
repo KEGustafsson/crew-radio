@@ -247,6 +247,9 @@ Interface access codes (a Reticulum network name or passphrase on the interface)
 supported. The details, and what a transport node can and cannot see, are in
 [docs/SECURITY.md](docs/SECURITY.md#reticulum-optional-off-by-default).
 
+To run your own hub (a Raspberry Pi at home or a small cloud server, installed, configured and
+started at boot), follow [docs/RETICULUM_HUB.md](docs/RETICULUM_HUB.md).
+
 ## Add-on: Ask boat data
 
 > An optional extra, off until you switch it on, and not needed to talk on the channel. It wants
