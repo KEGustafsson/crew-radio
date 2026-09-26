@@ -606,6 +606,8 @@ test("Reticulum: off by default; when enabled it starts with the channel's tag a
     assert.deepEqual(r.opts, { host: "hub.example", port: 4965, tag: crypto.reticulumTag, confirmKey: crypto.reticulumConfirmKey });
     assert.equal(r.started, 1);
     assert.match(app.status.at(-1), /Reticulum down/);
+    r.emit("status", "Reticulum: hub.example:4965 connect ECONNREFUSED; retrying in 2 s");
+    assert.match(app.status.at(-1), /Reticulum down \(hub\.example:4965 connect ECONNREFUSED; retrying in 2 s\)/, "and why");
     r.ready = true;
     r.linkCount = 2;
     r.emit("status", "Reticulum: 2 links");
@@ -633,6 +635,13 @@ test("Reticulum settings: defaults, a bad port falls back and is named, and the 
   const bad = plugin.withDefaults({ channelKey: KEY, reticulum: { enabled: true, host: "  ", port: 99999 } }, fakeApp());
   assert.deepEqual(bad.reticulum, { enabled: true, host: "127.0.0.1", port: 4242 });
   assert.ok(bad.warnings.some((w) => /Reticulum port/.test(w)));
+  // host:port as the phone takes it, [v6]:port, and a bare IPv6 address left whole.
+  assert.deepEqual(plugin.withDefaults({ channelKey: KEY, reticulum: { host: "hub.example:4965", port: 1 } }, fakeApp()).reticulum,
+    { enabled: false, host: "hub.example", port: 4965 });
+  assert.deepEqual(plugin.withDefaults({ channelKey: KEY, reticulum: { host: "[fd12::7]:4000" } }, fakeApp()).reticulum,
+    { enabled: false, host: "fd12::7", port: 4000 });
+  assert.deepEqual(plugin.withDefaults({ channelKey: KEY, reticulum: { host: "fd12::7", port: "4001" } }, fakeApp()).reticulum,
+    { enabled: false, host: "fd12::7", port: 4001 });
   const s = plugin(fakeApp(), deps).schema();
   assert.deepEqual(Object.keys(s.properties.reticulum.properties), ["enabled", "host", "port"]);
 });
@@ -665,33 +674,60 @@ test("Reticulum: with the LAN down the channel runs on Reticulum alone, and move
   }
 });
 
-test("Reticulum: an announcement going out on Reticulum alone is not cut short when the LAN comes back", async () => {
-  /** Four seconds of speech, so the LAN's next retry lands in the middle of it. */
+test("Reticulum: an announcement made while the LAN is down waits for it, and the boat hears it when the LAN is back within the grace", async () => {
+  FakeLink.last = undefined;
+  FakeRns.last = undefined;
+  FakeRns.readyAtStart = true;
+  FakeLink.failOpen = true;
+  const app = fakeApp();
+  const p = plugin(app, { ...deps, Reticulum: FakeRns, lanGraceMs: 5000 });
+  const pcm = (list) => list.filter((b) => P.parseHeader(b).codec === P.Codec.PCM).length;
+  try {
+    p.start({ channelKey: KEY, waitForSilenceMs: 0, reticulum: { enabled: true } });
+    await until(() => FakeRns.last && FakeRns.last.accepted.length > 0);
+    const r = FakeRns.last;
+    r.linkCount = 1;                                                   // the crew ashore is there, too
+    const said = app.props["signalk-crewradio.api"].say({ text: "Anchor dragging", priority: "urgent" });
+    await new Promise((res) => setTimeout(res, 300));
+    assert.equal(pcm(r.accepted), 0, "held for the LAN, not spoken to the shore alone");
+    FakeLink.failOpen = false;                                         // back at the next retry (1 s)
+    await said;                                                        // queued
+    await until(() => FakeLink.last && FakeLink.last.openedAt && pcm(FakeLink.last.sent) >= 5, 5000);
+    assert.equal(pcm(r.accepted) - pcm(FakeLink.last.sent), 0, "and the shore through the same LAN node, not before it");
+  } finally {
+    FakeRns.readyAtStart = false;
+    FakeLink.failOpen = false;
+    p.stop();
+  }
+});
+
+test("Reticulum: past the grace it goes to the shore alone, and if the LAN comes back mid-way it is said again, whole, on the LAN", async () => {
+  /** Two seconds of speech, so the LAN's next retry lands in the middle of it. */
   class LongTts extends FakeTts {
-    synthesize(text) { this.texts.push(text); return Promise.resolve(Buffer.alloc(4 * 16000 * 2)); }
+    synthesize(text) { this.texts.push(text); return Promise.resolve(Buffer.alloc(2 * 16000 * 2)); }
   }
   FakeLink.last = undefined;
   FakeRns.last = undefined;
   FakeRns.readyAtStart = true;
   FakeLink.failOpen = true;
   const app = fakeApp();
-  const p = plugin(app, { ...deps, Tts: LongTts, Reticulum: FakeRns });
+  const p = plugin(app, { ...deps, Tts: LongTts, Reticulum: FakeRns, lanGraceMs: 200 });
   const pcm = (list) => list.filter((b) => P.parseHeader(b).codec === P.Codec.PCM).length;
-  const speaking = () => app.deltas.flatMap((d) => d.delta.updates.flatMap((u) => u.values)).filter((v) => v.path === "communication.crewradio.speaking");
   try {
     p.start({ channelKey: KEY, waitForSilenceMs: 0, reticulum: { enabled: true } });
     await until(() => FakeRns.last && FakeRns.last.accepted.length > 0);
     const r = FakeRns.last;
-    app.props["signalk-crewradio.api"].say({ text: "Anchor dragging" });
-    await until(() => pcm(r.accepted) > 0);
-    FakeLink.failOpen = false;                                    // the LAN is back at its next retry, mid-announcement
-    await until(() => speaking().some((v) => v.value === true) && speaking().at(-1).value === false, 9000);
-    const endedAt = Date.now();
-    const lan = FakeLink.last;
-    assert.ok(lan.openedAt && lan.openedAt < endedAt - 200, "the LAN came back while the announcement was still going out");
-    assert.ok(pcm(r.accepted) >= 4 * 50, `the whole announcement went out on Reticulum (${pcm(r.accepted)} frames)`);
-    assert.equal(pcm(lan.sent), 0, "and none of it started over on the LAN");
-    await until(() => lan.sent.some((b) => P.parseHeader(b).codec === P.Codec.HELLO), 3000);   // then the LAN node took over
+    r.linkCount = 1;
+    const hello = r.accepted.map((b) => P.decodeHello(crypto.open(P.aadOf(b), b.subarray(P.HEADER)))).find(Boolean);
+    assert.equal(hello.transports, P.Transports.RETICULUM, "while the LAN is down the hello does not claim it");
+    const said = app.props["signalk-crewradio.api"].say({ text: "Anchor dragging" });
+    await until(() => pcm(r.accepted) > 0, 3000);
+    FakeLink.failOpen = false;                                         // the LAN comes back mid-announcement
+    await said;                                                        // queued
+    await until(() => FakeLink.last && FakeLink.last.openedAt && pcm(FakeLink.last.sent) >= 2 * 50, 8000);
+    const onLan = pcm(FakeLink.last.sent);
+    const toShore = pcm(r.accepted);
+    assert.ok(toShore > onLan, `the shore had the cut first attempt and the whole second (${toShore} vs ${onLan})`);
   } finally {
     FakeRns.readyAtStart = false;
     FakeLink.failOpen = false;

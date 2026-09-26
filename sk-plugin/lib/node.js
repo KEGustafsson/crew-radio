@@ -97,7 +97,8 @@ class ChannelNode extends EventEmitter {
 
   /** Hello out, stale nodes swept, roster republished if it changed. */
   tick() {
-    const transports = P.Transports.LAN | (this.rns?.ready ? P.Transports.RETICULUM : 0);
+    // The LAN only while there is one: the node that keeps the channel while it is down says Reticulum alone.
+    const transports = (this.link.offline ? 0 : P.Transports.LAN) | (this.rns?.ready ? P.Transports.RETICULUM : 0);
     this.broadcast(P.Codec.HELLO, P.encodeHello({ name: this.name, transports, ttl: this.ttl, versionCode: 0 }));
     const now = this.now();
     let changed = false;
