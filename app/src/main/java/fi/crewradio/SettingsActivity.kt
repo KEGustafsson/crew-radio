@@ -72,6 +72,9 @@ class SettingsActivity : AppCompatActivity() {
          */
         private var discovered: String? = null
 
+        /** False when the screen is re-created (a rotation): the permission is asked only on the first. */
+        private var firstShow = true
+
         /** What runs once the local network access dialog is answered ([withLocalNetwork]). */
         private var afterLocalNetwork: (() -> Unit)? = null
         private val localNetworkRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -92,11 +95,13 @@ class SettingsActivity : AppCompatActivity() {
          */
         private fun withLocalNetwork(url: String?, then: () -> Unit) {
             if (localNetworkAllowed(url)) { then(); return }
+            if (afterLocalNetwork != null) return                  // a request is already on screen
             afterLocalNetwork = then
             localNetworkRequest.launch(LocalNetwork.PERMISSION)
         }
 
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
+            firstShow = savedInstanceState == null
             setPreferencesFromResource(R.xml.preferences, rootKey)
             val prefs = Prefs(requireContext())
 
@@ -225,8 +230,10 @@ class SettingsActivity : AppCompatActivity() {
             // type an address instead, and a boat network that blocks multicast still works.
             // On Android 17 the search needs local network access, asked for only once asking the boat
             // is switched on: a crew that does not use Signal K is never shown the dialog for it.
+            // Asked once, when the screen is first opened: not again on a rotation, which runs this
+            // again while the system dialog may still be up (a second request is refused at once).
             if (prefs.askServerTyped.isNullOrBlank() && !prefs.isManaged(Prefs.KEY_ASK_SERVER)) {
-                if (prefs.askEnabled) withLocalNetwork(null) { discover() }
+                if (prefs.askEnabled && firstShow) withLocalNetwork(null) { discover() }
                 else if (localNetworkAllowed(null)) discover()
             }
 
@@ -438,7 +445,8 @@ class SettingsActivity : AppCompatActivity() {
          * Refuses a value the rule rejects, explaining why and re-opening the dialog with the
          * refused text still in it. The keyboard is set per field: digits for the numbers, and for
          * the channel key a visible-password keyboard with no suggestions, so a key like `q7wk-…`
-         * is not autocorrected or capitalised on its way in.
+         * is not autocorrected or capitalised on its way in; an address keyboard for the Reticulum
+         * node, as the main screen's dialog has.
          */
         private fun rule(key: String, why: Int, numeric: Boolean = false, ok: (String) -> Boolean) {
             val pref = findPreference<EditTextPreference>(key) ?: return
@@ -449,6 +457,7 @@ class SettingsActivity : AppCompatActivity() {
                         InputType.TYPE_CLASS_TEXT or
                             InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
                             InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                    key == Prefs.KEY_RETICULUM_NODE -> field.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
                 }
                 refused.remove(key)?.let { field.setText(it); field.setSelection(it.length) }
             }

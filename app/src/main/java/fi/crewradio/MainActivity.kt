@@ -26,6 +26,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityManager
+import android.view.inputmethod.EditorInfo
 import android.text.InputType
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -421,12 +422,16 @@ class MainActivity : AppCompatActivity() {
      */
     private fun connect(s: PttService) {
         applySettings(s.engine)
-        // The Reticulum tile counts only with a transport node to go to (the tile asks for one, but
-        // Settings can clear it afterwards).
+        // The Reticulum tile needs a transport node to go to. The tile asks for one, but Settings can
+        // clear it afterwards: ask again here, with whatever is stored, and join once it is saved.
         val rnsOn = tileOn(Prefs.KEY_USE_RETICULUM)
         val rns = if (rnsOn) prefs.reticulumNode else null
-        if (rnsOn && rns == null) Toast.makeText(this, R.string.reticulum_no_node, Toast.LENGTH_SHORT).show()
-        if (tiles.none { it.on && (it.key != Prefs.KEY_USE_RETICULUM || rns != null) }) {
+        if (rnsOn && rns == null) {
+            askReticulumNode(missing = true) { askPermissions(thenConnect = true) }
+            syncUi()
+            return
+        }
+        if (tiles.none { it.on }) {
             Toast.makeText(this, R.string.pick_transport, Toast.LENGTH_SHORT).show()
             syncUi()
             return
@@ -821,17 +826,22 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    /** One line at the bottom of the screen, optionally with something to do about it. */
     /**
      * Asks for the Reticulum transport node, validated as Settings does ([SettingsRules.parseHostPort]),
      * and stores it; [then] runs once a valid one is saved. The dialog stays open on a bad value.
+     * With [missing] it was the join that found none: whatever is stored is shown, and why.
      */
-    private fun askReticulumNode(then: () -> Unit) {
+    private fun askReticulumNode(missing: Boolean = false, then: () -> Unit) {
         val pad = (20 * resources.displayMetrics.density).toInt()
         val input = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             hint = getString(R.string.rns_dialog_hint)
             setSingleLine()
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            if (missing) {
+                setText(prefs.reticulumNodeTyped.orEmpty())
+                error = getString(R.string.reticulum_no_node)
+            }
         }
         val box = FrameLayout(this).apply { setPadding(pad, 0, pad, 0); addView(input) }
         val dialog = AlertDialog.Builder(this)
@@ -851,8 +861,13 @@ class MainActivity : AppCompatActivity() {
             dialog.dismiss()
             then()
         }
+        input.setOnEditorActionListener { _, action, _ ->
+            if (action == EditorInfo.IME_ACTION_DONE) dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+            action == EditorInfo.IME_ACTION_DONE
+        }
     }
 
+    /** One line at the bottom of the screen, optionally with something to do about it. */
     private fun snack(text: String, actionRes: Int?, action: () -> Unit) {
         val bar = Snackbar.make(root, text, Snackbar.LENGTH_LONG)
         if (actionRes != null) bar.setAction(actionRes) { action() }

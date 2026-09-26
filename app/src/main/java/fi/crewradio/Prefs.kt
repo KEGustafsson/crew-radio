@@ -251,6 +251,9 @@ class Prefs(context: Context) {
         get() = managedString(KEY_RETICULUM_NODE)?.takeIf { SettingsRules.parseHostPort(it) != null }
             ?: sp.getString(KEY_RETICULUM_NODE, null)?.trim()?.takeIf { SettingsRules.parseHostPort(it) != null }
 
+    /** What this phone has stored for the node, valid or not: shown back when it asks again. */
+    val reticulumNodeTyped: String? get() = sp.getString(KEY_RETICULUM_NODE, null)
+
     /** The transport node to connect to, host and port, or null when none is set. */
     val reticulumNode: Pair<String, Int>? get() = reticulumNodeText?.let { SettingsRules.parseHostPort(it) }
 

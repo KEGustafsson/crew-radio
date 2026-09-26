@@ -24,6 +24,7 @@ class LocalNetworkTest {
         assertEquals("WLAN decides, whatever the node", Need.REQUIRED, LocalNetwork.forChannel(android17, wlan = true, reticulumHost = "hub.example.org"))
         assertEquals(Need.REQUIRED, LocalNetwork.forChannel(android17, wlan = false, reticulumHost = "192.168.1.9"))
         assertEquals(Need.REQUIRED, LocalNetwork.forChannel(android17, wlan = false, reticulumHost = "[fd12::7]"))
+        assertEquals("as parseHostPort hands it over, unbracketed", Need.REQUIRED, LocalNetwork.forChannel(android17, wlan = false, reticulumHost = "fd12::7"))
     }
 
     @Test
