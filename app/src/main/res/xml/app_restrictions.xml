@@ -85,6 +85,18 @@
         android:defaultValue="auto" />
 
     <restriction
+        android:key="use_reticulum"
+        android:restrictionType="bool"
+        android:title="@string/restriction_reticulum_title"
+        android:description="@string/restriction_reticulum_desc"
+        android:defaultValue="false" />
+    <restriction
+        android:key="reticulum_node"
+        android:restrictionType="string"
+        android:title="@string/restriction_reticulum_node_title"
+        android:description="@string/restriction_reticulum_node_desc" />
+
+    <restriction
         android:key="ask_enabled"
         android:title="@string/restriction_ask_enabled_title"
         android:description="@string/restriction_ask_enabled_desc"

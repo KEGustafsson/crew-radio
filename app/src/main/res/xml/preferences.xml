@@ -161,6 +161,20 @@
             app:useSimpleSummaryProvider="true" />
     </PreferenceCategory>
 
+    <PreferenceCategory app:title="@string/pref_cat_reticulum">
+        <SwitchPreferenceCompat
+            app:key="use_reticulum"
+            app:title="@string/pref_reticulum_title"
+            app:defaultValue="false"
+            app:summaryOn="@string/pref_reticulum_on"
+            app:summaryOff="@string/pref_reticulum_off" />
+        <EditTextPreference
+            app:key="reticulum_node"
+            app:title="@string/pref_reticulum_node_title"
+            app:dialogMessage="@string/pref_reticulum_node_message"
+            app:useSimpleSummaryProvider="true" />
+    </PreferenceCategory>
+
     <PreferenceCategory app:title="@string/pref_cat_mesh">
         <EditTextPreference
             app:key="max_hops"

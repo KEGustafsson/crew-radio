@@ -25,7 +25,8 @@ import javax.crypto.spec.SecretKeySpec
  * and off the main thread. The Wi-Fi Aware secrets are HMACs of the packet key under their own
  * labels ([awarePassphrase], [awareIdTag]): the NAN handshake's cheaper KDF then verifies
  * nothing about the packet key, and a foreign publisher of our service name is told apart
- * before any network request. Pure JVM crypto, unit-tested.
+ * before any network request; the Reticulum destination's tag is one too ([reticulumTag]).
+ * Pure JVM crypto, unit-tested.
  */
 class ChannelCrypto(private val key: SecretKeySpec) {
 
@@ -75,6 +76,19 @@ class ChannelCrypto(private val key: SecretKeySpec) {
         hmac(ByteBuffer.allocate(AWARE_ID_LABEL.length + 4).put(AWARE_ID_LABEL.toByteArray(StandardCharsets.US_ASCII)).putInt(senderId).array())
             .copyOf(AWARE_ID_TAG_BYTES)
 
+    /**
+     * The channel's Reticulum destination aspect: the first 8 bytes of HMAC-SHA256(packet key,
+     * "CrewRadio reticulum v1") in lower-case hex. Our destination is `crewradio.channel.<tag>`,
+     * so without the key nobody can tell which channel an announce belongs to. The plugin's
+     * ChannelCrypto.reticulumTag is the same.
+     */
+    val reticulumTag: String by lazy {
+        hmac(RETICULUM_LABEL.toByteArray(StandardCharsets.US_ASCII)).copyOf(8).joinToString("") { b ->
+            val v = b.toInt() and 0xFF
+            "${HEX[v ushr 4]}${HEX[v and 15]}"
+        }
+    }
+
     private fun hmac(data: ByteArray): ByteArray =
         Mac.getInstance(HMAC).run { init(SecretKeySpec(key.encoded, HMAC)); doFinal(data) }
 
@@ -90,6 +104,8 @@ class ChannelCrypto(private val key: SecretKeySpec) {
         private const val HMAC = "HmacSHA256"
         private const val AWARE_LABEL = "CrewRadio aware v4"
         private const val AWARE_ID_LABEL = "CrewRadio aware id v4"
+        private const val RETICULUM_LABEL = "CrewRadio reticulum v1"
+        private const val HEX = "0123456789abcdef"
         private val SALT = "CrewRadio channel key v4".toByteArray(StandardCharsets.US_ASCII)
         private val random = SecureRandom()
 

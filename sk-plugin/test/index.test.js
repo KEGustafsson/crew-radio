@@ -571,3 +571,53 @@ test("POST /say: a body cut short by the client going away is not said", async (
   }
   p.stop();
 });
+
+/** A fake Reticulum transport, recording how it was made and driven. */
+class FakeRns extends EventEmitter {
+  constructor(opts) { super(); this.opts = opts; this.ready = false; this.linkCount = 0; this.sent = []; this.started = 0; this.stopped = 0; FakeRns.last = this; }
+  start() { this.started++; }
+  stop() { this.stopped++; }
+  send(buf) { this.sent.push(Buffer.from(buf)); return this.ready; }
+  confirm() {}
+}
+
+test("Reticulum: off by default; when enabled it starts with the channel's tag, carries our packets, shows in the status and stops with the plugin", async () => {
+  FakeRns.last = undefined;
+  const app = fakeApp();
+  const off = plugin(app, { ...deps, Reticulum: FakeRns });
+  off.start({ channelKey: KEY });
+  await until(() => FakeLink.last && FakeLink.last.sent.length > 0);
+  assert.equal(FakeRns.last, undefined, "not enabled, not made");
+  off.stop();
+
+  const p = plugin(app, { ...deps, Reticulum: FakeRns });
+  p.start({ channelKey: KEY, reticulum: { enabled: true, host: "hub.example", port: 4965 } });
+  await until(() => FakeRns.last && FakeRns.last.sent.length > 0);
+  const r = FakeRns.last;
+  assert.deepEqual(r.opts, { host: "hub.example", port: 4965, tag: crypto.reticulumTag });
+  assert.equal(r.started, 1);
+  assert.match(app.status.at(-1), /Reticulum down/);
+  r.ready = true;
+  r.linkCount = 2;
+  r.emit("status", "Reticulum: 2 links");
+  assert.match(app.status.at(-1), /Reticulum 2 links/);
+  assert.ok(app.log.includes("Reticulum: 2 links"));
+  r.emit("status", "Reticulum: 2 links");
+  const router = fakeRouter(true);
+  p.registerWithRouter(router);
+  const res = fakeRes();
+  router.routes["GET /status"]({}, res);
+  assert.deepEqual(res.body.reticulum, { host: "hub.example", port: 4965, connected: true, links: 2, status: "Reticulum: 2 links" });
+  p.stop();
+  assert.equal(r.stopped, 1);
+});
+
+test("Reticulum settings: defaults, a bad port falls back and is named, and the schema offers them", () => {
+  const d = plugin.withDefaults({ channelKey: KEY }, fakeApp());
+  assert.deepEqual(d.reticulum, { enabled: false, host: "127.0.0.1", port: 4242 });
+  const bad = plugin.withDefaults({ channelKey: KEY, reticulum: { enabled: true, host: "  ", port: 99999 } }, fakeApp());
+  assert.deepEqual(bad.reticulum, { enabled: true, host: "127.0.0.1", port: 4242 });
+  assert.ok(bad.warnings.some((w) => /Reticulum port/.test(w)));
+  const s = plugin(fakeApp(), deps).schema();
+  assert.deepEqual(Object.keys(s.properties.reticulum.properties), ["enabled", "host", "port"]);
+});

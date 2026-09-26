@@ -8,7 +8,11 @@
  * with 20 ms PCM frames, paced in real time so the phones' jitter queues see a talker, not a
  * burst.
  *
- * The link is anything with `send(buf)` and a 'packet' event (see lan.js). Events out:
+ * The link is anything with `send(buf)` and a 'packet' event (see lan.js). An optional second
+ * transport, `rns` (lib/rns/transport.js), carries the channel over Reticulum; the node then
+ * relays between the two the way a phone relays between its transports: a first, authentic copy
+ * goes on to the other side with its ttl lowered (relayTtl), never back where it came from.
+ * Events out:
  * 'roster' (when the rendered list changes), 'talking' (someone else started or stopped),
  * 'speaking' (our own announcement starts or ends), 'stale' (packets from a clock more than
  * a minute off ours, at most once per 30 s).
@@ -38,6 +42,8 @@ class ChannelNode extends EventEmitter {
    * @param {number} [opts.silenceMs=4000]  a node silent this long is dropped from the roster
    * @param {number} [opts.talkingMs=400]   audio within this long ago means "talking"
    * @param {ReplayGuard} [opts.guard]      the replay state; pass one guard across link reopens
+   * @param {object} [opts.rns]              a second transport (send(buf, except), confirm(via), ready, 'packet')
+   * @param {boolean} [opts.relay=true]      forward between the link and `rns`
    * @param {() => number} [opts.now]       milliseconds; also the clock the packets' `time` is checked against
    */
   constructor(opts) {
@@ -45,6 +51,8 @@ class ChannelNode extends EventEmitter {
     this.name = opts.name;
     this.crypto = opts.crypto;
     this.link = opts.link;
+    this.rns = opts.rns ?? null;
+    this.relay = opts.relay ?? true;
     this.ttl = opts.ttl ?? 4;
     this.heartbeatMs = opts.heartbeatMs ?? 1000;
     this.silenceMs = opts.silenceMs ?? 4000;
@@ -62,14 +70,16 @@ class ChannelNode extends EventEmitter {
     this.speaking = null; // {cancel, done} of the announcement going out right now
     this.chain = Promise.resolve(); // announcements go out one after another, in call order
     this.lastRosterKey = "";
-    this.stats = { rx: 0, rejected: 0, stale: 0, late: 0, tx: 0 };
+    this.stats = { rx: 0, rejected: 0, stale: 0, late: 0, tx: 0, relayed: 0 };
     this.staleReportedAt = 0;
     this.staleSinceReport = 0;
     this.onPacket = (buf, rinfo) => this.receive(buf, rinfo);
+    this.onRnsPacket = (buf, via) => this.receive(buf, null, via);
   }
 
   start() {
     this.link.on("packet", this.onPacket);
+    this.rns?.on("packet", this.onRnsPacket);
     this.tick();
     this.timer = setInterval(() => this.tick(), this.heartbeatMs);
     if (this.timer.unref) this.timer.unref();
@@ -81,12 +91,14 @@ class ChannelNode extends EventEmitter {
     this.timer = null;
     this.cancel();
     if (typeof this.link.off === "function") this.link.off("packet", this.onPacket);
+    this.rns?.off("packet", this.onRnsPacket);
     this.nodes.clear();
   }
 
   /** Hello out, stale nodes swept, roster republished if it changed. */
   tick() {
-    this.broadcast(P.Codec.HELLO, P.encodeHello({ name: this.name, transports: P.Transports.LAN, ttl: this.ttl, versionCode: 0 }));
+    const transports = P.Transports.LAN | (this.rns?.ready ? P.Transports.RETICULUM : 0);
+    this.broadcast(P.Codec.HELLO, P.encodeHello({ name: this.name, transports, ttl: this.ttl, versionCode: 0 }));
     const now = this.now();
     let changed = false;
     for (const [id, n] of this.nodes) {
@@ -204,6 +216,7 @@ class ChannelNode extends EventEmitter {
     const packet = Buffer.concat([header, this.crypto.seal(P.aadOf(header), payload)]);
     this.stats.tx++;
     this.link.send(packet, this.unicastTargets());
+    this.rns?.send(packet);
     return packet;
   }
 
@@ -218,19 +231,19 @@ class ChannelNode extends EventEmitter {
    * The receive path, in the app's order: parse, drop our own, authenticate, drop a stale
    * clock, then the replay guard (seen or late), and only then the roster or talking.
    */
-  receive(buf, rinfo) {
+  receive(buf, rinfo, via = null) {
     // Nothing below may throw into the dgram callback: that is the top of a libuv tick, so an
     // uncaught exception there is the default-exit kind, and this plugin runs inside the boat's
     // Signal K server. The app keeps the same rule for its transport threads.
     try {
-      this.receiveOrThrow(buf, rinfo);
+      this.receiveOrThrow(buf, rinfo, via);
     } catch (e) {
       this.stats.rejected++;
       this.emit("fault", e);
     }
   }
 
-  receiveOrThrow(buf, rinfo) {
+  receiveOrThrow(buf, rinfo, via = null) {
     const h = P.parseHeader(buf);
     if (!h) { this.stats.rejected++; return; }
     // The global budget first, before the packet is opened: the sender id it claims is chosen by
@@ -243,6 +256,7 @@ class ChannelNode extends EventEmitter {
     // touch the stale counter.
     const plain = this.crypto.open(P.aadOf(buf), buf.subarray(P.HEADER));
     if (!plain) { this.stats.rejected++; this.limiter.allowJunk(); return; }
+    if (via) this.rns?.confirm(via);                 // the far end of that link holds the key
     const now = this.now();
     if (!P.isFresh(h.time, Math.floor(now / 1000))) { this.stale(now); return; }
     const verdict = this.guard.admit(h.senderId, h.seq, h.codec === P.Codec.HELLO ? "hello" : "audio");
@@ -252,6 +266,7 @@ class ChannelNode extends EventEmitter {
     // cost a sender anything: the two WLAN copies of every frame would otherwise spend a
     // talker's budget in seconds, which is what the app measured in the field.
     if (!this.limiter.allowSender(h.senderId)) { this.stats.rejected++; return; }
+    this.relayOn(buf, h, via);
     let n = this.nodes.get(h.senderId);
     const fresh = !n;
     if (fresh) {
@@ -291,6 +306,22 @@ class ChannelNode extends EventEmitter {
       }
     }
     this.publishRoster(fresh);
+  }
+
+  /**
+   * Forwards a first, authentic copy to the other transport: from Reticulum to the LAN (with the
+   * unicast copies), from the LAN to Reticulum, with the ttl the app's rule gives it. Nothing is
+   * relayed within Reticulum, where every node has a link to every other.
+   */
+  relayOn(buf, h, via) {
+    if (!this.rns || !this.relay) return;
+    const ttl = P.relayTtl(h, this.ttl);
+    if (ttl === 0) return;
+    const copy = Buffer.from(buf);
+    copy[4] = ttl;
+    if (via) this.link.send(copy, this.unicastTargets());
+    else this.rns.send(copy);
+    this.stats.relayed++;
   }
 
   /** Counts a stale packet and reports the count at most once per 30 s. */

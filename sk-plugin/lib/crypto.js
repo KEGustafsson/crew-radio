@@ -19,6 +19,7 @@ const TAG_BYTES = 16;
 const OVERHEAD = NONCE_BYTES + TAG_BYTES;
 const ITERATIONS = 600_000;
 const SALT = Buffer.from("CrewRadio channel key v4", "utf8");
+const RETICULUM_LABEL = Buffer.from("CrewRadio reticulum v1", "ascii");
 
 const derived = new Map();   // channel key -> 32-byte key, for the process lifetime
 
@@ -70,6 +71,16 @@ class ChannelCrypto {
     c.setAAD(aad);
     const body = Buffer.concat([c.update(plain), c.final()]);
     return Buffer.concat([nonce, body, c.getAuthTag()]);
+  }
+
+  /**
+   * The channel's Reticulum destination aspect: the first 8 bytes of HMAC-SHA256(packet key,
+   * "CrewRadio reticulum v1") in lower-case hex, as the app's ChannelCrypto.reticulumTag. Our
+   * destination is `crewradio.channel.<tag>`; without the key nobody can tell which channel an
+   * announce belongs to, nor make one that a crew member dials.
+   */
+  get reticulumTag() {
+    return crypto.createHmac("sha256", this.key).update(RETICULUM_LABEL).digest().subarray(0, 8).toString("hex");
   }
 
   /**

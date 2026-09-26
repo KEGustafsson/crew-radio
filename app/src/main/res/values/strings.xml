@@ -243,6 +243,19 @@
     <string name="status_aware_dropped">Aware: %1$s dropped</string>
     <string name="status_aware_reconnecting">Aware: %1$s dropped, reconnecting</string>
 
+    <!-- Reticulum transport (ReticulumTransport). -->
+    <!-- %1$s is the transport node as host:port. -->
+    <string name="status_rns_connected">Reticulum: connected to %1$s</string>
+    <string name="status_rns_cant_connect">Reticulum: can\'t reach %1$s (%2$s), retry in %3$ds</string>
+    <string name="status_rns_lost">Reticulum: %1$s lost (%2$s), retry in %3$ds</string>
+    <string name="status_rns_closed">connection closed</string>
+    <string name="status_rns_stopped">Reticulum stopped: %1$s</string>
+    <plurals name="status_rns_links">
+        <item quantity="one">Reticulum: %1$d link</item>
+        <item quantity="other">Reticulum: %1$d links</item>
+    </plurals>
+    <string name="reticulum_no_node">Set a Reticulum transport node in Settings first</string>
+
     <!-- Status screen -->
     <string name="state_off">OFF</string>
     <string name="status_off_hint">Switch the channel on to see who is aboard</string>
@@ -335,6 +348,12 @@
     <string name="pref_cat_talking">Talking</string>
     <string name="pref_cat_wlan">WLAN — takes effect on the next Connect</string>
     <string name="pref_cat_mesh">Mesh</string>
+    <string name="pref_cat_reticulum">Reticulum — takes effect on the next Connect</string>
+    <string name="pref_reticulum_title">Use Reticulum</string>
+    <string name="pref_reticulum_on">Also on the channel through the transport node below: from ashore over mobile data, or across a Reticulum network</string>
+    <string name="pref_reticulum_off">Off. Turn on to reach the crew through a Reticulum transport node</string>
+    <string name="pref_reticulum_node_title">Transport node</string>
+    <string name="pref_reticulum_node_message">The TCP server interface of a Reticulum transport node, as host or host:port (4242 when left out): the boat\'s rnsd, or a hub the crew uses. Every phone and the boat must reach the same Reticulum network.</string>
     <string name="pref_name_title">My name</string>
     <string name="pref_name_message">What the others see in their crew list, e.g. Skipper. Leave empty to use the name of this phone. Up to 32 bytes; applies immediately.</string>
     <string name="pref_crew_name_title">Channel name</string>
@@ -381,6 +400,7 @@
     <string name="why_name">My name: up to 32 bytes; leave empty to use the name of this phone</string>
     <string name="why_group">Must be an IPv4 multicast address, 224.0.0.0 to 239.255.255.255</string>
     <string name="why_port">Port must be 1024 to 65535</string>
+    <string name="why_reticulum_node">Must be host or host:port, the port 1 to 65535</string>
     <string name="why_channel_key">Channel key: 12 to 64 plain characters, the same on every phone</string>
     <string name="why_hops">Hop limit must be 1 to 16</string>
 
@@ -411,6 +431,10 @@
     <string name="restriction_hops_desc">How many relays a packet may cross, 1 to 16.</string>
     <string name="restriction_relay_title">Relay</string>
     <string name="restriction_relay_desc">Forward what this phone hears to its other links.</string>
+    <string name="restriction_reticulum_title">Use Reticulum</string>
+    <string name="restriction_reticulum_desc">Also join the channel through the Reticulum transport node below.</string>
+    <string name="restriction_reticulum_node_title">Reticulum transport node</string>
+    <string name="restriction_reticulum_node_desc">host or host:port of a Reticulum transport node\'s TCP server interface.</string>
     <string name="restriction_full_duplex_title">Full duplex</string>
     <string name="restriction_full_duplex_desc">Mic on and off is a toggle and everyone is heard at once.</string>
     <string name="restriction_opus_title">Opus compression</string>

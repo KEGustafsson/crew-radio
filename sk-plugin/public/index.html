@@ -49,6 +49,7 @@
 
   <div class="tiles">
     <div class="tile" id="t-link"><div class="v">-</div><div class="k">Network link</div></div>
+    <div class="tile" id="t-rns" hidden><div class="v">-</div><div class="k">Reticulum</div></div>
     <div class="tile" id="t-online"><div class="v">-</div><div class="k">Phones online</div></div>
     <div class="tile" id="t-talking"><div class="v">-</div><div class="k">Talking</div></div>
     <div class="tile" id="t-speaking"><div class="v">-</div><div class="k">Announcing</div></div>
@@ -93,6 +94,12 @@
     var link = s.link;
     tile("t-link", link ? "up" : "down", link ? "on" : "off");
     $("t-link").querySelector(".k").textContent = link ? link.iface + " " + link.address : "Network link";
+    var rns = s.reticulum;                    // only when enabled: the page is unchanged otherwise
+    $("t-rns").hidden = !rns;
+    if (rns) {
+      tile("t-rns", rns.connected ? rns.links + (rns.links === 1 ? " link" : " links") : "down", rns.connected ? "on" : "off");
+      $("t-rns").querySelector(".k").textContent = "Reticulum " + rns.host + ":" + rns.port;
+    }
     tile("t-online", s.roster.length, s.roster.length ? "on" : "");
     var talking = s.roster.filter(function (n) { return n.talking; }).map(function (n) { return n.name; });
     tile("t-talking", talking.length ? talking.join(", ") : "nobody", talking.length ? "on" : "");

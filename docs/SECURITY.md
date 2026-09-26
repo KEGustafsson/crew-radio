@@ -7,8 +7,9 @@ Act's essential requirements. The disclosure policy is in the repository's
 ## What the app is, security-wise
 
 A voice intercom between a few phones over WLAN, Bluetooth and Wi‑Fi Aware, with each phone
-repeating packets for the others. No server, no account, no internet traffic, no stored
-recordings. The assets are the crew's conversation (confidentiality), the crew's ability to talk
+repeating packets for the others, and optionally over Reticulum through a transport node the crew
+chooses. No server of the app's own, no account, no internet traffic unless Reticulum is switched
+on and pointed across it, no stored recordings. The assets are the crew's conversation (confidentiality), the crew's ability to talk
 (availability) and the certainty that a voice on the channel is a crew member (authenticity).
 
 ## Threats and what is done about them
@@ -28,6 +29,23 @@ recordings. The assets are the crew's conversation (confidentiality), the crew's
 | Loss or theft of a phone | Physical | The channel key is in the app's private preferences on a device-encrypted phone, excluded from cloud backup and from device-to-device transfer. It is shown masked in Settings and revealed only on request. Change the key on the rest of the crew. |
 | A malicious update | Supply chain | Releases are built by GitHub Actions from `main`, signed with the crew's release key held only as a repository secret (scoped to the two steps that need it and deleted from the runner afterwards), with a signed build-provenance attestation over the APK, its SBOM and its checksum. Gradle resolves only verified dependencies (`gradle/verification-metadata.xml`) from a checksum-pinned Gradle distribution. Dependencies are AndroidX and Material only, updated by Dependabot; CodeQL scans the Kotlin, the plugin's JavaScript and the workflows. |
 | Weak default configuration | First use | There is no default key: each phone generates a random one (~59 bits) on first start and the crew shares it. A key typed by hand must be at least 12 characters. Relay, Opus and the rate limits need no configuration. |
+
+### Reticulum (optional, off by default)
+
+The one transport that can leave the boat. With **Use Reticulum** on, the phone (or the Signal K
+plugin) opens a TCP connection to the Reticulum transport node the crew set, and the channel's
+sealed packets travel inside Reticulum links through whatever network that node belongs to —
+possibly the public internet and other people's transport nodes.
+
+| | |
+| --- | --- |
+| Confidentiality and authenticity | Unchanged: every channel packet is still AES‑256‑GCM under the packet key end to end, and passes the same `Ingress` checks (budgets, AEAD, timestamp, seen-cache) as a packet from any other link. Reticulum adds its own link encryption around it (X25519, HKDF‑SHA256, AES‑256‑CBC + HMAC‑SHA256), so a transport node sees neither the audio nor the header. |
+| What a transport node and the network do see | That a destination named `crewradio.channel.<tag>` exists and announces, the timing and size of the link traffic, and the TCP peer's IP address. The tag is an HMAC of the packet key (`ChannelCrypto.reticulumTag`), so it does not reveal the channel key or which crew it is, but the same channel announces the same name hash, so its announces can be linked to each other. Each session uses a fresh Reticulum identity, never stored. |
+| A stranger linking in | Anyone can copy the public name hash, announce under it and be dialled, or link to a crew node directly. A link carries only hellos until the far end has sent a packet that opened with the channel key (`Transport.confirmPeer`); a link that has not within 15 s is closed. Hellos are sealed, so a stranger learns that the node is there and how often it speaks, nothing more. At most 32 links and 64 peers per node, and a per-link budget (400 packets/s) before the engine's own. |
+| Flooding through Reticulum | Packets from a link go through the same global, junk and per-sender budgets as the LAN's. Reticulum packets that are not ours (other destinations' announces) cost a name-hash comparison and nothing else; only announces under our name are signature-checked. |
+| Replay | Unchanged: the channel timestamp and seen-cache apply to what arrives over Reticulum as to everything else. A Reticulum announce replayed with an older emission time is ignored. |
+| Implementation | Written from the Reticulum manual; no Reticulum code is included. X25519 and Ed25519 are hand-written in Kotlin (`rns/Curve25519`: the public-domain TweetNaCl design, masked swaps instead of secret-dependent branches, constants computed from their definitions) because the platform has neither before API 33, tested against RFC 7748 and RFC 8032 and against Node's OpenSSL through `sk-plugin/test/rns.vector.json`, whose values were checked against the reference implementation. The JVM's `BigInteger` is used only on public values (the constants, and a signature's S when checking that it is canonical). Interface access codes are not supported. |
+| Relaying | A phone or the plugin with Reticulum and another transport relays between them like any bridge, under the same hop limit; nothing is relayed from one Reticulum link to another. |
 
 ### Asking the boat (Signal K)
 
@@ -49,7 +67,8 @@ authenticated instruction.
 
 ## What it does not do
 
-- It does not hide *that* phones are talking: packet timing and sizes are visible on the WLAN.
+- It does not hide *that* phones are talking: packet timing and sizes are visible on the WLAN,
+  and with Reticulum on, to the transport nodes on the way and their networks.
 - It does not authenticate individual people: the key is shared by the crew, as on a VHF channel.
 - It does not protect against a crew member's phone that is itself compromised.
 - It does not survive a badly wrong clock: a phone more than a minute out cannot be heard, by
@@ -86,6 +105,10 @@ nonce (12) | ciphertext | tag (16)                                              
 - Aware secrets are derived from the packet key, never the channel key directly:
   the PSK is `Base64(HMAC‑SHA256(key, "CrewRadio aware v4"))` and the discovery tag is the first
   8 bytes of `HMAC‑SHA256(key, "CrewRadio aware id v4" ‖ senderId)`.
+- Reticulum: the destination is `crewradio.channel.<tag>`, the tag the first 8 bytes of
+  `HMAC‑SHA256(key, "CrewRadio reticulum v1")` in hex. Each channel packet rides in one Reticulum
+  link packet behind a byte `0x01`, or, when it does not fit the 431-byte link payload (a PCM
+  frame), in two or three parts `count | index | id | bytes`.
 - Codec 0 = PCM16LE frame, 1 = Opus packet, 2 = hello (`ver=2 | transports | ttl | versionCode
   uint16 | nameLen | name`).
 - Cost: 46 bytes on top of the payload (18 header, 12 nonce, 16 tag), about 2.3 kB/s at 50
@@ -116,7 +139,7 @@ checklist, and this is where the app stands against each:
 | (2)(g) Data minimisation | The wire carries voice frames, a name and a build number; nothing else is collected or kept. |
 | (2)(h) Availability of essential functions, resilience to DoS | A budget per source address on the LAN socket, then the global, junk and per-sender budgets in the engine; a duplicate is relayed when it would reach further, so a lowered ttl cannot cut the mesh; peers are learned only from packets the AEAD opened, so a stranger cannot take a phone's outgoing audio; hop limit, bounded caches, bounded per-link send queues, link and dial caps, reconnect in every transport, loss concealment. The audio threads catch and report like the transport threads, and the roster says when no link is up. |
 | (2)(i) Minimising impact on other services | Packets are small and rate-limited; Wi‑Fi multicast plus broadcast is the only "noisy" behaviour and is confined to the WLAN. |
-| (2)(j) Limited attack surface | No server, no internet, no third-party networking, crypto or analytics libraries (AndroidX and Material only, for the UI), release builds shrunk with R8, permissions only for the links in use. |
+| (2)(j) Limited attack surface | No server, no internet unless Reticulum is switched on (off by default, one outgoing TCP connection to a node the crew names, no listening socket), no third-party networking, crypto or analytics libraries (AndroidX and Material only, for the UI), release builds shrunk with R8, permissions only for the links in use. |
 | (2)(k) Reduced impact of incidents | A compromised key is changed on the crew's phones; nothing else to leak. |
 | (2)(l) Security-relevant logging | The Status screen keeps the last 40 status lines and counts rejected, stale and duplicate packets; nothing leaves the phone. |
 | (2)(m) Secure deletion | Uninstalling the app removes its private storage; there is no other data. |

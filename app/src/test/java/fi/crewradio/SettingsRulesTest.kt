@@ -131,4 +131,25 @@ class SettingsRulesTest {
         assertTrue(SettingsRules.validChannelKey("north star 2026"))     // inside is fine: it is printable ASCII
         assertTrue(SettingsRules.validPassphrase(" carried over "))      // already stored: still accepted
     }
+
+    @Test
+    fun reticulumNodeIsHostAndPort() {
+        assertEquals("hub.example.org" to 4242, SettingsRules.parseHostPort(" hub.example.org "))
+        assertEquals("192.168.1.9" to 4965, SettingsRules.parseHostPort("192.168.1.9:4965"))
+        assertEquals("::1" to 4242, SettingsRules.parseHostPort("[::1]"))
+        assertEquals("fe80::1" to 37428, SettingsRules.parseHostPort("[fe80::1]:37428"))
+        assertEquals("2001:db8::7" to 4242, SettingsRules.parseHostPort("2001:db8::7"))
+        assertEquals(null, SettingsRules.parseHostPort(""))
+        assertEquals(null, SettingsRules.parseHostPort("hub:0"))
+        assertEquals(null, SettingsRules.parseHostPort("hub:65536"))
+        assertEquals(null, SettingsRules.parseHostPort("hub:042"))
+        assertEquals(null, SettingsRules.parseHostPort("hub:"))
+        assertEquals(null, SettingsRules.parseHostPort(":4242"))
+        assertEquals(null, SettingsRules.parseHostPort("two words"))
+        assertEquals(null, SettingsRules.parseHostPort("-hub"))
+        assertEquals(null, SettingsRules.parseHostPort("[::1]x"))
+        assertEquals(null, SettingsRules.parseHostPort("[hub]:4242"))
+        assertEquals(null, SettingsRules.parseHostPort("[]"))
+        assertEquals(null, SettingsRules.parseHostPort("tcp://hub:4242"))
+    }
 }

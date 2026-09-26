@@ -64,6 +64,17 @@ function isFresh(time, nowS) {
   return d >= -REPLAY_WINDOW_S && d <= REPLAY_WINDOW_S;
 }
 
+/**
+ * The ttl a relay forwards a packet with, or 0 to keep it: the app's Ingress.relayTtl. The ttl
+ * is capped at the sender's signed budget (`hops`), decremented from what came in, and a packet
+ * goes no further than `maxHops` from its origin.
+ */
+function relayTtl(h, maxHops) {
+  const ttl = Math.min(h.ttl, h.hops);
+  const relayed = h.hops - ttl;
+  return ttl > 1 && relayed + 1 < maxHops ? ttl - 1 : 0;
+}
+
 function clampByte(n) {
   return Math.max(0, Math.min(255, n | 0));
 }
@@ -73,7 +84,7 @@ function clampByte(n) {
 const HELLO_VERSION = 2;
 const HELLO_HEAD = 6;
 const HELLO_MAX_NAME = 32;
-const Transports = Object.freeze({ LAN: 1, BT: 2, AWARE: 4 });
+const Transports = Object.freeze({ LAN: 1, BT: 2, AWARE: 4, RETICULUM: 8 });
 
 /**
  * Encodes a hello; the name is cut to 32 UTF-8 bytes on a character boundary, as the app does.
@@ -132,5 +143,5 @@ function utf8Prefix(s, max) {
 
 module.exports = {
   HEADER, VERSION, MAX_SIZE, REPLAY_WINDOW_S, Codec, Transports, HELLO_MAX_NAME, HELLO_VERSION,
-  encodeHeader, parseHeader, aadOf, isFresh, encodeHello, decodeHello, sanitiseName,
+  encodeHeader, parseHeader, aadOf, isFresh, relayTtl, encodeHello, decodeHello, sanitiseName,
 };

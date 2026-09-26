@@ -14,7 +14,7 @@ no account, no internet, no subscription. Connecting people, with what is in the
 - **Press to talk**, radio style: hold the big button and the whole crew hears you. Or switch to
   full duplex and talk over each other like a phone conference.
 - **Any link, all at once.** Tick WLAN, Bluetooth, Wi‑Fi Aware — whatever the phones have. A
-  phone with two kinds of link bridges them.
+  phone with two kinds of link bridges them. Optionally Reticulum too, for a crew member ashore.
 - **Mesh and relay.** What one phone hears on one link it repeats on its others, up to four hops.
   Two phones that cannot reach each other still talk through a third.
 - **Works with the screen off**, in a pocket, with a headset on, or with the phone at your ear
@@ -157,6 +157,8 @@ the Releases page.
 | **Pair with server** | Asks the server to let this phone in; somebody approves it once in the server's admin page. Nothing secret is typed or read out. Whole-crew answers need write access — the row says which you have. |
 | **Speed / depth unit** | Knots or metres per second; metres or feet. |
 | **WLAN group and port** | The multicast group every phone listens to. Change only if it clashes with something on your network, and change it on every phone. |
+| **Use Reticulum** | Off (default). On: the phone also joins the channel through the Reticulum transport node below — see [From ashore: Reticulum](#from-ashore-reticulum). |
+| **Transport node** | The Reticulum transport node to connect to, as `host` or `host:port` (4242 when left out). |
 | **Hop limit** | How many phones a packet may be relayed through (4). |
 
 ## How it works, briefly
@@ -200,10 +202,11 @@ repeat of the previous one rather than a click. The developer notes in
   the head count reads "N aboard".
 - **For a fleet.** The app publishes managed configuration, so an administrator can set the
   channel key, channel name, announced name, WLAN group and port, hop limit, relay, full duplex,
-  Opus and the audio output centrally. A setting your organisation has set wins, and its row in
+  Opus, the audio output and the Reticulum settings centrally. A setting your organisation has set wins, and its row in
   Settings is greyed out and reads *Set by your organisation*; everything else stays with whoever
   carries the phone.
-- **Privacy and security.** Nothing leaves the phones and there is no server. Every packet is
+- **Privacy and security.** Nothing leaves the phones and there is no server, unless you switch
+  Reticulum on and point it at a transport node across the internet. Every packet is
   encrypted and authenticated with the crew's channel key (AES‑256‑GCM), so someone on the same
   WLAN without the key can neither listen nor inject; a flooding sender is rate-limited. The
   full threat model and what the app does about each threat is in
@@ -217,6 +220,26 @@ LAN or WLAN (the router the phones' Wi‑Fi hangs off), with a voice of its own:
 it reaches every phone on the channel as speech, and Signal K alarms (anchor dragging, man
 overboard, a hot engine) are announced by voice, urgently when they are emergencies, until they clear. The phones need the WLAN link ticked for it; the server shows on
 the roster under the vessel's name.
+
+## From ashore: Reticulum
+
+The channel normally stays on the boat. [Reticulum](https://reticulum.network/) can take it
+further: a crew member ashore, on mobile data, stays on the channel, and so can a second boat.
+
+1. The boat needs a Reticulum transport node the phones can reach: the Signal K server running
+   `rnsd` with a TCP server interface and `enable_transport = Yes`, connected onward to a Reticulum
+   hub ashore (or reachable from the internet itself). Turn on **Reticulum** in the
+   [signalk-crewradio](sk-plugin/README.md) plugin too: the server then relays between Reticulum and
+   the boat's WLAN, so the phones aboard need nothing new.
+2. On the phone ashore, **Settings › Use Reticulum** and **Transport node**: the hub (or the
+   boat's node), as `host:port`. Join the channel as usual; the WLAN tile may stay on or off.
+3. The phone shows on everyone's roster with **Reticulum** among its links.
+
+Everything is still encrypted end to end with the channel key; the Reticulum network only
+carries it. Voice needs an internet-class link — Reticulum over LoRa is far too slow for it.
+Interface access codes (a Reticulum network name or passphrase on the interface) are not
+supported. The details, and what a transport node can and cannot see, are in
+[docs/SECURITY.md](docs/SECURITY.md#reticulum-optional-off-by-default).
 
 ## Add-on: Ask boat data
 

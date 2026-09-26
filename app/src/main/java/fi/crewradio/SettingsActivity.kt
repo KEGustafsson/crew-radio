@@ -79,6 +79,7 @@ class SettingsActivity : AppCompatActivity() {
             rule(Prefs.KEY_HOPS, R.string.why_hops, numeric = true) { SettingsRules.validHops(it) }
             rule(Prefs.KEY_CHANNEL_KEY, R.string.why_channel_key) { SettingsRules.validChannelKey(it) }
             rule(Prefs.KEY_ASK_SERVER, R.string.why_ask_server) { it.isBlank() || SignalKUrl.valid(it) }
+            rule(Prefs.KEY_RETICULUM_NODE, R.string.why_reticulum_node) { it.isBlank() || SettingsRules.parseHostPort(it) != null }
             channelKey(prefs)
             ask(prefs)
 
@@ -129,6 +130,7 @@ class SettingsActivity : AppCompatActivity() {
             Prefs.KEY_FULL_DUPLEX -> prefs.fullDuplex
             Prefs.KEY_OPUS -> prefs.opus
             Prefs.KEY_ASK_ENABLED -> prefs.askEnabled
+            Prefs.KEY_USE_RETICULUM -> prefs.useReticulum
             else -> null
         }
 
@@ -142,6 +144,7 @@ class SettingsActivity : AppCompatActivity() {
                 Prefs.KEY_HOPS -> prefs.hops.toString()
                 Prefs.KEY_AUDIO_ROUTE -> prefs.audioRoute
                 Prefs.KEY_ASK_MODE -> prefs.askMode
+                Prefs.KEY_RETICULUM_NODE -> prefs.reticulumNodeText
                 else -> null
             } ?: return null
             if (row !is ListPreference) return raw
@@ -446,7 +449,7 @@ class SettingsActivity : AppCompatActivity() {
                 Prefs.KEY_ASK_ENABLED, Prefs.KEY_ASK_SERVER, Prefs.KEY_ASK_MODE,
                 Prefs.KEY_CREW_NAME, Prefs.KEY_NAME, Prefs.KEY_CHANNEL_KEY, Prefs.KEY_GROUP,
                 Prefs.KEY_PORT, Prefs.KEY_HOPS, Prefs.KEY_RELAY, Prefs.KEY_FULL_DUPLEX,
-                Prefs.KEY_OPUS, Prefs.KEY_AUDIO_ROUTE
+                Prefs.KEY_OPUS, Prefs.KEY_AUDIO_ROUTE, Prefs.KEY_USE_RETICULUM, Prefs.KEY_RETICULUM_NODE
             )
         }
     }

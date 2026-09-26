@@ -5,7 +5,7 @@ server becomes one more node on the crew's push-to-talk network, over the boat's
 the phones relay it onward over Bluetooth and Wi‑Fi Aware like any other talker. The voice is
 made inside the plugin: no cloud, no containers, no other plugin needed.
 
-Four things:
+Five things:
 
 1. **Say anything to the crew.** A text becomes speech and goes out on the channel. Three doors:
    a PUT to the Signal K path `communication.crewradio.say`, `POST /plugins/signalk-crewradio/say`,
@@ -20,6 +20,10 @@ Four things:
    network link, who is on the channel and who is talking, the queue, and has a test call: type a
    text, choose normal or urgent, and it is said on the channel. The quickest way to check that the
    server reaches the phones.
+5. **The channel over Reticulum, optionally.** With Reticulum enabled the plugin also joins the
+   channel through a [Reticulum](https://reticulum.network/) transport node and relays between it
+   and the boat's LAN, so a phone ashore that reaches the same Reticulum network (over mobile data,
+   through a hub) hears the crew and is heard. See [Reticulum](#reticulum) below.
 
 Everything on the wire is the app's own format: AES‑256‑GCM under the crew's channel key, the
 same packets, the same roster hellos. The plugin's tests and the app's unit tests check the same
@@ -99,6 +103,8 @@ The same works as a PUT to `vessels.self.communication.crewradio.say` with a str
 | Multicast group, UDP port | 239.255.42.1, 47474 | Must match the phones' WLAN settings. |
 | Network interface | auto | The server's interface on the boat network, wired (eth0) or WLAN (wlan0). auto: wlan first, then eth/en, then anything with an IPv4 address, container/bridge/VPN interfaces last; looked at again every 5 s. |
 | Hop budget | 4 | How far phones may relay the server's packets. |
+| Reticulum: enabled | off | Join the channel through a Reticulum transport node as well, and relay between it and the LAN. |
+| Reticulum: transport node host, port | 127.0.0.1, 4242 | The TCP server interface of an rnsd with `enable_transport = Yes`: the boat's own, or a hub ashore. |
 | Announce from state | alarm | alert, warn, alarm or emergency. |
 | Say the state and the path first | on | "Alarm, navigation position: no contact with sensor for 70 seconds" rather than the message alone, so the crew hears where it comes from. |
 | Only notifications that ask for sound | on | Signal K notifications carry `method: [visual, sound]`. |
@@ -124,6 +130,29 @@ The same works as a PUT to `vessels.self.communication.crewradio.say` with a str
   Anyone who can read the Signal K configuration can read it, and anyone who can reach the
   server's REST API or PUT paths can make it speak; treat the server as a crew member.
 
+## Reticulum
+
+The plugin can carry the channel over [Reticulum](https://reticulum.network/) as well as the LAN:
+the protocol is implemented here from the published manual (`lib/rns/`, Node's own crypto, no
+dependency), not taken from the reference implementation, and checked against it (rnsd 1.5.4).
+
+- **What it needs.** A Reticulum transport node the server can reach over TCP: the boat's own
+  `rnsd` with a `TCPServerInterface` and `enable_transport = Yes` (its other interfaces, a LoRa
+  RNode or a TCP link to a hub ashore, then carry the channel onward), or a hub ashore directly.
+  Interface access codes (a network name or passphrase on the interface) are not supported.
+- **How it works.** The channel's sealed packets ride unchanged inside Reticulum links, so the
+  channel key still does all the securing; Reticulum adds its own encryption around it. The
+  plugin announces `crewradio.channel.<tag>`, the tag an HMAC of the packet key, so only a node
+  with the channel key recognises it. Every Crew Radio node on the Reticulum network links to
+  every other (one link per pair); a link carries hellos at once and audio only after the far end
+  has sent a packet that opened with the channel key. The identity is new at every start.
+- **Relaying.** A first, authentic copy heard on the LAN goes on to Reticulum and the other way,
+  ttl lowered by one, as a phone relays between its transports. A phone ashore shows on the
+  roster with the Reticulum flag.
+- **Bandwidth.** Announcements are PCM: 686 bytes a frame, which a Reticulum link carries in two
+  packets, about 40 kB/s per remote node while speaking. Fine over the internet or Wi‑Fi, not over
+  LoRa, which cannot carry live voice at all.
+
 ## Development
 
 ```sh
@@ -133,7 +162,9 @@ npm run coverage  # the same, gated at 80 % lines
 ```
 
 `test/vector.json` is the cross-language vector; regenerate it only when the wire format
-changes, and change the app's `CrossLanguageVectorTest` with it.
+changes, and change the app's `CrossLanguageVectorTest` with it. `test/rns.vector.json` is the
+same for Reticulum, read by the app's `RnsVectorTest` straight from this directory; its values
+were checked against the reference implementation when it was made.
 
 `tools/cli.js` runs the plugin's pieces from a shell on any machine on the boat network, no
 Signal K needed, which is how the plugin was verified against real phones:

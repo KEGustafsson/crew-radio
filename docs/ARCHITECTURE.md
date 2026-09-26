@@ -133,11 +133,39 @@ counted: the sender numbered those packets while this phone was off the channel 
 out of the roster, and a link is judged only on what it could have carried. The Status screen's NETWORK card adds the one radio level the
 platform does hand out, the Wi-Fi link to the access point, from the Wi-Fi network's capabilities.
 
+### Reticulum
+
+`ReticulumTransport` carries the channel over [Reticulum](https://reticulum.network/): one TCP
+connection to a transport node (HDLC-framed, as Reticulum's TCP interfaces are), and inside it
+Reticulum links to the crew's other Reticulum nodes, each carrying the channel's sealed packets
+unchanged. The protocol lives in `fi.crewradio.rns`, written from the Reticulum manual, and the
+plugin's `sk-plugin/lib/rns/` is the same design in Node; `sk-plugin/test/rns.vector.json` holds
+the two to the same bytes, and its values were checked against the reference implementation.
+
+- `Curve25519` is X25519 and Ed25519 by hand (the platform has neither before API 33), `RnsCrypto`
+  the token (AES‑256‑CBC + HMAC‑SHA256), HKDF and the hashes, `RnsPacket` the packet and the HDLC
+  framing, `RnsIdentity` identities, destination hashes and announces, `RnsLink` a link at either
+  end plus `Carry`, the one-byte framing of a channel packet inside a link (a PCM frame goes in two
+  parts, the 431-byte link payload being smaller).
+- `ReticulumNode` is the protocol without the socket, pure and tested over a fake medium: it
+  announces `crewradio.channel.<tag>` (the tag from `ChannelCrypto.reticulumTag`) on connect and
+  every ten minutes; of two nodes the lower destination hash dials and the other answers a
+  newcomer's announce with its own; a link carries hellos at once and everything else once the
+  engine has confirmed the far end holds the key (`confirmPeer`); a link silent for 12 s or
+  unconfirmed after 15 s is closed and the dialler redials with backoff. `onFrame` returns the
+  channel packets instead of calling the engine, so the engine is never entered under the node's
+  lock.
+- Reticulum does the multi-hop part and every node links to every other, so `relayWithin` is
+  false; a phone with Reticulum and WLAN, or the plugin, bridges the two. It is a Settings choice
+  (**Use Reticulum**, **Transport node**) rather than a main-screen tile, because it needs an
+  address to be of any use; the identity is new for every session.
+
 Reconnect lives inside each transport, never in the engine: Bluetooth re-dials its chosen peer
 from the reader's `finally`, and waits for the adapter to come back on when it is switched off;
 Aware wraps each peer link in a `Dial` that schedules its successor while discovery still sees the
 peer, and re-attaches the whole session when Aware goes away; LAN's receive thread owns the socket,
-follows the Wi‑Fi network it was opened on, and re-opens it when it breaks or the network changes.
+follows the Wi‑Fi network it was opened on, and re-opens it when it breaks or the network changes;
+Reticulum's receive thread owns its TCP connection and re-opens it, keeping the peers it knew.
 All of them wait with `transport/Backoff` (1 s doubling to 15 s). Every transport thread runs
 through `transport/transportThread`, which catches everything (the Bluetooth and Aware stacks
 throw `SecurityException` for a missing runtime permission) and reports instead of killing the
@@ -180,8 +208,9 @@ app.
 `Prefs` reads them with validated fallbacks and `SettingsRules` holds the pure, unit-tested
 validation. Mode, relay, codec, name, hop limit, audio route and the talk-key settings are pushed
 into the engine on every bind and resume (the settings, not the engine, are the source of
-truth); group, port and the channel key (also the Aware passphrase) are constructor arguments
-of the transports, so they need a rejoin. The channel key is generated at random on first use
+truth); group, port, the Reticulum transport node and the channel key (also the Aware passphrase
+and the Reticulum destination's tag) are constructor arguments of the transports, so they need a
+rejoin. The channel key is generated at random on first use
 (`Prefs.channelKey`), never defaulted.
 
 ## Layout

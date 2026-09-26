@@ -49,6 +49,7 @@ import fi.crewradio.ask.AskSheet
 import fi.crewradio.audio.CallVolume
 import fi.crewradio.transport.BluetoothTransport
 import fi.crewradio.transport.LanTransport
+import fi.crewradio.transport.ReticulumTransport
 import fi.crewradio.transport.Transport
 import fi.crewradio.transport.WifiAwareTransport
 import java.util.Locale
@@ -409,7 +410,10 @@ class MainActivity : AppCompatActivity() {
      */
     private fun connect(s: PttService) {
         applySettings(s.engine)
-        if (tiles.none { it.on }) {
+        // Reticulum is a Settings choice, not a tile: it needs a transport node to be of any use.
+        val rns = if (prefs.useReticulum) prefs.reticulumNode else null
+        if (prefs.useReticulum && rns == null) Toast.makeText(this, R.string.reticulum_no_node, Toast.LENGTH_SHORT).show()
+        if (tiles.none { it.on } && rns == null) {
             Toast.makeText(this, R.string.pick_transport, Toast.LENGTH_SHORT).show()
             syncUi()
             return
@@ -428,6 +432,7 @@ class MainActivity : AppCompatActivity() {
             if (bt) list += BluetoothTransport(ctx, peer, e.senderId)
             val crypto = e.crypto
             if (aware && crypto != null) list += WifiAwareTransport(ctx, e.senderId, crypto.awarePassphrase, crypto::awareIdTag)
+            if (rns != null && crypto != null) list += ReticulumTransport(ctx, rns.first, rns.second, crypto.reticulumTag)
             list
         }
         syncUi()

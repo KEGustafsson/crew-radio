@@ -14,7 +14,7 @@ crew must run the same version anyway; updating the crew is the fix for anything
 
 Please do not open a public issue for a security problem. Use GitHub's private reporting:
 **Security › Report a vulnerability** on this repository. Include the app version (Status screen),
-the phone model and Android version, the links in use (WLAN, Bluetooth, Wi‑Fi Aware) and what
+the phone model and Android version, the links in use (WLAN, Bluetooth, Wi‑Fi Aware, Reticulum) and what
 you observed.
 
 You will get an acknowledgement within 7 days and, for a confirmed problem, a fix or a mitigation
