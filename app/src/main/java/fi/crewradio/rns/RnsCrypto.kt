@@ -18,6 +18,8 @@ import javax.crypto.spec.SecretKeySpec
  * the cross-language vector holds the two together.
  */
 internal object RnsCrypto {
+    private const val CIPHER = "AES/CBC/NoPadding"
+    private const val BLOCK = 16
     const val IV_BYTES = 16
     const val MAC_BYTES = 32
     /** Bytes a token adds before padding. */
@@ -57,11 +59,20 @@ internal object RnsCrypto {
         return out
     }
 
+    /*
+     * CBC is Reticulum's, not a choice made here: the token is AES-256-CBC, encrypt-then-MAC, and
+     * a node using anything else is not on the network. What makes CBC with PKCS#7 dangerous is
+     * a padding oracle - a receiver that says whether the padding was good before anyone knows
+     * the ciphertext is genuine. So the cipher runs without padding and the padding is written
+     * and removed here, the removal only after the HMAC over iv | ciphertext has matched (in
+     * constant time): a forged or altered token is refused on the MAC alone, whatever its padding.
+     */
+
     /** A token for [plain] under a 64-byte [key]; [iv] only for test vectors. */
     fun tokenEncrypt(key: ByteArray, plain: ByteArray, iv: ByteArray = randomBytes(IV_BYTES)): ByteArray {
-        val c = Cipher.getInstance("AES/CBC/PKCS5Padding")      // PKCS#5 is PKCS#7 for 16-byte blocks
+        val c = Cipher.getInstance(CIPHER)
         c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, 32, 32, "AES"), IvParameterSpec(iv))
-        val body = iv + c.doFinal(plain)
+        val body = iv + c.doFinal(pad(plain))
         return body + hmacSha256(key.copyOf(32), body)
     }
 
@@ -71,11 +82,26 @@ internal object RnsCrypto {
         val body = token.copyOf(token.size - MAC_BYTES)
         if (!MessageDigest.isEqual(token.copyOfRange(token.size - MAC_BYTES, token.size), hmacSha256(key.copyOf(32), body))) return null
         return try {
-            val c = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            val c = Cipher.getInstance(CIPHER)
             c.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, 32, 32, "AES"), IvParameterSpec(body, 0, IV_BYTES))
-            c.doFinal(body, IV_BYTES, body.size - IV_BYTES)
+            unpad(c.doFinal(body, IV_BYTES, body.size - IV_BYTES))
         } catch (_: Exception) {
             null
         }
+    }
+
+    /** PKCS#7: 1-16 bytes, each the count, so there is always at least one. */
+    internal fun pad(plain: ByteArray): ByteArray {
+        val n = BLOCK - plain.size % BLOCK
+        return plain + ByteArray(n) { n.toByte() }
+    }
+
+    /** The data without its PKCS#7 padding, or null when the padding is not well formed. Only ever called on an authenticated token. */
+    internal fun unpad(padded: ByteArray): ByteArray? {
+        if (padded.isEmpty() || padded.size % BLOCK != 0) return null
+        val n = padded[padded.size - 1].toInt() and 0xFF
+        if (n < 1 || n > BLOCK) return null
+        for (i in padded.size - n until padded.size) if ((padded[i].toInt() and 0xFF) != n) return null
+        return padded.copyOf(padded.size - n)
     }
 }

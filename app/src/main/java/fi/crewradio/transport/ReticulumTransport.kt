@@ -141,10 +141,11 @@ class ReticulumTransport(
             for ((packet, via) in node.onFrame(raw)) onPacket(packet, this, via)   // the node's lock is not held here
         }
         while (running) {
-            val n = try {
-                input.read(buf)
+            var n: Int
+            try {
+                n = input.read(buf)                    // -1 at the end of the stream, checked below
             } catch (_: SocketTimeoutException) {
-                0
+                n = 0                                  // no data this second: time to tick
             }
             if (n < 0) throw IOException(str(R.string.status_rns_closed))
             if (n > 0) deframer.push(buf, n)

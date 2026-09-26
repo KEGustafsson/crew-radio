@@ -28,6 +28,20 @@ class RnsPrimitivesTest {
     }
 
     @Test
+    fun paddingIsPkcs7AndMalformedPaddingIsRefused() {
+        assertEquals(16, RnsCrypto.pad(ByteArray(0)).size)
+        assertArrayEquals(ByteArray(16) { 16 }, RnsCrypto.pad(ByteArray(0)))
+        assertArrayEquals(byteArrayOf(1, 2, 3) + ByteArray(13) { 13 }, RnsCrypto.pad(byteArrayOf(1, 2, 3)))
+        assertEquals(32, RnsCrypto.pad(ByteArray(16)).size)
+        for (n in 0..40) assertArrayEquals(seq(0, n), RnsCrypto.unpad(RnsCrypto.pad(seq(0, n))))
+        assertNull(RnsCrypto.unpad(ByteArray(0)))
+        assertNull(RnsCrypto.unpad(ByteArray(15) { 1 }))
+        assertNull(RnsCrypto.unpad(ByteArray(16)))                                  // a count of 0
+        assertNull(RnsCrypto.unpad(ByteArray(16) { 17 }))                           // past the block
+        assertNull(RnsCrypto.unpad(ByteArray(14) + byteArrayOf(1, 2)))              // bytes that disagree
+    }
+
+    @Test
     fun packetsRoundTripAndTheHashablePartIgnoresTransport() {
         val dest = seq(0x40, 16)
         val one = RnsPacket.encode(RnsPacket.LINKREQUEST, RnsPacket.SINGLE, dest, data = seq(0, 64))

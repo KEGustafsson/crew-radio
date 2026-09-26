@@ -47,7 +47,9 @@ class ReticulumInteropTest {
         // Past the first hello heard, a few seconds more, so the far end hears ours as well.
         while ((heard == null || System.currentTimeMillis() - heardAt < 3000) && System.currentTimeMillis() < deadline) {
             if (heard != null && heardAt == 0L) heardAt = System.currentTimeMillis()
-            val n = try { socket.getInputStream().read(buf) } catch (_: SocketTimeoutException) { 0 }
+            var n: Int
+            try { n = socket.getInputStream().read(buf) } catch (_: SocketTimeoutException) { n = 0 }
+            if (n < 0) break
             if (n > 0) deframer.push(buf, n)
             val now = System.currentTimeMillis()
             if (now - lastHello >= 1000) {

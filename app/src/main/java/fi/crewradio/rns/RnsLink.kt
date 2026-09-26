@@ -56,7 +56,7 @@ internal class RnsLink(val id: ByteArray, private val key: ByteArray, val initia
         if (p.packetType != RnsPacket.DATA || closed) return null
         if (p.context == RnsPacket.CTX_KEEPALIVE) {
             if (p.data.size != 1) return null
-            return Event.Keepalive(if (p.data[0].toInt() and 0xFF == KEEPALIVE_ASK) keepalivePacket(true) else null)
+            return Event.Keepalive(if ((p.data[0].toInt() and 0xFF) == KEEPALIVE_ASK) keepalivePacket(true) else null)
         }
         val plain = decrypt(p.data) ?: return null
         return when (p.context) {

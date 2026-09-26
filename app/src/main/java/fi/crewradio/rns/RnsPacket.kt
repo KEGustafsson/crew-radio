@@ -71,13 +71,13 @@ internal class RnsPacket(
         fun decode(raw: ByteArray): RnsPacket? {
             if (raw.size < HEADER_MIN || raw.size > MTU) return null
             val flags = raw[0].toInt() and 0xFF
-            if (flags and 0x80 != 0) return null
+            if ((flags and 0x80) != 0) return null
             val headerType = (flags shr 6) and 1
             val off = if (headerType == HEADER_2) 2 + HASH_BYTES else 2
             if (raw.size < off + HASH_BYTES + 1) return null
             return RnsPacket(
                 headerType = headerType,
-                contextFlag = (flags shr 5) and 1 == 1,
+                contextFlag = ((flags shr 5) and 1) == 1,
                 packetType = flags and 3,
                 destType = (flags shr 2) and 3,
                 hops = raw[1].toInt() and 0xFF,
@@ -91,7 +91,7 @@ internal class RnsPacket(
 
         /** The low nibble of the flags and everything after the hops and any transport id: the same however the packet travelled. */
         fun hashablePart(raw: ByteArray): ByteArray {
-            val two = (raw[0].toInt() shr 6) and 1 == 1
+            val two = ((raw[0].toInt() shr 6) and 1) == 1
             return byteArrayOf((raw[0].toInt() and 0x0F).toByte()) + raw.copyOfRange(if (two) 2 + HASH_BYTES else 2, raw.size)
         }
 
