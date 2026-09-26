@@ -148,7 +148,12 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   phone's call volume through `audio/CallVolume`: the voice-call stream (playback is
   `USAGE_VOICE_COMMUNICATION`), or the hidden SCO stream 6 while a Bluetooth headset carries the
   audio on API < 34, in the stream's own steps (min 1, so the stream cannot mute); it follows
-  `android.media.VOLUME_CHANGED_ACTION` so a headset button moves it too. On channel the volume
+  `android.media.VOLUME_CHANGED_ACTION` so a headset button moves it too. Android keeps that
+  level per output device (earpiece off channel, loudspeaker on it), so the slider used to jump on
+  every join and leave: `audio/VolumeMemory` (pure, tested, process-wide) holds the crew's level,
+  the slider shows it, and `PttService` puts it back on `android.media.STREAM_DEVICES_CHANGED_ACTION`
+  and 300 ms / 1.2 s after each `AudioRoute.onRouteChanged` (session start and end included), and
+  again when the service is created or destroyed. On channel the volume
   keys are a talk key, which is why the slider exists. The mute is the app's own: `PttEngine.muted`
   sets `Mixer.gain` to 0 on the summed speech before the cue tones are added (a muted phone still
   hears its key beeps); session state, cleared by `disconnect()`, shown as "ON CHANNEL · MUTED" on
