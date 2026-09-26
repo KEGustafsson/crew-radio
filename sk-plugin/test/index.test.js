@@ -642,6 +642,12 @@ test("Reticulum settings: defaults, a bad port falls back and is named, and the 
     { enabled: false, host: "fd12::7", port: 4000 });
   assert.deepEqual(plugin.withDefaults({ channelKey: KEY, reticulum: { host: "fd12::7", port: "4001" } }, fakeApp()).reticulum,
     { enabled: false, host: "fd12::7", port: 4001 });
+  // An inline port that is not a number: the host without it, the port setting, and a warning.
+  for (const host of ["hub.example:bad", "[fd12::7]:bad", "hub.example:"]) {
+    const d = plugin.withDefaults({ channelKey: KEY, reticulum: { host, port: 4100 } }, fakeApp());
+    assert.deepEqual(d.reticulum, { enabled: false, host: host.startsWith("[") ? "fd12::7" : "hub.example", port: 4100 }, host);
+    assert.ok(d.warnings.some((w) => /has a port that is not a number/.test(w)), host);
+  }
   const s = plugin(fakeApp(), deps).schema();
   assert.deepEqual(Object.keys(s.properties.reticulum.properties), ["enabled", "host", "port"]);
 });

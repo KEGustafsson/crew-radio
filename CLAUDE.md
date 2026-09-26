@@ -244,7 +244,8 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   packet, which anyone can copy (that was the first design, and a stranger echoing a hello filled
   the plugin's table with "confirmed" links). Silent 12 s or unconfirmed 15 s = closed; announces
   and link requests are budgeted (10/s, bursts of 20) before their signature work, which in the app
-  runs outside the node lock; a full table (32 links, 64 peers) evicts the oldest unconfirmed link
+  runs outside the node lock (copies of an announce already checked, by packet hash, and requests
+  that could get no slot spend nothing); the plugin's transport clock is `performance.now()`; a full table (32 links, 64 peers) evicts the oldest unconfirmed link
   older than 5 s (else our oldest unanswered request past 5 s) / stalest peer without a confirmed
   link (a dropped link refreshes its peer), never a confirmed one (the name hash is public, so
   strangers can fill it); timers on a monotonic clock;

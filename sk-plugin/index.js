@@ -453,12 +453,17 @@ const LAN_GRACE_MS = 10_000;
 /**
  * The Reticulum node's host and port. A host typed as `host:port` (the way the phone's setting takes
  * it) is split, the port field then ignored; a bare IPv6 address is left whole, `[v6]:port` split.
+ * An inline port that is not a number is named in a warning and dropped, the port field used.
  */
 function hostAndPort(r, warnings) {
   let host = String(r.host ?? "127.0.0.1").trim() || "127.0.0.1";
   let port = r.port;
-  const m = /^\[([^\]]+)\]:(\d+)$/.exec(host) ?? /^([^:\s]+):(\d+)$/.exec(host);
-  if (m) { host = m[1]; port = Number(m[2]); }
+  const m = /^\[([^\]]+)\]:(.*)$/.exec(host) ?? /^([^:\s]+):([^:]*)$/.exec(host);
+  if (m) {
+    host = m[1];
+    if (/^\d+$/.test(m[2])) port = Number(m[2]);
+    else warnings.push(`Reticulum host ${JSON.stringify(r.host)} has a port that is not a number, using the port setting`);
+  }
   const n = Number(port);
   if (port === undefined || port === null || port === "") port = 4242;
   else if (!Number.isInteger(n) || n < 1 || n > 65535) { warnings.push(`Reticulum port ${JSON.stringify(port)} is not 1-65535, using 4242`); port = 4242; }

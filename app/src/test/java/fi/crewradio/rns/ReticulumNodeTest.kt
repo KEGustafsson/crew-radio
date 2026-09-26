@@ -256,6 +256,24 @@ class ReticulumNodeTest {
     }
 
     @Test
+    fun copiesOfACheckedAnnounceAndRequestsWithNoSlotSpendNoBudget() {
+        val me = node("9999999999999999")
+        me.connected(); queue.clear()
+        val one = announce(RnsIdentity.generate(), me.nameHash, now / 1000)
+        repeat(50) { me.onFrame(one) }                                     // the same announce by many paths
+        queue.clear()
+        assertEquals(1, me.peerCount)
+        assertEquals("one check, one token", ReticulumNode.GATE_BURST - 1.0, me.budgetLeft().first, 0.001)
+        // A full table of links still in their grace: requests that could get no slot spend nothing.
+        repeat(ReticulumNode.MAX_LINKS) { now += 100; me.onFrame(request(me).raw) }
+        queue.clear()
+        assertEquals(ReticulumNode.MAX_LINKS, me.entries().size)
+        val before = me.budgetLeft().second
+        repeat(40) { me.onFrame(request(me).raw) }
+        assertEquals("no slot, no token", before, me.budgetLeft().second, 0.001)
+    }
+
+    @Test
     fun requestsOfOursNobodyAnswersNeverLockTheCrewOut() {
         val me = node("8888888888888888")
         me.connected()

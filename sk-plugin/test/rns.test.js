@@ -565,6 +565,44 @@ test("transport: announces and link requests past the flood budget cost no signa
   me.stop();
 });
 
+test("transport: copies of a checked announce and requests with no slot spend no budget", async () => {
+  let t = 8_000_000;
+  const medium = new Medium();
+  const me = new ReticulumTransport({ host: "h", port: 1, tag: "9999999999999999", confirmKey: CK, connect: () => medium.connect(), now: () => t });
+  me.start();
+  await settle();
+  const { MAX_LINKS } = require("../lib/rns/transport");
+  let verified = 0;
+  const realParse = I.parseAnnounce;
+  I.parseAnnounce = (...args) => { verified++; return realParse(...args); };
+  try {
+    const a = I.buildAnnounce(I.Identity.generate(), me.nameHash);
+    const raw = P.encode({ packetType: P.PacketType.ANNOUNCE, destType: P.DestType.SINGLE, destination: a.destination, data: a.data });
+    for (let i = 0; i < 50; i++) me.onFrame(raw);                      // the same announce by many paths
+  } finally {
+    I.parseAnnounce = realParse;
+  }
+  assert.equal(verified, 1, "checked once");
+  // A full table of links still in their grace: requests that could get no slot spend nothing...
+  for (let i = 0; i < MAX_LINKS; i++) { t += 100; me.onFrame(L.requestLink({ destination: me.destination, sigPub: me.identity.sigPub }).raw); }
+  assert.equal(me.links.size, MAX_LINKS);
+  let accepted = 0;
+  const realAccept = L.acceptLink;
+  L.acceptLink = (...args) => { accepted++; return realAccept(...args); };
+  try {
+    for (let i = 0; i < 40; i++) me.onFrame(L.requestLink({ destination: me.destination, sigPub: me.identity.sigPub }).raw);
+    assert.equal(accepted, 0);
+    // ...so the moment one link is past its grace, the next request still has a token to get in.
+    [...me.links.values()][0].createdAt -= GRACE_MS;
+    const crew = L.requestLink({ destination: me.destination, sigPub: me.identity.sigPub });
+    me.onFrame(crew.raw);
+    assert.ok(me.links.has(crew.id.toString("hex")));
+  } finally {
+    L.acceptLink = realAccept;
+  }
+  me.stop();
+});
+
 test("transport: requests of ours that nobody answers never lock the crew out", async () => {
   let t = 4_000_000;
   const medium = new Medium();

@@ -44,6 +44,7 @@ const GRACE_MS = 5_000;                // a link or request younger than this is
 const STABLE_MS = 30_000;              // a connection that lasted this long resets the backoff
 const GATE_PER_S = 10;                 // announce checks and link requests we spend a signature on, a second
 const GATE_BURST = 20;
+const VERIFIED_MAX = 256;              // announces remembered as checked
 const PEER_FORGET_MS = 3 * ANNOUNCE_MS;
 const MAX_LINKS = 32;
 const MAX_PEERS = 64;
@@ -63,7 +64,9 @@ class ReticulumTransport extends EventEmitter {
     this.host = o.host;
     this.port = o.port;
     this.connectFn = o.connect ?? ((host, port) => net.connect({ host, port }));
-    this.now = o.now ?? Date.now;
+    // Monotonic: every value is compared only with another, and a server clock set from GPS or NTP
+    // can step backwards, which would stop every timer here for as long as the step.
+    this.now = o.now ?? (() => performance.now());
     this.identity = o.identity ?? I.Identity.generate();
     this.nameHash = I.nameHash(`crewradio.channel.${o.tag}`);
     this.destination = I.destinationHash(this.nameHash, this.identity.hash);
@@ -71,6 +74,7 @@ class ReticulumTransport extends EventEmitter {
     this.confirmKey = o.confirmKey;
     this.budget = new PeerBudget({ now: () => this.now(), perSecond: 400, burst: 800 });
     this.gate = new PeerBudget({ now: () => this.now(), perSecond: GATE_PER_S, burst: GATE_BURST });
+    this.verified = new Map();  // packet hash hex of announces already checked (the same announce arrives by several paths)
     this.connectedAt = 0;
     this.sock = null;
     this.running = false;
@@ -223,11 +227,15 @@ class ReticulumTransport extends EventEmitter {
     if (p.destType !== P.DestType.SINGLE || p.data.length < I.ANNOUNCE_MIN) return;
     if (!p.data.subarray(I.PUBLIC_BYTES, I.PUBLIC_BYTES + I.NAME_HASH_BYTES).equals(this.nameHash)) return;   // not our channel: no signature check spent
     if (p.destination.equals(this.destination)) return;                                                          // our own, echoed back
+    const hash = P.packetHash(p.raw).toString("hex");
+    if (this.verified.has(hash)) return;                                                                          // a copy of one already checked: no budget spent on it
     if (!this.gate.allow("announce")) return;                                                                     // a flood under our public name: no signature check for it
     const key = p.destination.toString("hex");
     let peer = this.peers.get(key);
     const a = I.parseAnnounce(p);
     if (!a) return;
+    this.verified.set(hash, true);
+    if (this.verified.size > VERIFIED_MAX) this.verified.delete(this.verified.keys().next().value);
     if (peer && a.emitted < peer.emitted) return;                                                                 // an older announce replayed
     const fresh = !peer;
     if (fresh && this.peers.size >= MAX_PEERS && !this.evictPeer()) return;
@@ -255,6 +263,7 @@ class ReticulumTransport extends EventEmitter {
     if (p.destType !== P.DestType.SINGLE || !p.destination.equals(this.destination)) return;
     const id = L.linkIdOf(p.raw, p.data.length).toString("hex");
     if (this.links.has(id)) return;                                     // a copy of one we already answered
+    if (!this.canMakeRoom()) return;                                    // no slot it could have: not worth a token
     if (!this.gate.allow("request")) return;                            // a flood of requests: no key agreement for it
     const r = L.acceptLink(this.identity, p);
     if (!r) return;                                                     // only a request a link can come of may cost another its slot
@@ -334,6 +343,15 @@ class ReticulumTransport extends EventEmitter {
   // with no confirmed link - and a link that has proved the key is never the one to go. Nor is
   // one younger than GRACE_MS: a crew link needs a round trip to prove itself, and a flood of
   // requests would otherwise push every new one out before it could.
+
+  /** True when there is a free slot, or one evictLink() may make. */
+  canMakeRoom() {
+    if (this.links.size + this.pending.size < MAX_LINKS) return true;
+    const now = this.now();
+    for (const e of this.links.values()) if (!e.confirmed && now - e.createdAt >= GRACE_MS) return true;
+    for (const p of this.pending.values()) if (now - p.sentAt >= GRACE_MS) return true;
+    return false;
+  }
 
   /**
    * Makes one slot: closes the oldest unconfirmed link past its grace, else drops the oldest

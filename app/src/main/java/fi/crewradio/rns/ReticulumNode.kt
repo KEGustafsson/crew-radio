@@ -71,16 +71,24 @@ internal class ReticulumNode(
         private var tokens = GATE_BURST.toDouble()
         private var at = clock()
         fun allow(): Boolean {
+            if (left() < 1) return false
+            tokens -= 1
+            return true
+        }
+
+        fun left(): Double {
             val now = clock()
             tokens = minOf(GATE_BURST.toDouble(), tokens + (now - at) * PER_SECOND / 1000.0)
             at = now
-            if (tokens < 1) return false
-            tokens -= 1
-            return true
+            return tokens
         }
     }
     private val announceGate = Gate()
     private val requestGate = Gate()
+    /** Announces already checked, by packet hash: the same announce arrives by several paths. */
+    private val verified = object : LinkedHashMap<String, Boolean>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?) = size > VERIFIED_MAX
+    }
 
     val nameHash: ByteArray = RnsIdentity.nameHash("crewradio.channel.$tag")
     val destination: ByteArray = RnsIdentity.destinationHash(nameHash, identity.hash)
@@ -101,6 +109,7 @@ internal class ReticulumNode(
     @get:Synchronized internal val pendingCount: Int get() = pending.size
     @Synchronized internal fun peerSeenAt(peerDestination: ByteArray): Long? = peers[peerDestination.toHex()]?.seenAt
     @Synchronized internal fun peerEmitted(peerDestination: ByteArray): Long? = peers[peerDestination.toHex()]?.emitted
+    @Synchronized internal fun budgetLeft(): Pair<Double, Double> = announceGate.left() to requestGate.left()
 
     /** The transport node is reachable: announce at once. */
     @Synchronized fun connected() {
@@ -153,9 +162,14 @@ internal class ReticulumNode(
         val nh = p.data.copyOfRange(RnsIdentity.PUBLIC_BYTES, RnsIdentity.PUBLIC_BYTES + RnsIdentity.NAME_HASH_BYTES)
         if (!nh.contentEquals(nameHash)) return                         // another channel: no signature check spent
         if (p.destination.contentEquals(destination)) return            // our own, echoed back
-        if (!synchronized(this) { announceGate.allow() }) return        // a flood under our public name: no signature check for it
+        val hash = RnsCrypto.sha256(RnsPacket.hashablePart(p.raw)).toHex()
+        // A copy of one already checked costs no budget; a flood under our public name, no signature check.
+        if (synchronized(this) { verified.containsKey(hash) || !announceGate.allow() }) return
         val a = RnsIdentity.parseAnnounce(p) ?: return                  // the signature, outside the lock
-        synchronized(this) { onAnnounce(p, a) }
+        synchronized(this) {
+            verified[hash] = true
+            onAnnounce(p, a)
+        }
     }
 
     private fun onAnnounce(p: RnsPacket, a: RnsIdentity.Announce) {
@@ -182,8 +196,9 @@ internal class ReticulumNode(
     private fun onLinkRequest(p: RnsPacket) {
         if (p.destType != RnsPacket.SINGLE || !p.destination.contentEquals(destination)) return
         val id = RnsLink.linkIdOf(p.raw, p.data.size).toHex()
-        // A copy of one we already answered, or a flood of requests: no key agreement for it.
-        if (synchronized(this) { links.containsKey(id) || !requestGate.allow() }) return
+        // A copy of one we already answered, one with no slot it could have, or a flood of requests:
+        // no key agreement for it (and the first two spend no budget).
+        if (synchronized(this) { links.containsKey(id) || !canMakeRoom() || !requestGate.allow() }) return
         // The key agreement and the signature, outside the lock; and only a request a link can
         // come of may cost another its slot.
         val (link, proof) = RnsLink.accept(identity, p) ?: return
@@ -264,6 +279,13 @@ internal class ReticulumNode(
      * one younger than [GRACE_MS], since a crew link needs a round trip to prove itself and a flood
      * of requests would otherwise push every new one out before it could.
      */
+
+    /** True when there is a free slot, or one [evictLink] may make. */
+    private fun canMakeRoom(): Boolean {
+        if (links.size + pending.size < MAX_LINKS) return true
+        val now = clock()
+        return links.values.any { !it.confirmed && now - it.createdAt >= GRACE_MS } || pending.values.any { now - it.sentAt >= GRACE_MS }
+    }
 
     /**
      * Makes one slot: closes the oldest unconfirmed link past its grace, else drops the oldest
@@ -368,6 +390,7 @@ internal class ReticulumNode(
         const val PROOF_RESEND_MS = 2_000L
         const val GRACE_MS = 5_000L
         const val GATE_BURST = 20
+        private const val VERIFIED_MAX = 256
         private const val PER_SECOND = 10
         const val PEER_FORGET_MS = 3 * ANNOUNCE_MS
         const val MAX_LINKS = 32
