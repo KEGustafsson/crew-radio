@@ -26,7 +26,7 @@ class SignalKClient(
     private val token: String?,
     private val connectTimeoutMs: Int = CONNECT_TIMEOUT_MS,
     private val readTimeoutMs: Int = READ_TIMEOUT_MS,
-) {
+) : BoatSource {
 
     /** Why a request did not produce an answer, in the terms the sheet explains it in. */
     enum class Failure {
@@ -38,6 +38,18 @@ class SignalKClient(
 
         /** It answered, but not with Signal K. */
         BAD_RESPONSE,
+
+        /** Over Reticulum ([ReticulumBoat]): no link to the boat, or nothing came back on one. */
+        NO_ANSWER,
+
+        /** Over Reticulum: the boat's plugin does not answer questions (its setting is off). */
+        NOT_OFFERED,
+
+        /** Over Reticulum: the plugin is over its question budget, or its announcement queue is full. */
+        BUSY,
+
+        /** Over Reticulum: the plugin tried and could not; the detail is its reason. */
+        BOAT_FAILED,
     }
 
     sealed interface Result<out T> {
@@ -53,7 +65,7 @@ class SignalKClient(
      * `tanks` — so the read succeeds as long as *something* answered. Only when every branch
      * failed is the whole read reported failed, with the first reason seen.
      */
-    fun read(branches: List<String>): Result<SignalKTree> {
+    override fun read(branches: List<String>): Result<SignalKTree> {
         if (branches.isEmpty()) return Result.Ok(SignalKTree.EMPTY)
         val tree = HashMap<String, Any?>()
         var firstFailure: Result.Failed? = null
@@ -64,6 +76,8 @@ class SignalKClient(
                     // A branch this boat does not publish comes back 404: not an error, just absent.
                     if (response.failure == Failure.BAD_RESPONSE && response.httpCode == HttpURLConnection.HTTP_NOT_FOUND) continue
                     if (firstFailure == null) firstFailure = response
+                    // Nothing answered: the next branch would wait out the same timeout for the same reason.
+                    if (response.failure == Failure.UNREACHABLE) break
                 }
             }
         }
@@ -76,7 +90,7 @@ class SignalKClient(
      * the whole of "Whole crew" mode: the phone has already recognised, matched, converted and
      * worded the answer, and the plugin's announcement queue does the rest.
      */
-    fun say(text: String): Result<Unit> {
+    override fun say(text: String): Result<Unit> {
         val body = JSONObject().put("text", text).put("priority", "normal").toString()
         return when (val response = post(SignalKUrl.pluginSay(base), body)) {
             is Result.Ok -> Result.Ok(Unit)

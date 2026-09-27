@@ -586,6 +586,7 @@ class FakeRns extends EventEmitter {
     return this.ready;
   }
   confirm() {}
+  answer(via, id, message) { (this.answers ??= []).push({ via, id, message }); return true; }
 }
 
 test("Reticulum: off by default; when enabled it starts with the channel's tag and key proof key, carries our packets, shows in the status and stops with the plugin", async () => {
@@ -620,7 +621,10 @@ test("Reticulum: off by default; when enabled it starts with the channel's tag a
     p.registerWithRouter(router);
     const res = fakeRes();
     router.routes["GET /status"]({}, res);
-    assert.deepEqual(res.body.reticulum, { host: "hub.example", port: 4965, connected: true, links: 2, status: "Reticulum: 2 links" });
+    assert.deepEqual(res.body.reticulum, {
+      host: "hub.example", port: 4965, connected: true, links: 2, status: "Reticulum: 2 links",
+      answerQuestions: false, questions: { reads: 0, says: 0, refused: 0 },
+    });
     p.stop();
     assert.equal(r.stopped, 1);
   } finally {
@@ -629,27 +633,76 @@ test("Reticulum: off by default; when enabled it starts with the channel's tag a
   }
 });
 
+test("Reticulum: the crew's questions are answered from this server's tree only when the setting is on", async () => {
+  const zlib = require("node:zlib");
+  const Ask = require("../lib/rns/ask");
+  FakeRns.last = undefined;
+  FakeLink.last = undefined;
+  const app = fakeApp();
+  const nav = { speedOverGround: { value: 3.1, timestamp: "2026-09-27T10:00:00.000Z", $source: "gps.1", meta: { units: "m/s" } } };
+  app.getSelfPath = (p) => (p === "navigation" ? nav : p === "name" ? "Sirius" : undefined);
+  const p = plugin(app, { ...deps, Reticulum: FakeRns });
+  const via = { key: "link-1" };
+  const read = Ask.request(Ask.Op.READ, Buffer.from("navigation\ntanks"));
+  try {
+    p.start({ channelKey: KEY, reticulum: { enabled: true, host: "hub.example" } });
+    await until(() => FakeRns.last && FakeRns.last.sent.length > 0);
+    const r = FakeRns.last;
+    r.emit("ask", 7, read, via);
+    await until(() => r.answers?.length === 1);
+    assert.deepEqual(r.answers[0].message, Ask.answer(Ask.Status.OFF), "off by default: the phone is told so");
+    p.stop();
+
+    p.start({ channelKey: KEY, reticulum: { enabled: true, host: "hub.example", answerQuestions: true } });
+    await until(() => FakeRns.last !== r && FakeRns.last.sent.length > 0);
+    const on = FakeRns.last;
+    on.emit("ask", 8, read, via);
+    await until(() => on.answers?.length === 1);
+    const a = on.answers[0];
+    assert.equal(a.id, 8);
+    assert.equal(a.via, via, "back on the link it came on");
+    assert.equal(a.message[0], Ask.Status.OK);
+    assert.deepEqual(JSON.parse(zlib.inflateSync(a.message.subarray(1)).toString("utf8")),
+      { navigation: { speedOverGround: { value: 3.1, timestamp: "2026-09-27T10:00:00.000Z", $source: "gps.1" } } },
+      "the leaf without its meta; a branch the boat does not have is left out");
+    on.emit("ask", 9, Ask.request(Ask.Op.SAY, Buffer.from("Anna asked speed. Speed 6 knots.")), via);
+    await until(() => on.answers?.length === 2);
+    assert.deepEqual(on.answers[1].message, Ask.answer(Ask.Status.OK));
+    await until(() => FakeTts.last.texts.includes("Anna asked speed. Speed 6 knots."));
+    const router = fakeRouter(true);
+    p.registerWithRouter(router);
+    const res = fakeRes();
+    router.routes["GET /status"]({}, res);
+    assert.deepEqual(res.body.reticulum.questions, { reads: 1, says: 1, refused: 0 });
+  } finally {
+    p.stop();
+  }
+});
+
 test("Reticulum settings: defaults, a bad port falls back and is named, and the schema offers them", () => {
   const d = plugin.withDefaults({ channelKey: KEY }, fakeApp());
-  assert.deepEqual(d.reticulum, { enabled: false, host: "127.0.0.1", port: 4242 });
-  const bad = plugin.withDefaults({ channelKey: KEY, reticulum: { enabled: true, host: "  ", port: 99999 } }, fakeApp());
-  assert.deepEqual(bad.reticulum, { enabled: true, host: "127.0.0.1", port: 4242 });
+  assert.deepEqual(d.reticulum, { enabled: false, host: "127.0.0.1", port: 4242, answerQuestions: false });
+  const bad = plugin.withDefaults({ channelKey: KEY, reticulum: { enabled: true, host: "  ", port: 99999, answerQuestions: false } }, fakeApp());
+  assert.deepEqual(bad.reticulum, { enabled: true, host: "127.0.0.1", port: 4242, answerQuestions: false });
   assert.ok(bad.warnings.some((w) => /Reticulum port/.test(w)));
   // host:port as the phone takes it, [v6]:port, and a bare IPv6 address left whole.
   assert.deepEqual(plugin.withDefaults({ channelKey: KEY, reticulum: { host: "hub.example:4965", port: 1 } }, fakeApp()).reticulum,
-    { enabled: false, host: "hub.example", port: 4965 });
+    { enabled: false, host: "hub.example", port: 4965, answerQuestions: false });
   assert.deepEqual(plugin.withDefaults({ channelKey: KEY, reticulum: { host: "[fd12::7]:4000" } }, fakeApp()).reticulum,
-    { enabled: false, host: "fd12::7", port: 4000 });
+    { enabled: false, host: "fd12::7", port: 4000, answerQuestions: false });
   assert.deepEqual(plugin.withDefaults({ channelKey: KEY, reticulum: { host: "fd12::7", port: "4001" } }, fakeApp()).reticulum,
-    { enabled: false, host: "fd12::7", port: 4001 });
+    { enabled: false, host: "fd12::7", port: 4001, answerQuestions: false });
   // An inline port that is not a number: the host without it, the port setting, and a warning.
   for (const host of ["hub.example:bad", "[fd12::7]:bad", "hub.example:"]) {
     const d = plugin.withDefaults({ channelKey: KEY, reticulum: { host, port: 4100 } }, fakeApp());
-    assert.deepEqual(d.reticulum, { enabled: false, host: host.startsWith("[") ? "fd12::7" : "hub.example", port: 4100 }, host);
+    assert.deepEqual(d.reticulum, { enabled: false, host: host.startsWith("[") ? "fd12::7" : "hub.example", port: 4100, answerQuestions: false }, host);
     assert.ok(d.warnings.some((w) => /has a port that is not a number/.test(w)), host);
   }
+  assert.equal(plugin.withDefaults({ channelKey: KEY, reticulum: { answerQuestions: true } }, fakeApp()).reticulum.answerQuestions, true);
+  assert.equal(plugin.withDefaults({ channelKey: KEY, reticulum: { answerQuestions: "yes" } }, fakeApp()).reticulum.answerQuestions, false, "only a real true turns it on");
   const s = plugin(fakeApp(), deps).schema();
-  assert.deepEqual(Object.keys(s.properties.reticulum.properties), ["enabled", "host", "port"]);
+  assert.deepEqual(Object.keys(s.properties.reticulum.properties), ["enabled", "host", "port", "answerQuestions"]);
+  assert.equal(s.properties.reticulum.properties.answerQuestions.default, false);
 });
 
 test("Reticulum: with the LAN down the channel runs on Reticulum alone, and moves back onto the LAN when it returns", async () => {

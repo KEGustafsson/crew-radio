@@ -65,6 +65,21 @@ Two things this deliberately does not do: it does not send anything to a cloud s
 not let an answer trigger an action. The input is a voice on an open channel, which is not an
 authenticated instruction.
 
+#### Over Reticulum (plugin setting, off by default)
+
+A phone ashore on the channel's Reticulum links can put the same two requests to the plugin
+instead of the server's HTTP port (`rns/AskCarry`, `sk-plugin/lib/rns/ask.js`,
+`sk-plugin/lib/askboat.js`). Nothing about the channel's packets changes; these are two more kinds
+of link payload beside them.
+
+| | |
+| --- | --- |
+| Who can ask | Anyone holding the channel key: a question or an answer is taken only on a link whose far end has proved the key, the same gate the channel's own packets pass. That bypasses the Signal K server's own security, which is why the plugin answers only with **Answer the crew's questions** turned on, and says "off" to the phone otherwise. The crew who can hear the channel can then read the boat's data, position included, from wherever they are. |
+| What can be asked | Two things only: read top-level branches of `vessels.self` (names checked against `^[A-Za-z][A-Za-z0-9]*$`, at most 16), each leaf cut to value, timestamp and source; and say a text through the plugin's own `say()`, which keeps its rate budget, its 500-character cap and its queue. No PUT, no other context, no path deeper than a branch name. |
+| On the wire | Inside Reticulum's link encryption, like the channel. Parts `0x81` (request) / `0x82` (answer) `| id u16 | index | count | bytes`; a request is at most 4 parts, an answer 64 (27 kB), put back together in any order, at most 4 unfinished messages per link. The read's JSON is zlib-deflated; the phone inflates it to at most 1 MB and parses it with the same code as an HTTP answer. |
+| Floods | The plugin charges each request part to the link's packet budget, then each question to a per-link budget of 30 a minute (at most 64 links remembered). A repeat of a question already answered on that link (same id, the phone's retry after a lost part) is answered from a memory of the last 16, not asked again, so a retry never says an announcement twice. The phone takes answer parts only for a question it is waiting on. |
+| Old builds | An older plugin or phone ignores the new lead bytes (they are not a part count it knows); the phone then says the boat did not answer. |
+
 ## What it does not do
 
 - It does not hide *that* phones are talking: packet timing and sizes are visible on the WLAN,
@@ -111,7 +126,8 @@ nonce (12) | ciphertext | tag (16)                                              
   frame), in two or three parts `count | index | id | bytes`. Before any of that, each end sends
   its key proof `0x80 | HMAC‑SHA256(confirm key, role | link id)` (role 1 = the end that dialled),
   the confirm key `HMAC‑SHA256(key, "CrewRadio reticulum confirm v1")`; a link carries nothing
-  else until the far end's proof has checked out.
+  else until the far end's proof has checked out. Asking the boat adds two more kinds of payload
+  on a confirmed link, `0x81` request and `0x82` answer parts (above).
 - Codec 0 = PCM16LE frame, 1 = Opus packet, 2 = hello (`ver=2 | transports | ttl | versionCode
   uint16 | nameLen | name`).
 - Cost: 46 bytes on top of the payload (18 header, 12 nonce, 16 tag), about 2.3 kB/s at 50

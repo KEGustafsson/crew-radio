@@ -316,6 +316,16 @@ the setting. **Ask again** asks the next question without closing the sheet. **W
 you to be on the channel, because that answer is said by the boat over the air: off the channel
 the chip is greyed out and the answer is spoken on your own phone instead.
 
+**From ashore, over Reticulum.** A phone that is on the channel through the **RETICULUM** tile
+can ask the boat too, with no way into the boat's WLAN: the question goes to the
+[signalk-crewradio](sk-plugin/README.md) plugin over the same Reticulum link the voice uses, and
+the plugin reads the answer from its own server. Turn on **Answer the crew's questions** under
+Reticulum in the plugin's settings (it is off until you do, because anyone with the channel key
+can then read the boat's data, position included), and switch on **Ask boat data** on the phone;
+no server address or pairing is needed for this. With a server address set too, the phone asks
+it first and goes over Reticulum only when the server does not answer at all, so the same phone
+works aboard and ashore.
+
 ## Build it yourself
 
 [docs/BUILDING.md](docs/BUILDING.md) is the step-by-step version of all of this, and of

@@ -12,6 +12,7 @@ import fi.crewradio.audio.MicGate
 import fi.crewradio.audio.Mixer
 import fi.crewradio.audio.OpusDecoder
 import fi.crewradio.audio.OpusEncoder
+import fi.crewradio.transport.ReticulumTransport
 import fi.crewradio.transport.Transport
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -146,6 +147,8 @@ class PttEngine(
     val rosterNow: List<Peer> get() = buildRoster()
     /** Names of the transports running right now. */
     val activeTransports: List<String> get() = transports.map { it.name }
+    /** The Reticulum transport while it runs: "Ask boat data" can reach the boat over its links. */
+    val reticulum: ReticulumTransport? get() = transports.firstNotNullOfOrNull { it as? ReticulumTransport }
 
     private val route = AudioRoute(context, onStatus)
 

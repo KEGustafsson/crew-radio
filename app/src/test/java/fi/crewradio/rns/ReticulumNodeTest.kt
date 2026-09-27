@@ -309,6 +309,81 @@ class ReticulumNodeTest {
         assertEquals(801, inbox[b]!!.size)
     }
 
+    /** What the plugin does with a question: its answer, in parts, on its end of the link. */
+    private fun answerFrom(plugin: ReticulumNode, id: Int, message: ByteArray, order: (List<ByteArray>) -> List<ByteArray> = { it }): List<ByteArray> {
+        val e = plugin.entries().single()
+        return order(AskCarry.cut(AskCarry.ANSWER, id, message)).map { e.link.dataPacket(it) }
+    }
+
+    /** The question parts [from] wrote since the medium was last cleared, by id. */
+    private fun questionsWritten(from: ReticulumNode, into: ReticulumNode): List<Int> {
+        val ids = ArrayList<Int>()
+        val e = into.entries().single()
+        while (queue.isNotEmpty()) {
+            val (who, raw) = queue.removeFirst()
+            if (who !== from) continue
+            val p = RnsPacket.decode(raw) ?: continue
+            if (p.packetType != RnsPacket.DATA || p.destType != RnsPacket.LINK || p.context != RnsPacket.CTX_NONE) continue
+            val plain = (e.link.handle(p) as? RnsLink.Event.Data)?.plain ?: continue
+            if (AskCarry.isAsk(plain) && (plain[0].toInt() and 0xFF) == AskCarry.REQUEST) ids.add(AskCarry.idOf(plain))
+        }
+        return ids
+    }
+
+    @Test
+    fun aQuestionGoesOnTheConfirmedLinksAndTheBoatsAnswerInAnyOrderAnswersIt() {
+        val (a, b) = linked()
+        queue.clear()
+        val message = AskCarry.request(AskCarry.OP_READ, "navigation".toByteArray())
+        val q = a.ask(message)!!
+        assertEquals("one part, on the one link", listOf(q.id), questionsWritten(a, b))
+        assertFalse(q.await(0))
+        // A phone is not the boat: a question that reaches one is nobody's channel packet.
+        for (part in AskCarry.cut(AskCarry.REQUEST, 5, message)) assertTrue(b.onFrame(a.entries().single().link.dataPacket(part)).isEmpty())
+        val body = ByteArray(1000) { it.toByte() }
+        for (raw in answerFrom(b, q.id + 1, byteArrayOf(AskCarry.OK.toByte()))) a.onFrame(raw)
+        assertFalse("an answer to a question nobody asked", q.await(0))
+        for (raw in answerFrom(b, q.id, byteArrayOf(AskCarry.OK.toByte()) + body) { it.reversed() }) assertTrue(a.onFrame(raw).isEmpty())
+        assertTrue(q.await(0))
+        assertEquals(AskCarry.OK, q.reply!!.status)
+        assertTrue(body.contentEquals(q.reply!!.body))
+        assertTrue(inbox[a]!!.isEmpty())
+    }
+
+    @Test
+    fun aRefusalIsTheAnswerOnceEveryLinkAskedHasGivenOneAndARepeatAsksAgainWithTheSameId() {
+        val (a, b) = linked()
+        queue.clear()
+        val q = a.ask(AskCarry.request(AskCarry.OP_SAY, "hello".toByteArray()))!!
+        assertEquals(listOf(q.id), questionsWritten(a, b))
+        q.repeat()
+        assertEquals("the same question again", listOf(q.id), questionsWritten(a, b))
+        for (raw in answerFrom(b, q.id, byteArrayOf(AskCarry.OFF.toByte()))) a.onFrame(raw)
+        assertTrue(q.await(0))
+        assertEquals(AskCarry.OFF, q.reply!!.status)
+        assertEquals(AskCarry.OFF, q.refusal!!.status)
+        q.forget()
+        val next = a.ask(AskCarry.request(AskCarry.OP_READ, "tanks".toByteArray()))!!
+        assertTrue("a new question, a new id", next.id != q.id)
+        next.forget()
+        for (raw in answerFrom(b, next.id, byteArrayOf(AskCarry.OK.toByte()))) a.onFrame(raw)
+        assertFalse("forgotten: its answer is dropped", next.await(0))
+    }
+
+    @Test
+    fun noQuestionWithoutAConfirmedLinkAndNoAnswerFromOneThatHasNotProvedTheKey() {
+        val lone = node()
+        assertEquals("not connected", null, lone.ask(AskCarry.request(AskCarry.OP_READ, "navigation".toByteArray())))
+        lone.connected()
+        assertEquals("connected, but nobody to ask", null, lone.ask(AskCarry.request(AskCarry.OP_READ, "navigation".toByteArray())))
+        nodes.clear(); inbox.clear(); queue.clear()
+        linked(secondKey = strangerKey)
+        val me = nodes[0]
+        assertEquals(null, me.ask(AskCarry.request(AskCarry.OP_READ, "navigation".toByteArray())))
+        val (a, _) = linked("3333333333333333")
+        assertEquals("too large to carry", null, a.ask(ByteArray(AskCarry.ROOM * AskCarry.MAX_REQUEST_PARTS + 1)))
+    }
+
     private fun compare(x: ByteArray, y: ByteArray): Int {
         for (i in x.indices) {
             val d = (x[i].toInt() and 0xFF) - (y[i].toInt() and 0xFF)

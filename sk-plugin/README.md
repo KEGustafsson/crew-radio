@@ -105,6 +105,7 @@ The same works as a PUT to `vessels.self.communication.crewradio.say` with a str
 | Hop budget | 4 | How far phones may relay the server's packets. |
 | Reticulum: enabled | off | Join the channel through a Reticulum transport node as well, and relay between it and the LAN. |
 | Reticulum: transport node host, port | 127.0.0.1, 4242 | The TCP server interface of an rnsd with `enable_transport = Yes`: the boat's own, or a hub ashore. |
+| Reticulum: answer the crew's questions | off | A phone ashore can use the app's Ask boat data over its Reticulum link: the plugin reads the answer from this server and says a Whole crew answer. Anyone holding the channel key can then read the vessel's data this way. |
 | Announce from state | alarm | alert, warn, alarm or emergency. |
 | Say the state and the path first | on | "Alarm, navigation position: no contact with sensor for 70 seconds" rather than the message alone, so the crew hears where it comes from. |
 | Only notifications that ask for sound | on | Signal K notifications carry `method: [visual, sound]`. |
@@ -162,6 +163,14 @@ dependency), not taken from the reference implementation, and checked against it
 - **Bandwidth.** Announcements are PCM: 686 bytes a frame, which a Reticulum link carries in two
   packets, about 40 kB/s per remote node while speaking. Fine over the internet or Wi‑Fi, not over
   LoRa, which cannot carry live voice at all.
+- **Asking the boat from ashore.** With **Answer the crew's questions** on, a phone on the
+  channel over Reticulum can use the app's Ask boat data without reaching the server's HTTP port:
+  it asks on its link, and the plugin reads the top-level branches it names from the server's own
+  tree (`app.getSelfPath`), cut to value, timestamp and source and deflated, or says a whole-crew
+  answer through the same queue as every other announcement. Nothing else is reachable that way:
+  no PUTs, no other vessel, no deeper path. It is off by default because it answers anyone who
+  holds the channel key, whatever the server's own security says. Each link may ask 30 times a
+  minute; `GET /status` counts the reads, says and refusals.
 
 ## Development
 

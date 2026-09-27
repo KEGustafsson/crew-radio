@@ -23,7 +23,12 @@
  *  - Relaying: none within this transport. Every node links to every other, and Reticulum's own
  *    transport nodes do the multi-hop part; the engine relays between this and the LAN.
  *
- * Events: 'packet' (buf, via) with `via` the link it came on, 'status' (short line), 'state' (up: boolean).
+ * Asking the boat (ask.js): a confirmed link may also carry a question for the boat's Signal K
+ * server; it is put together here, a repeat of one already answered gets the same answer again
+ * from `asked` without the plugin seeing it twice, and the plugin's reply goes back with answer().
+ *
+ * Events: 'packet' (buf, via) with `via` the link it came on, 'ask' (id, message, via) for a
+ * question whole and not seen before on that link, 'status' (short line), 'state' (up: boolean).
  */
 
 const net = require("node:net");
@@ -32,6 +37,7 @@ const P = require("./packet");
 const I = require("./identity");
 const L = require("./link");
 const Carry = require("./carry");
+const Ask = require("./ask");
 const { PeerBudget } = require("../wirelimit");
 
 const ANNOUNCE_MS = 10 * 60_000;       // re-announce: keeps our path fresh on the transport nodes
@@ -48,6 +54,7 @@ const VERIFIED_MAX = 256;              // announces remembered as checked
 const PEER_FORGET_MS = 3 * ANNOUNCE_MS;
 const MAX_LINKS = 32;
 const MAX_PEERS = 64;
+const ASKED_MAX = 16;                  // questions remembered per link, with their answers, for the asker's repeats
 
 class ReticulumTransport extends EventEmitter {
   /**
@@ -301,11 +308,54 @@ class ReticulumTransport extends EventEmitter {
     else if (r.kind === "data") {
       if (Carry.isKeyProof(r.plain)) return this.onKeyProof(e, r.plain);
       if (!e.confirmed) return;                                          // nothing counts before the far end has proved the key
+      if (Ask.isAsk(r.plain)) return this.onAsk(e, r.plain);
       const packet = e.joiner.push(r.plain);
       if (!packet || !this.budget.allow(e.key)) return;
       this.stats.rx++;
       this.emit("packet", packet, e);
     }
+  }
+
+  /**
+   * A part of a question on a confirmed link. Answers are the app's business, not ours: only
+   * requests are put together. A question already answered is answered again from memory (the
+   * asker lost the answer and repeated itself), one still being worked on is left to finish.
+   */
+  onAsk(e, payload) {
+    if (payload[0] !== Ask.REQUEST || !this.budget.allow(e.key)) return;
+    const whole = e.questions.push(payload);
+    if (!whole) return;
+    if (e.asked.has(whole.id)) {
+      const answer = e.asked.get(whole.id);
+      if (answer) this.writeAnswer(e, whole.id, answer);
+      return;
+    }
+    e.asked.set(whole.id, null);
+    if (e.asked.size > ASKED_MAX) e.asked.delete(e.asked.keys().next().value);
+    this.emit("ask", whole.id, whole.message, e);
+  }
+
+  /**
+   * The answer to question `id` that came on the link `via`, remembered for a repeat. False when
+   * the link has gone meanwhile (the asker will ask again on its next one) or the answer is too
+   * large to carry, in which case a short failure goes instead.
+   */
+  answer(via, id, message) {
+    if (this.links.get(via.key) !== via || !via.link.active) return false;
+    let parts;
+    try {
+      parts = Ask.cut(Ask.ANSWER, id, message);
+    } catch {
+      message = Ask.answer(Ask.Status.FAILED, Buffer.from("answer too large to carry"));
+      parts = Ask.cut(Ask.ANSWER, id, message);
+    }
+    if (via.asked.has(id)) via.asked.set(id, message);
+    for (const part of parts) this.write(via.link.dataPacket(part));
+    return true;
+  }
+
+  writeAnswer(e, id, message) {
+    for (const part of Ask.cut(Ask.ANSWER, id, message)) this.write(e.link.dataPacket(part));
   }
 
   /** The far end's key proof: the link is confirmed, and ours goes again if it seems to have missed it. */
@@ -401,7 +451,7 @@ class ReticulumTransport extends EventEmitter {
   }
 
   addLink(link, peerKey) {
-    const e = { key: link.id.toString("hex"), link, peer: peerKey, createdAt: this.now(), lastIn: this.now(), confirmed: false, proofAt: 0, joiner: new Carry.Joiner(), cutId: 0 };
+    const e = { key: link.id.toString("hex"), link, peer: peerKey, createdAt: this.now(), lastIn: this.now(), confirmed: false, proofAt: 0, joiner: new Carry.Joiner(), cutId: 0, questions: new Ask.Assembler(Ask.REQUEST), asked: new Map() };
     this.links.set(e.key, e);
     this.stats.linksUp++;
     return e;

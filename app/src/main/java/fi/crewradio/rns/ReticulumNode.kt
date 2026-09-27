@@ -16,6 +16,8 @@ package fi.crewradio.rns
  *    in learns nothing but that we exist, and a sealed packet copied from elsewhere proves nothing.
  *  - Floods: an announce under our name and a link request to us each cost a signature, so they
  *    come out of a small budget first, and a link younger than [GRACE_MS] is never evicted.
+ *  - Asking the boat ([AskCarry]): [ask] puts a question on every confirmed link and the
+ *    plugin's answer, put back together here, completes it. A phone answers nobody's questions.
  *
  * Thread-safe: every entry point takes the node's lock, but the signature and key-agreement work
  * of announces, link requests and proofs is done outside it, so a stranger's flood never holds up
@@ -40,6 +42,7 @@ internal class ReticulumNode(
         var confirmed = false
         var proofAt = 0L
         val joiner = Carry.Joiner()
+        val answers = AskCarry.Assembler(AskCarry.ANSWER)
         var cutId = 0
         private var tokens = BURST.toDouble()
         private var refilled = clock()
@@ -65,6 +68,49 @@ internal class ReticulumNode(
     }
 
     private class Pending(val request: RnsLink.Request, val peer: String, val sentAt: Long)
+
+    /**
+     * A question in flight: asked on [asked] links, done at the first [AskCarry.OK], or once every
+     * one of them has answered otherwise (then the first refusal is the answer). [await] blocks.
+     */
+    inner class Question internal constructor(val id: Int, private val message: ByteArray) {
+        private val done = java.util.concurrent.CountDownLatch(1)
+        @Volatile var reply: AskCarry.Reply? = null
+            private set
+        /** The first answer that was not OK, kept in case no link does better. */
+        @Volatile var refusal: AskCarry.Reply? = null
+            private set
+        internal val asked = HashSet<String>()
+        private val answered = HashSet<String>()
+
+        /** Waits up to [ms] for the answer; true when there is one (an OK, or every link refusing). */
+        fun await(ms: Long): Boolean = done.await(ms, java.util.concurrent.TimeUnit.MILLISECONDS)
+
+        /** Asks again, same id, on every confirmed link: the plugin answers a repeat from memory. */
+        fun repeat() {
+            synchronized(this@ReticulumNode) { if (reply == null) put(this) }
+        }
+
+        /** Stops waiting for it. */
+        fun forget() {
+            synchronized(this@ReticulumNode) { questions.remove(id) }
+        }
+
+        internal fun partsFor(): List<ByteArray> = AskCarry.cut(AskCarry.REQUEST, id, message)
+
+        internal fun offer(link: String, r: AskCarry.Reply) {
+            if (reply != null || link !in asked || !answered.add(link)) return
+            if (r.status == AskCarry.OK) {
+                reply = r
+            } else {
+                if (refusal == null) refusal = r
+                if (!answered.containsAll(asked)) return
+                reply = refusal
+            }
+            questions.remove(id)
+            done.countDown()
+        }
+    }
 
     /** A token bucket for work a stranger can make us do: [PER_SECOND] a second, bursts of [GATE_BURST]. */
     private inner class Gate {
@@ -98,6 +144,8 @@ internal class ReticulumNode(
     private var connected = false
     private var lastAnnounce = 0L
     private var reannounceAt = 0L
+    private val questions = HashMap<Int, Question>()
+    private var nextQuestion = (Math.random() * 65536).toInt()
 
     /** Links that carry channel traffic: up, and their far end has proved the key. */
     @get:Synchronized val linkCount: Int get() = links.values.count { it.link.active && it.confirmed }
@@ -140,6 +188,43 @@ internal class ReticulumNode(
             sent = true
         }
         return sent
+    }
+
+    /**
+     * Puts a question to the boat ([AskCarry] request message: op and body) on every confirmed
+     * link; null when there is none, or the message is too large to carry. The caller waits on the
+     * returned question, repeats it once when the wait runs out, and forgets it.
+     */
+    @Synchronized fun ask(message: ByteArray): Question? {
+        if (!connected || links.values.none { it.link.active && it.confirmed }) return null
+        var id = nextQuestion++ and 0xFFFF
+        while (questions.containsKey(id)) id = nextQuestion++ and 0xFFFF
+        val q = Question(id, message)
+        try {
+            q.partsFor()
+        } catch (_: IllegalArgumentException) {
+            return null
+        }
+        questions[id] = q
+        put(q)
+        return q
+    }
+
+    private fun put(q: Question) {
+        val parts = q.partsFor()
+        for (e in links.values) {
+            if (!e.link.active || !e.confirmed) continue
+            q.asked += e.key
+            for (part in parts) write(e.link.dataPacket(part))
+        }
+    }
+
+    /** A part of an answer on a confirmed link; one for a question nobody is waiting on is dropped unread. */
+    private fun onAnswer(e: Entry, payload: ByteArray) {
+        if ((payload[0].toInt() and 0xFF) != AskCarry.ANSWER || !questions.containsKey(AskCarry.idOf(payload))) return
+        val (id, message) = e.answers.push(payload) ?: return
+        val r = AskCarry.reply(message) ?: return
+        questions[id]?.offer(e.key, r)
     }
 
     /**
@@ -240,6 +325,7 @@ internal class ReticulumNode(
             is RnsLink.Event.Data -> {
                 if (Carry.isKeyProof(event.plain)) { onKeyProof(e, event.plain, now); return emptyList() }
                 if (!e.confirmed) return emptyList()                    // nothing counts before the far end has proved the key
+                if (AskCarry.isAsk(event.plain)) { onAnswer(e, event.plain); return emptyList() }
                 val packet = e.joiner.push(event.plain) ?: return emptyList()
                 if (!e.allow(now)) return emptyList()
                 return listOf(packet to e)

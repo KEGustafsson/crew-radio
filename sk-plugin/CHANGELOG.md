@@ -19,6 +19,12 @@ All notable changes to signalk-crewradio. The format follows
   announces and link requests past 10 a second cost no signature work. With the LAN down the
   channel keeps going on Reticulum alone; an announcement then waits 10 s for the LAN before going
   to the shore alone, and is said again on the LAN if it comes back mid-way.
+- Answering the app's Ask boat data over Reticulum (`lib/askboat.js`, `lib/rns/ask.js`; setting
+  Reticulum › Answer the crew's questions, off by default): a phone ashore asks on its link for
+  top-level branches of `vessels.self`, which the plugin reads from the server's own tree, cut to
+  value, timestamp and source and deflated, or has a whole-crew answer said through `say()`.
+  Only on links that have proved the channel key, 30 questions a minute per link, and a repeated
+  question (the phone's retry) is answered from memory rather than asked twice.
 
 ### Security
 

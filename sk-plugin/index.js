@@ -17,7 +17,8 @@
  *  4. The channel's roster in Signal K: communication.crewradio.* (online, nodes, talking, speaking).
  *  5. Optionally the channel over Reticulum (lib/rns/): a TCP connection to a Reticulum transport
  *     node, links to the crew's other Reticulum nodes, and the plugin relaying between them and
- *     the boat's LAN, so a phone ashore on a hub hears the boat and the boat hears it.
+ *     the boat's LAN, so a phone ashore on a hub hears the boat and the boat hears it; with the
+ *     setting on, the phone's "Ask boat data" is answered over the same links (lib/askboat.js).
  */
 
 const fs = require("node:fs");
@@ -33,6 +34,7 @@ const { SourceLimiter } = require("./lib/ratelimit");
 const { FliteTts, VOICES, MAX_TEXT } = require("./lib/tts");
 const { AnnouncementQueue } = require("./lib/queue");
 const { NotificationBridge } = require("./lib/bridge");
+const { BoatAnswers } = require("./lib/askboat");
 const { samplesToBytes, bytesToSamples } = require("./lib/resample");
 const tones = require("./lib/tones");
 const pkg = require("./package.json");
@@ -67,6 +69,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
   let link = null;
   let rns = null;                                  // the Reticulum transport, when enabled; outlives LAN reopens
   let rnsStatus = "";
+  let answers = null;                              // "Ask boat data" over Reticulum, while rns runs
   let node = null;
   let tts = null;
   let queue = null;
@@ -232,6 +235,18 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       app.debug(line);
       status();
     });
+    answers = new BoatAnswers({
+      enabled: () => !!cfg?.reticulum.answerQuestions,
+      getSelfPath: (p) => app.getSelfPath?.(p),
+      say: (o) => say(o, "reticulum"),
+    });
+    const mine = rns;
+    const a = answers;
+    mine.on("ask", (id, message, via) => {
+      a.handle(message, via.key).then((reply) => {
+        if (rns === mine) mine.answer(via, id, reply);   // a restart meanwhile: that link is gone with its transport
+      }).catch((e) => app.debug(`Reticulum question: ${e.message}`));   // never an unhandled rejection in the server's process
+    });
     rns.start();
   }
 
@@ -295,6 +310,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     if (node) { node.stop(); node = null; }
     if (link) { link.close(); link = null; }
     if (rns) { rns.stop(); rns = null; }
+    answers = null;
     rnsStatus = "";
     linkInfo = null;
     lastLinkError = null;
@@ -388,7 +404,10 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       statusLine: lastStatus,
       warnings: cfg?.warnings ?? [],
       link: linkInfo ? { iface: linkInfo.iface, address: linkInfo.address } : null,
-      reticulum: rns ? { host: cfg.reticulum.host, port: cfg.reticulum.port, connected: rns.ready, links: rns.linkCount, status: rnsStatus } : null,
+      reticulum: rns ? {
+        host: cfg.reticulum.host, port: cfg.reticulum.port, connected: rns.ready, links: rns.linkCount, status: rnsStatus,
+        answerQuestions: cfg.reticulum.answerQuestions, questions: answers ? { ...answers.stats } : null,
+      } : null,
       group: cfg?.group ?? null, port: cfg?.port ?? null, hops: cfg?.hops ?? null,
       voice: cfg?.voice ?? null, voices: VOICES, rate: cfg?.rate ?? null,
       speaking: !!node?.speaking,
@@ -511,6 +530,7 @@ function withDefaults(o, app) {
     reticulum: {
       enabled: r.enabled ?? false,
       ...hostAndPort(r, warnings),
+      answerQuestions: r.answerQuestions === true,
     },
     bridge: {
       enabled: b.enabled ?? true,
@@ -619,6 +639,7 @@ function schema(app) {
           enabled: { type: "boolean", title: "Enabled", default: false },
           host: { type: "string", title: "Transport node host", default: "127.0.0.1", description: "The rnsd TCPServerInterface to connect to: the hub's name or address, or 127.0.0.1 for one on this server. host:port is accepted too." },
           port: { type: "integer", title: "Transport node port", default: 4242, minimum: 1, maximum: 65535 },
+          answerQuestions: { type: "boolean", title: "Answer the crew's questions", default: false, description: "A phone ashore on Reticulum can use Ask boat data: the plugin reads the answer from this server's data and says a Whole crew answer on the channel. Anyone holding the channel key can then read this vessel's data (position included) this way, whatever this server's own security says, so it is off until you turn it on." },
         },
       },
       bridge: {

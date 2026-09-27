@@ -471,6 +471,11 @@
     <string name="ask_unreachable">Can\'t reach the boat. Check the WLAN and the address in Settings.</string>
     <string name="ask_unauthorized">The server refused this phone. Pair again in Settings.</string>
     <string name="ask_bad_response">That address answered, but it is not a Signal K server.</string>
+    <string name="ask_rns_no_answer">No answer from the boat over Reticulum. Its Crew Radio plugin needs Reticulum on, and an update if it is older than this app.</string>
+    <string name="ask_rns_not_offered">The boat does not answer questions over Reticulum. Turn on Answer the crew\'s questions in the Crew Radio plugin\'s Reticulum settings.</string>
+    <string name="ask_rns_busy">The boat is busy. Ask again in a moment.</string>
+    <string name="ask_rns_failed">The boat could not answer: %1$s</string>
+    <string name="ask_rns_off_channel">Join the channel with Reticulum on to ask the boat from here, or set its Signal K server in Settings.</string>
     <string name="ask_no_recognition">This phone has no on-device speech recognition.</string>
     <string name="ask_mic_denied">Crew Radio needs the microphone to hear a question.</string>
     <!-- The recogniser refused to start at all, most often because the phone has no offline

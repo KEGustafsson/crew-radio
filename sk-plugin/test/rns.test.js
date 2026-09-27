@@ -9,6 +9,7 @@ const P = require("../lib/rns/packet");
 const I = require("../lib/rns/identity");
 const L = require("../lib/rns/link");
 const Carry = require("../lib/rns/carry");
+const Ask = require("../lib/rns/ask");
 const { ReticulumTransport, STALE_MS, CONFIRM_MS, LINK_TIMEOUT_MS, GRACE_MS, STABLE_MS, GATE_BURST } = require("../lib/rns/transport");
 const { ChannelCrypto } = require("../lib/crypto");
 const CP = require("../lib/packet");
@@ -75,6 +76,50 @@ test("vector: a PCM-sized packet is cut into the same parts", () => {
 });
 
 // ---- primitives ----
+
+test("vector: questions for the boat and their answers are cut into the same parts", () => {
+  const zlib = require("node:zlib");
+  assert.deepEqual(Ask.cut(Ask.REQUEST, V.ask.id, Ask.request(Ask.Op.READ, Buffer.from("navigation\nenvironment"))).map((b) => b.toString("hex")), V.ask.readParts);
+  const say = Buffer.from(Array.from({ length: 600 }, (_, i) => 97 + (i % 26)));
+  assert.deepEqual(Ask.cut(Ask.REQUEST, V.ask.sayId, Ask.request(Ask.Op.SAY, say)).map((b) => b.toString("hex")), V.ask.sayParts);
+  assert.deepEqual(Ask.cut(Ask.ANSWER, V.ask.id, Ask.answer(Ask.Status.OK, zlib.deflateSync(hex(V.ask.answerJsonHex)))).map((b) => b.toString("hex")), V.ask.answerParts);
+  assert.deepEqual(Ask.cut(Ask.ANSWER, 1, Ask.answer(Ask.Status.OFF)).map((b) => b.toString("hex")), V.ask.offParts);
+});
+
+test("ask: parts in any order, copies ignored, a message too large refused, only its own kind taken", () => {
+  const big = seq(0, Ask.ROOM * 3 + 5);
+  const parts = Ask.cut(Ask.ANSWER, 42, big);
+  assert.equal(parts.length, 4);
+  assert.ok(parts.every((p) => p.length <= L.MDU && Ask.isAsk(p)));
+  const j = new Ask.Assembler(Ask.ANSWER);
+  assert.equal(j.push(parts[2]), null);
+  assert.equal(j.push(parts[0]), null);
+  assert.equal(j.push(parts[0]), null, "a copy");
+  assert.equal(j.push(parts[3]), null);
+  assert.deepEqual(j.push(parts[1]), { id: 42, message: big });
+  assert.equal(new Ask.Assembler(Ask.REQUEST).push(parts[0]), null, "an answer is not a request");
+  assert.deepEqual(new Ask.Assembler(Ask.ANSWER).push(Ask.cut(Ask.ANSWER, 3, Ask.answer(Ask.Status.OK))[0]), { id: 3, message: Buffer.from([0]) }, "a bare status is one part");
+  assert.ok(!Ask.isAsk(Buffer.from([Ask.ANSWER, 0, 3, 0, 1])), "a part carries at least a byte");
+  assert.throws(() => Ask.cut(Ask.REQUEST, 1, Buffer.alloc(Ask.ROOM * Ask.MAX_REQUEST_PARTS + 1)));
+  assert.equal(Ask.cut(Ask.ANSWER, 1, Buffer.alloc(Ask.ROOM * Ask.MAX_ANSWER_PARTS)).length, Ask.MAX_ANSWER_PARTS);
+  // Malformed: index past the count, a count over the kind's limit, a count that changes mid-message.
+  const k = new Ask.Assembler(Ask.REQUEST);
+  assert.equal(k.push(Buffer.from([Ask.REQUEST, 0, 1, 2, 2, 9])), null);
+  assert.equal(k.push(Buffer.from([Ask.REQUEST, 0, 1, 0, Ask.MAX_REQUEST_PARTS + 1, 9])), null);
+  assert.equal(k.push(Buffer.from([Ask.REQUEST, 0, 1, 0, 2, 9])), null);
+  assert.equal(k.push(Buffer.from([Ask.REQUEST, 0, 1, 1, 3, 9])), null, "another count: started over from this part");
+  assert.equal(k.push(Buffer.from([Ask.REQUEST, 0, 1, 0, 3, 8])), null);
+  assert.deepEqual(k.push(Buffer.from([Ask.REQUEST, 0, 1, 2, 3, 7])), { id: 1, message: Buffer.from([8, 9, 7]) }, "the 9 of the first count is gone");
+  // At most IN_FLIGHT unfinished messages: the oldest goes.
+  const m = new Ask.Assembler(Ask.REQUEST);
+  for (let id = 0; id <= Ask.IN_FLIGHT; id++) m.push(Buffer.from([Ask.REQUEST, 0, id, 0, 2, id]));
+  assert.equal(m.pending.size, Ask.IN_FLIGHT);
+  assert.equal(m.push(Buffer.from([Ask.REQUEST, 0, 0, 1, 2, 0])), null, "the first was dropped");
+  assert.deepEqual(m.push(Buffer.from([Ask.REQUEST, 0, Ask.IN_FLIGHT, 1, 2, 5])), { id: Ask.IN_FLIGHT, message: Buffer.from([Ask.IN_FLIGHT, 5]) });
+  // The channel's own frames are not questions, and a question is not a key proof or a channel frame.
+  assert.ok(!Ask.isAsk(Carry.cut(seq(0, 686), 1)[0]) && !Ask.isAsk(Carry.keyProof(CK, Buffer.alloc(16), true)));
+  assert.equal(new Carry.Joiner().push(parts[0]), null);
+});
 
 test("a token opens only with its key and untouched, and never throws", () => {
   const key = seq(1, 64);
@@ -340,6 +385,76 @@ test("transport: a stranger who copies the name hash gets and passes nothing, ho
   assert.equal(mine.linkCount, 0);
   mine.stop();
   stranger.stop();
+});
+
+test("transport: a question on a confirmed link reaches the plugin once, its answer goes back, a repeat is answered from memory", async () => {
+  const medium = new Medium();
+  const { a, b } = pair(medium);
+  a.start();
+  b.start();
+  await settle();
+  b.tick(); a.tick(); b.reannounceAt = 1; b.tick();
+  await settle();
+  assert.equal(a.linkCount, 1);
+  // b plays the plugin; a plays the phone, whose own answers arrive as parts on its side.
+  const asked = [];
+  b.on("ask", (id, message, via) => asked.push({ id, message, via }));
+  const heard = [];
+  const onAsk = a.onAsk.bind(a);
+  a.onAsk = (e, payload) => { if (payload[0] === Ask.ANSWER) heard.push(payload); else onAsk(e, payload); };
+  const ea = [...a.links.values()][0];
+  const say = Ask.request(Ask.Op.SAY, Buffer.alloc(600, 0x61));
+  const ask = () => { for (const part of Ask.cut(Ask.REQUEST, 77, say)) a.write(ea.link.dataPacket(part)); };
+  ask();
+  await settle();
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].id, 77);
+  assert.deepEqual(asked[0].message, say, "put back together from its two parts");
+  ask();
+  await settle();
+  assert.equal(asked.length, 1, "a repeat while the first is being answered is not asked again");
+  const reply = Ask.answer(Ask.Status.OK, seq(0, 1000));
+  assert.equal(b.answer(asked[0].via, 77, reply), true);
+  await settle();
+  const j = new Ask.Assembler(Ask.ANSWER);
+  const whole = heard.map((p) => j.push(p)).filter(Boolean);
+  assert.deepEqual(whole, [{ id: 77, message: reply }]);
+  ask();
+  await settle();
+  assert.equal(asked.length, 1, "nor after it was answered");
+  assert.equal(heard.length, 6, "the same three parts again, from memory");
+  // An answer too large to carry becomes a short failure; a link that has gone gets nothing.
+  heard.length = 0;
+  assert.equal(b.answer(asked[0].via, 78, Buffer.alloc(Ask.ROOM * Ask.MAX_ANSWER_PARTS + 1)), true);
+  await settle();
+  const failed = new Ask.Assembler(Ask.ANSWER).push(heard[0]);
+  assert.equal(failed.message[0], Ask.Status.FAILED);
+  b.forget(asked[0].via);
+  assert.equal(b.answer(asked[0].via, 79, reply), false);
+  a.stop();
+  b.stop();
+});
+
+test("transport: a question on a link that has not proved the key is dropped unread", async () => {
+  const medium = new Medium();
+  const { a, b } = pair(medium, "a2ddc18dee75e2bd", undefined, [CK, Buffer.alloc(32, 9)]);
+  const asked = [];
+  a.on("ask", () => asked.push(1));
+  b.on("ask", () => asked.push(1));
+  a.start();
+  b.start();
+  await settle();
+  b.tick(); a.tick(); b.reannounceAt = 1; b.tick();
+  await settle();
+  assert.equal(a.links.size, 1);
+  for (const n of [a, b]) {
+    const e = [...n.links.values()][0];
+    for (const part of Ask.cut(Ask.REQUEST, 1, Ask.request(Ask.Op.READ, Buffer.from("navigation")))) n.write(e.link.dataPacket(part));
+  }
+  await settle();
+  assert.deepEqual(asked, []);
+  a.stop();
+  b.stop();
 });
 
 test("transport: a key proof lost on the way is sent again, and the ends still confirm", async () => {

@@ -12,6 +12,11 @@ import java.util.concurrent.Executors
  * One question, start to finish: hear it, work out what it asks for, read it off the boat, put
  * words round it, and say it — here, or to the whole crew.
  *
+ * The boat is the Signal K server over HTTP when one is set ([SignalKClient]), and the Crew Radio
+ * plugin over the channel's Reticulum links while this phone is on them ([ReticulumBoat]): that
+ * is how a phone ashore, with no way into the boat's LAN, asks. With both, HTTP goes first, and
+ * Reticulum is asked only when the server could not be reached at all.
+ *
  * Everything the crew sees goes through [State], which is delivered on the main thread; the
  * network happens on a `ptt-ask` thread, because a socket on the main thread is how an app stops
  * responding on a boat with a flaky access point.
@@ -84,8 +89,11 @@ class AskController(
     private fun modeOf(stored: String): Mode =
         if (stored == Prefs.ASK_MODE_CREW) Mode.CREW else Mode.JUST_ME
 
-    /** True when the row should be on the main screen at all. */
-    fun offered(): Boolean = prefs.askEnabled && prefs.askServer != null
+    /** True when the row should be on the main screen at all: asking is on, and there is a way to the boat. */
+    fun offered(): Boolean = prefs.askEnabled && (prefs.askServer != null || overReticulum())
+
+    /** This phone joins the channel over Reticulum, so the boat's plugin can be asked there. */
+    private fun overReticulum(): Boolean = prefs.bool(Prefs.KEY_USE_RETICULUM, false) && prefs.reticulumNode != null
 
     /** True when this phone can hear a question; false means the sheet opens straight into typing. */
     fun canListen(): Boolean = AskRecognizer.available(context)
@@ -189,8 +197,10 @@ class AskController(
         }
         deliver(gen, State.Working(match.transcript))
         val base = prefs.askServer
-        if (base == null) {
-            deliver(gen, State.Failed(match.transcript, context.getString(R.string.ask_no_server)))
+        val rns = engineOf()?.reticulum
+        if (base == null && rns == null) {
+            val why = if (overReticulum()) R.string.ask_rns_off_channel else R.string.ask_no_server
+            deliver(gen, State.Failed(match.transcript, context.getString(why)))
             return
         }
         val token = prefs.askToken
@@ -203,7 +213,11 @@ class AskController(
         // can post one.
         work.execute {
             try {
-                askOnce(gen, base, token, unitPrefs, wanted, match)
+                val sources = buildList {
+                    if (base != null) add(SignalKClient(context, base, token))
+                    if (rns != null) add(ReticulumBoat({ rns.ask(it) }))
+                }
+                askOnce(gen, sources, unitPrefs, wanted, match)
             } catch (t: Throwable) {
                 deliver(gen, State.Failed(match.transcript, explain(SignalKClient.Failure.UNREACHABLE)))
             }
@@ -212,47 +226,53 @@ class AskController(
 
     private fun askOnce(
         gen: Int,
-        base: String,
-        token: String?,
+        sources: List<BoatSource>,
         unitPrefs: AskUnits.Prefs,
         wanted: Mode,
         match: AskIntents.Match,
     ) {
-        run {
-            val client = SignalKClient(context, base, token)
-            when (val read = client.read(Quantity.subtreesOf(match.quantities))) {
-                is SignalKClient.Result.Failed -> deliver(gen, State.Failed(match.transcript, explain(read.failure)))
-                is SignalKClient.Result.Ok -> {
-                    val answer = AskAnswer.build(
-                        match.quantities, read.value, System.currentTimeMillis(), unitPrefs, prefs.askInstances,
-                    )
-                    val sentence = AskWording.sentence(answer, AskVocabulary.of(context))
-                    val detail = detailOf(answer)
-                    if (wanted == Mode.CREW) {
-                        val line = context.getString(R.string.ask_crew_answer, prefs.speakerName, match.transcript, sentence)
-                        when (val said = client.say(line)) {
-                            is SignalKClient.Result.Ok -> {
-                                // The boat says it over the channel. A phone that has not joined
-                                // hears nothing of its own answer, so it says it here as well.
-                                speakHere(gen, sentence, onlyOffChannel = true)
-                                deliver(gen, State.Answered(match.transcript, sentence, detail))
-                            }
-                            is SignalKClient.Result.Failed -> {
-                                // The crew did not get it, so at least the person who asked does.
-                                speakHere(gen, sentence)
-                                deliver(
-                                    gen,
-                                    State.Answered(
-                                        match.transcript, sentence,
-                                        context.getString(R.string.ask_say_failed) + " " + explain(said.failure),
-                                    ),
-                                )
-                            }
+        val branches = Quantity.subtreesOf(match.quantities)
+        var client: BoatSource = sources.first()
+        var read: SignalKClient.Result<SignalKTree> = SignalKClient.Result.Failed(SignalKClient.Failure.UNREACHABLE, null)
+        for (source in sources) {
+            client = source
+            read = source.read(branches)
+            // Only a server nothing answered for moves on to the next way: one that refused this
+            // phone's token or is not Signal K is the answer the crew needs to see.
+            if (read !is SignalKClient.Result.Failed || read.failure != SignalKClient.Failure.UNREACHABLE) break
+        }
+        when (val result = read) {
+            is SignalKClient.Result.Failed -> deliver(gen, State.Failed(match.transcript, explain(result)))
+            is SignalKClient.Result.Ok -> {
+                val answer = AskAnswer.build(
+                    match.quantities, result.value, System.currentTimeMillis(), unitPrefs, prefs.askInstances,
+                )
+                val sentence = AskWording.sentence(answer, AskVocabulary.of(context))
+                val detail = detailOf(answer)
+                if (wanted == Mode.CREW) {
+                    val line = context.getString(R.string.ask_crew_answer, prefs.speakerName, match.transcript, sentence)
+                    when (val said = client.say(line)) {
+                        is SignalKClient.Result.Ok -> {
+                            // The boat says it over the channel. A phone that has not joined
+                            // hears nothing of its own answer, so it says it here as well.
+                            speakHere(gen, sentence, onlyOffChannel = true)
+                            deliver(gen, State.Answered(match.transcript, sentence, detail))
                         }
-                    } else {
-                        speakHere(gen, sentence)
-                        deliver(gen, State.Answered(match.transcript, sentence, detail))
+                        is SignalKClient.Result.Failed -> {
+                            // The crew did not get it, so at least the person who asked does.
+                            speakHere(gen, sentence)
+                            deliver(
+                                gen,
+                                State.Answered(
+                                    match.transcript, sentence,
+                                    context.getString(R.string.ask_say_failed) + " " + explain(said),
+                                ),
+                            )
+                        }
                     }
+                } else {
+                    speakHere(gen, sentence)
+                    deliver(gen, State.Answered(match.transcript, sentence, detail))
                 }
             }
         }
@@ -288,13 +308,17 @@ class AskController(
         return context.getString(R.string.ask_source, path, age.toInt())
     }
 
-    private fun explain(failure: SignalKClient.Failure): String = context.getString(
-        when (failure) {
-            SignalKClient.Failure.UNREACHABLE -> R.string.ask_unreachable
-            SignalKClient.Failure.UNAUTHORIZED -> R.string.ask_unauthorized
-            SignalKClient.Failure.BAD_RESPONSE -> R.string.ask_bad_response
-        }
-    )
+    private fun explain(failure: SignalKClient.Failure): String = explain(SignalKClient.Result.Failed(failure, null))
+
+    private fun explain(failed: SignalKClient.Result.Failed): String = when (failed.failure) {
+        SignalKClient.Failure.UNREACHABLE -> context.getString(R.string.ask_unreachable)
+        SignalKClient.Failure.UNAUTHORIZED -> context.getString(R.string.ask_unauthorized)
+        SignalKClient.Failure.BAD_RESPONSE -> context.getString(R.string.ask_bad_response)
+        SignalKClient.Failure.NO_ANSWER -> context.getString(R.string.ask_rns_no_answer)
+        SignalKClient.Failure.NOT_OFFERED -> context.getString(R.string.ask_rns_not_offered)
+        SignalKClient.Failure.BUSY -> context.getString(R.string.ask_rns_busy)
+        SignalKClient.Failure.BOAT_FAILED -> context.getString(R.string.ask_rns_failed, failed.detail ?: "?")
+    }
 
     /** Whether asking again is worth a button: everything except the two the crew must leave to fix. */
     private fun retryable(marker: String): Boolean =
