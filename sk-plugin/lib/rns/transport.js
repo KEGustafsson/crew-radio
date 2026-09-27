@@ -9,9 +9,16 @@
  *  - Naming. Our destination is `crewradio.channel.<tag>`, the tag an HMAC of the packet key
  *    (ChannelCrypto.reticulumTag), so only a node with the channel key recognises our announces.
  *    The identity is made fresh for each start and never stored.
- *  - Discovery. We announce on every (re)connect and every ANNOUNCE_MS. Of two nodes, the one
- *    whose destination hash sorts lower dials; the other, on hearing a node it did not know,
- *    announces again soon so the newcomer learns of it and dials. One link per pair.
+ *  - Discovery. We announce on every (re)connect and every ANNOUNCE_MS, or every IDLE_ANNOUNCE_MS
+ *    while somebody is missing (no confirmed link at all, or fewer than the peers we know): a
+ *    transport node that lost our path (its own uplink bounced, which we never see) or a peer
+ *    that forgot us learns of us in minutes, not ten. Of two nodes, the one whose destination hash
+ *    sorts lower dials; the other, on hearing a node it did not know, or any node while somebody
+ *    is missing, announces again soon so that node learns of it and dials. One link per pair.
+ *  - A silent connection. A dead TCP connection with data in flight takes Linux a quarter of an
+ *    hour to give up on, and Node cannot set TCP_USER_TIMEOUT as the app does. So when every
+ *    confirmed link falls silent at once and nothing at all has come from the transport node
+ *    meanwhile, the connection is taken for dead and opened again.
  *  - Links, not group destinations: Reticulum does not carry group packets over more than one
  *    hop. A link carries nothing but the two ends' key proofs until the far end's has checked out
  *    (an HMAC of its role and the link id under a key from the packet key, carry.js), so a
@@ -41,6 +48,7 @@ const Ask = require("./ask");
 const { PeerBudget } = require("../wirelimit");
 
 const ANNOUNCE_MS = 10 * 60_000;       // re-announce: keeps our path fresh on the transport nodes
+const IDLE_ANNOUNCE_MS = 2 * 60_000;   // ... and this often while somebody is missing
 const REANNOUNCE_MS = 3_000;           // answer to a newcomer, at most this often
 const LINK_TIMEOUT_MS = 10_000;        // a request unproven this long is given up
 const STALE_MS = 12_000;               // a link silent this long is dead (the engine sends a hello every second)
@@ -94,6 +102,7 @@ class ReticulumTransport extends EventEmitter {
     this.pending = new Map();   // link id hex -> {req, peer, sentAt}
     this.lastAnnounce = 0;
     this.reannounceAt = 0;
+    this.lastRx = 0;            // the last frame from the transport node, of any kind
     this.stats = { announces: 0, linksUp: 0, linksDropped: 0, tx: 0, rx: 0 };
   }
 
@@ -167,6 +176,7 @@ class ReticulumTransport extends EventEmitter {
       if (this.sock !== s) return;
       this.connected = true;
       this.connectedAt = this.now();
+      this.lastRx = this.connectedAt;
       this.emit("state", true);
       this.status(`Reticulum: connected to ${this.host}:${this.port}`);
       this.announce();
@@ -196,6 +206,12 @@ class ReticulumTransport extends EventEmitter {
     this.sock = null;
     this.connected = false;
     if (s) { try { s.destroy(); } catch { /* gone */ } }
+    // A peer we just had a link with is as fresh as that link, not as its last announce: the
+    // dialler redials it as soon as the connection is back (forget() does the same for one link).
+    for (const e of this.links.values()) {
+      const peer = e.peer ? this.peers.get(e.peer) : null;
+      if (peer) peer.seenAt = Math.max(peer.seenAt, e.lastIn);
+    }
     this.links.clear();
     this.pending.clear();
     for (const p of this.peers.values()) { p.link = null; p.dialAt = 0; }
@@ -215,6 +231,7 @@ class ReticulumTransport extends EventEmitter {
   // ---- inbound ----
 
   onFrame(raw) {
+    this.lastRx = this.now();
     try {
       const p = P.decode(raw);
       if (!p) return;
@@ -260,8 +277,10 @@ class ReticulumTransport extends EventEmitter {
       // A newer announce while our link to it has gone quiet: it reconnected, the old link is dead.
       if (peer.link && this.now() - peer.link.lastIn > 3000) this.close(peer.link);
       if (!peer.link && !this.pendingFor(key)) { peer.dialAt = 0; this.linkTo(key, peer); }
-    } else if (fresh) {
+    } else if (fresh || this.missing()) {
       // It dials us, but first it has to hear of us: announce again, soon, not on every newcomer.
+      // A node we already knew too, while somebody is missing: it may be the one that forgot us
+      // (an announce only goes to the side that dials, so the order it happens in cannot tell us).
       this.reannounceAt = Math.max(this.reannounceAt, this.lastAnnounce + REANNOUNCE_MS, this.now() + 500 + Math.random() * 1500);
     }
   }
@@ -490,20 +509,42 @@ class ReticulumTransport extends EventEmitter {
     this.reannounceAt = 0;
   }
 
+  /**
+   * Somebody is missing: no confirmed link at all, or fewer than the peers we know. A link we
+   * answered does not say whose it is, so the count is all there is to go on; a peer that left
+   * counts as missing until it is forgotten.
+   */
+  missing() {
+    const n = this.linkCount;
+    return n === 0 || n < this.peers.size;
+  }
+
   /** Once a second: announces due, requests and links timed out, redials, forgotten peers. */
   tick() {
     if (!this.connected) return;
     const now = this.now();
-    if (now - this.lastAnnounce >= ANNOUNCE_MS || (this.reannounceAt && now >= this.reannounceAt)) this.announce();
+    const every = this.missing() ? IDLE_ANNOUNCE_MS : ANNOUNCE_MS;
+    if (now - this.lastAnnounce >= every || (this.reannounceAt && now >= this.reannounceAt)) this.announce();
     for (const [id, p] of this.pending) {
       if (now - p.sentAt < LINK_TIMEOUT_MS) continue;
       this.pending.delete(id);
       const peer = this.peers.get(p.peer);
       if (peer) { peer.dialAt = now + peer.backoffMs; peer.backoffMs = Math.min(peer.backoffMs * 2, 15_000); }
     }
+    let silent = 0;
     for (const e of [...this.links.values()]) {
-      if (now - e.lastIn > STALE_MS || (!e.confirmed && now - e.createdAt > CONFIRM_MS)) { this.close(e); continue; }
+      if (now - e.lastIn > STALE_MS || (!e.confirmed && now - e.createdAt > CONFIRM_MS)) {
+        if (e.confirmed && now - e.lastIn > STALE_MS) silent++;
+        this.close(e);
+        continue;
+      }
       if (!e.confirmed && e.link.active && now - e.proofAt >= PROOF_RESEND_MS) this.sendProof(e);
+    }
+    // Every crew link silent and not a byte from the transport node either: the connection is
+    // dead, not the crew. Open it again rather than wait out TCP's retransmissions.
+    if (silent > 0 && this.linkCount === 0 && now - this.lastRx > STALE_MS) {
+      this.lost("silent: nothing from the transport node");
+      return;
     }
     for (const [key, peer] of this.peers) {
       if (!peer.link && now - peer.seenAt > PEER_FORGET_MS) { this.peers.delete(key); continue; }
@@ -513,4 +554,4 @@ class ReticulumTransport extends EventEmitter {
   }
 }
 
-module.exports = { ReticulumTransport, ANNOUNCE_MS, REANNOUNCE_MS, LINK_TIMEOUT_MS, STALE_MS, CONFIRM_MS, GRACE_MS, STABLE_MS, GATE_BURST, MAX_LINKS, MAX_PEERS };
+module.exports = { ReticulumTransport, ANNOUNCE_MS, IDLE_ANNOUNCE_MS, REANNOUNCE_MS, LINK_TIMEOUT_MS, STALE_MS, CONFIRM_MS, GRACE_MS, STABLE_MS, GATE_BURST, MAX_LINKS, MAX_PEERS };

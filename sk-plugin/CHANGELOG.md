@@ -49,6 +49,13 @@ All notable changes to signalk-crewradio. The format follows
 
 ### Fixed
 
+- Reticulum: after a long quiet spell, a hub restart or the boat's internet dropping, the plugin
+  and the phones could take up to ten minutes to find each other again, and a dead connection
+  up to a quarter of an hour to be noticed. Now it announces every 2 minutes while somebody is
+  missing (every 10 once everyone is linked), answers a known node's announce as well as a new
+  one's while somebody is missing, keeps a peer it just had a link with fresh across a dropped
+  connection so it redials at once, and re-opens the connection when every link falls silent
+  and nothing at all arrives from the transport node.
 - A roster name cut to 32 bytes could split an emoji and reach the phones ending in "�": the name
   is now cut between code points, as the app's `Hello` does.
 - An alarm the crew silenced went on being announced every 30 s. Silencing takes "sound" out of the

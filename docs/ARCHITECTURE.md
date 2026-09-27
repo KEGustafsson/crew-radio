@@ -158,8 +158,13 @@ the two to the same bytes, and its values were checked against the reference imp
   parts, the 431-byte link payload being smaller).
 - `ReticulumNode` is the protocol without the socket, pure and tested over a fake medium: it
   announces `crewradio.channel.<tag>` (the tag from `ChannelCrypto.reticulumTag`) on connect and
-  every ten minutes; of two nodes the lower destination hash dials and the other answers a
-  newcomer's announce with its own. A link carries nothing until the far end's key proof has
+  every ten minutes, or every two while somebody is missing (no confirmed link, or fewer than the
+  peers it knows), so a transport node whose uplink bounced, or a peer that forgot us, hears of us
+  again in minutes; of two nodes the lower destination hash dials and the other answers a
+  newcomer's announce with its own, and any known node's while somebody is missing. A dropped
+  connection keeps each linked peer as fresh as its link, so the dialler redials it the moment the
+  connection is back. (The plugin also re-opens a connection when every link falls silent and
+  nothing at all arrives from the node, since Node cannot set `TCP_USER_TIMEOUT`.) A link carries nothing until the far end's key proof has
   checked out (`Carry.keyProof`: an HMAC of its role and the link id under
   `ChannelCrypto.reticulumConfirmKey`, resent every 2 s while unanswered), so neither a stranger
   who copies the public name hash nor a sealed packet copied from elsewhere gets anywhere; a link

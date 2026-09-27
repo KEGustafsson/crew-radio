@@ -9,8 +9,11 @@ package fi.crewradio.rns
  *
  *  - Our destination is `crewradio.channel.<tag>`, the tag from the packet key
  *    ([fi.crewradio.ChannelCrypto.reticulumTag]); the identity is made fresh for each session.
- *  - We announce on connect and every [ANNOUNCE_MS]. Of two nodes the one whose destination hash
- *    sorts lower dials; the other answers a newcomer's announce with its own, soon.
+ *  - We announce on connect and every [ANNOUNCE_MS], or every [IDLE_ANNOUNCE_MS] while somebody
+ *    is missing ([missing]: no confirmed link, or fewer than the peers we know), so a transport
+ *    node that lost our path or a peer that forgot us learns of us in minutes, not ten. Of two
+ *    nodes the one whose destination hash sorts lower dials; the other answers the announce of a
+ *    newcomer, or of anyone while somebody is missing, with its own, soon.
  *  - A link carries nothing but the two ends' key proofs ([Carry.keyProof], under [confirmKey])
  *    until the far end's has checked out, so a stranger who copies our public name hash and links
  *    in learns nothing but that we exist, and a sealed packet copied from elsewhere proves nothing.
@@ -158,6 +161,9 @@ internal class ReticulumNode(
     @Synchronized internal fun peerSeenAt(peerDestination: ByteArray): Long? = peers[peerDestination.toHex()]?.seenAt
     @Synchronized internal fun peerEmitted(peerDestination: ByteArray): Long? = peers[peerDestination.toHex()]?.emitted
     @Synchronized internal fun budgetLeft(): Pair<Double, Double> = announceGate.left() to requestGate.left()
+    /** For tests: when we last announced, and whether an answering announce is due. */
+    @get:Synchronized internal val announcedAt: Long get() = lastAnnounce
+    @get:Synchronized internal val reannounceDue: Boolean get() = reannounceAt != 0L
 
     /** The transport node is reachable: announce at once. */
     @Synchronized fun connected() {
@@ -168,6 +174,9 @@ internal class ReticulumNode(
     /** The connection is gone, and every link with it; the peers stay, their paths run through the same transport node. */
     @Synchronized fun disconnected() {
         connected = false
+        // A peer we just had a link with is as fresh as that link, not as its last announce: the
+        // dialler redials it as soon as the connection is back ([forget] does the same for one link).
+        for (e in links.values) e.peer?.let { peers[it] }?.let { it.seenAt = maxOf(it.seenAt, e.lastIn) }
         links.clear()
         pending.clear()
         for (p in peers.values) { p.link = null; p.dialAt = 0 }
@@ -273,7 +282,9 @@ internal class ReticulumNode(
             // A newer announce while our link to it has gone quiet: it reconnected, that link is dead.
             peer.link?.let { if (clock() - it.lastIn > 3000) close(it) }
             if (peer.link == null && !pendingFor(key)) { peer.dialAt = 0; linkTo(key, peer) }
-        } else if (fresh) {
+        } else if (fresh || missing()) {
+            // It dials us, but first it has to hear of us. A node we already knew too, while somebody
+            // is missing: it may be the one that forgot us, and nothing else would tell it.
             reannounceAt = maxOf(reannounceAt, lastAnnounce + REANNOUNCE_MS, clock() + jitter())
         }
     }
@@ -442,11 +453,22 @@ internal class ReticulumNode(
         reannounceAt = 0
     }
 
+    /**
+     * Somebody is missing: no confirmed link at all, or fewer than the peers we know. A link we
+     * answered does not say whose it is, so the count is all there is to go on; a peer that left
+     * counts as missing until it is forgotten.
+     */
+    @Synchronized internal fun missing(): Boolean {
+        val n = linkCount
+        return n == 0 || n < peers.size
+    }
+
     /** Once a second: announces due, requests and links timed out, redials, forgotten peers. */
     @Synchronized fun tick() {
         if (!connected) return
         val now = clock()
-        if (now - lastAnnounce >= ANNOUNCE_MS || (reannounceAt != 0L && now >= reannounceAt)) announce()
+        val every = if (missing()) IDLE_ANNOUNCE_MS else ANNOUNCE_MS
+        if (now - lastAnnounce >= every || (reannounceAt != 0L && now >= reannounceAt)) announce()
         val expired = pending.entries.filter { now - it.value.sentAt >= LINK_TIMEOUT_MS }
         for ((id, p) in expired) {
             pending.remove(id)
@@ -469,6 +491,7 @@ internal class ReticulumNode(
 
     companion object {
         const val ANNOUNCE_MS = 10 * 60_000L
+        const val IDLE_ANNOUNCE_MS = 2 * 60_000L
         const val REANNOUNCE_MS = 3_000L
         const val LINK_TIMEOUT_MS = 10_000L
         const val STALE_MS = 12_000L
