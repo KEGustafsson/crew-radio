@@ -504,6 +504,7 @@ test("GET /status carries what the web page shows, stale packets included, and t
   p.stop();
   const page = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "public", "index.html"), "utf8");
   assert.ok(page.includes('"/plugins/signalk-crewradio"') && page.includes('"/status"') && page.includes('"/say"'), "the page talks to the plugin routes");
+  assert.ok(page.includes('href="https://github.com/KEGustafsson/crew-radio/releases/latest"'), "the page links to the app's latest release");
   assert.ok(require("../package.json").keywords.includes("signalk-webapp"), "served at /signalk-crewradio/");
 });
 
