@@ -187,7 +187,7 @@ class AskSheet(
          * can change between opening the screen and pressing it.
          */
         fun open(activity: Activity, prefs: Prefs, controller: AskController): AskSheet? {
-            if (prefs.askServer == null) return null
+            if (!controller.offered()) return null
             val sheet = AskSheet(activity, controller)
             sheet.show(typedOnly = !controller.canListen())
             return sheet

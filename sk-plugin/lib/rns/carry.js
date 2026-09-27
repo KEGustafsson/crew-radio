@@ -11,6 +11,8 @@
  *   part:   count (2-3) | index (0..count-1) | id u8 | bytes
  *   proof:  0x80 | HMAC-SHA256(confirm key, role | link id)   (32 bytes; role 1 = the end that dialled)
  *
+ * (0x81 and 0x82 lead the parts of a question for the boat and its answer: ask.js.)
+ *
  * The proof is how a link is confirmed: each end sends its own as soon as the link is up, and
  * nothing else goes either way until the far end's has checked out. It is bound to the link id
  * (fresh keys on every link) and to the sender's role, so a proof seen on one link is worthless on

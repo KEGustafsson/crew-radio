@@ -9,13 +9,18 @@ package fi.crewradio.rns
  *
  *  - Our destination is `crewradio.channel.<tag>`, the tag from the packet key
  *    ([fi.crewradio.ChannelCrypto.reticulumTag]); the identity is made fresh for each session.
- *  - We announce on connect and every [ANNOUNCE_MS]. Of two nodes the one whose destination hash
- *    sorts lower dials; the other answers a newcomer's announce with its own, soon.
+ *  - We announce on connect and every [ANNOUNCE_MS], or every [IDLE_ANNOUNCE_MS] while somebody
+ *    is missing ([missing]: no confirmed link, or fewer than the peers we know), so a transport
+ *    node that lost our path or a peer that forgot us learns of us in minutes, not ten. Of two
+ *    nodes the one whose destination hash sorts lower dials; the other answers the announce of a
+ *    newcomer, or of anyone while somebody is missing, with its own, soon.
  *  - A link carries nothing but the two ends' key proofs ([Carry.keyProof], under [confirmKey])
  *    until the far end's has checked out, so a stranger who copies our public name hash and links
  *    in learns nothing but that we exist, and a sealed packet copied from elsewhere proves nothing.
  *  - Floods: an announce under our name and a link request to us each cost a signature, so they
  *    come out of a small budget first, and a link younger than [GRACE_MS] is never evicted.
+ *  - Asking the boat ([AskCarry]): [ask] puts a question on every confirmed link and the
+ *    plugin's answer, put back together here, completes it. A phone answers nobody's questions.
  *
  * Thread-safe: every entry point takes the node's lock, but the signature and key-agreement work
  * of announces, link requests and proofs is done outside it, so a stranger's flood never holds up
@@ -40,6 +45,7 @@ internal class ReticulumNode(
         var confirmed = false
         var proofAt = 0L
         val joiner = Carry.Joiner()
+        val answers = AskCarry.Assembler(AskCarry.ANSWER)
         var cutId = 0
         private var tokens = BURST.toDouble()
         private var refilled = clock()
@@ -65,6 +71,49 @@ internal class ReticulumNode(
     }
 
     private class Pending(val request: RnsLink.Request, val peer: String, val sentAt: Long)
+
+    /**
+     * A question in flight: asked on [asked] links, done at the first [AskCarry.OK], or once every
+     * one of them has answered otherwise (then the first refusal is the answer). [await] blocks.
+     */
+    inner class Question internal constructor(val id: Int, private val message: ByteArray) {
+        private val done = java.util.concurrent.CountDownLatch(1)
+        @Volatile var reply: AskCarry.Reply? = null
+            private set
+        /** The first answer that was not OK, kept in case no link does better. */
+        @Volatile var refusal: AskCarry.Reply? = null
+            private set
+        internal val asked = HashSet<String>()
+        private val answered = HashSet<String>()
+
+        /** Waits up to [ms] for the answer; true when there is one (an OK, or every link refusing). */
+        fun await(ms: Long): Boolean = done.await(ms, java.util.concurrent.TimeUnit.MILLISECONDS)
+
+        /** Asks again, same id, on every confirmed link: the plugin answers a repeat from memory. */
+        fun repeat() {
+            synchronized(this@ReticulumNode) { if (reply == null) put(this) }
+        }
+
+        /** Stops waiting for it. */
+        fun forget() {
+            synchronized(this@ReticulumNode) { questions.remove(id) }
+        }
+
+        internal fun partsFor(): List<ByteArray> = AskCarry.cut(AskCarry.REQUEST, id, message)
+
+        internal fun offer(link: String, r: AskCarry.Reply) {
+            if (reply != null || link !in asked || !answered.add(link)) return
+            if (r.status == AskCarry.OK) {
+                reply = r
+            } else {
+                if (refusal == null) refusal = r
+                if (!answered.containsAll(asked)) return
+                reply = refusal
+            }
+            questions.remove(id)
+            done.countDown()
+        }
+    }
 
     /** A token bucket for work a stranger can make us do: [PER_SECOND] a second, bursts of [GATE_BURST]. */
     private inner class Gate {
@@ -98,6 +147,8 @@ internal class ReticulumNode(
     private var connected = false
     private var lastAnnounce = 0L
     private var reannounceAt = 0L
+    private val questions = HashMap<Int, Question>()
+    private var nextQuestion = (Math.random() * 65536).toInt()
 
     /** Links that carry channel traffic: up, and their far end has proved the key. */
     @get:Synchronized val linkCount: Int get() = links.values.count { it.link.active && it.confirmed }
@@ -110,6 +161,9 @@ internal class ReticulumNode(
     @Synchronized internal fun peerSeenAt(peerDestination: ByteArray): Long? = peers[peerDestination.toHex()]?.seenAt
     @Synchronized internal fun peerEmitted(peerDestination: ByteArray): Long? = peers[peerDestination.toHex()]?.emitted
     @Synchronized internal fun budgetLeft(): Pair<Double, Double> = announceGate.left() to requestGate.left()
+    /** For tests: when we last announced, and whether an answering announce is due. */
+    @get:Synchronized internal val announcedAt: Long get() = lastAnnounce
+    @get:Synchronized internal val reannounceDue: Boolean get() = reannounceAt != 0L
 
     /** The transport node is reachable: announce at once. */
     @Synchronized fun connected() {
@@ -120,6 +174,9 @@ internal class ReticulumNode(
     /** The connection is gone, and every link with it; the peers stay, their paths run through the same transport node. */
     @Synchronized fun disconnected() {
         connected = false
+        // A peer we just had a link with is as fresh as that link, not as its last announce: the
+        // dialler redials it as soon as the connection is back ([forget] does the same for one link).
+        for (e in links.values) e.peer?.let { peers[it] }?.let { it.seenAt = maxOf(it.seenAt, e.lastIn) }
         links.clear()
         pending.clear()
         for (p in peers.values) { p.link = null; p.dialAt = 0 }
@@ -140,6 +197,44 @@ internal class ReticulumNode(
             sent = true
         }
         return sent
+    }
+
+    /**
+     * Puts a question to the boat ([AskCarry] request message: op and body) on every confirmed
+     * link; null when there is none, or the message is too large to carry. The caller waits on the
+     * returned question, repeats it once when the wait runs out, and forgets it.
+     */
+    @Synchronized fun ask(message: ByteArray): Question? {
+        if (!connected || links.values.none { it.link.active && it.confirmed }) return null
+        var id = nextQuestion++ and 0xFFFF
+        while (questions.containsKey(id)) id = nextQuestion++ and 0xFFFF
+        val q = Question(id, message)
+        try {
+            q.partsFor()
+        } catch (_: IllegalArgumentException) {
+            return null
+        }
+        questions[id] = q
+        put(q)
+        return q
+    }
+
+    private fun put(q: Question) {
+        val parts = q.partsFor()
+        for (e in links.values) {
+            if (!e.link.active || !e.confirmed) continue
+            q.asked += e.key
+            for (part in parts) write(e.link.dataPacket(part))
+        }
+    }
+
+    /** A part of an answer on a confirmed link; one for a question nobody is waiting on is dropped unread. */
+    private fun onAnswer(e: Entry, payload: ByteArray) {
+        val kind = payload[0].toInt() and 0xFF
+        if (kind != AskCarry.ANSWER || !questions.containsKey(AskCarry.idOf(payload))) return
+        val (id, message) = e.answers.push(payload) ?: return
+        val r = AskCarry.reply(message) ?: return
+        questions[id]?.offer(e.key, r)
     }
 
     /**
@@ -188,7 +283,9 @@ internal class ReticulumNode(
             // A newer announce while our link to it has gone quiet: it reconnected, that link is dead.
             peer.link?.let { if (clock() - it.lastIn > 3000) close(it) }
             if (peer.link == null && !pendingFor(key)) { peer.dialAt = 0; linkTo(key, peer) }
-        } else if (fresh) {
+        } else if (fresh || missing()) {
+            // It dials us, but first it has to hear of us. A node we already knew too, while somebody
+            // is missing: it may be the one that forgot us, and nothing else would tell it.
             reannounceAt = maxOf(reannounceAt, lastAnnounce + REANNOUNCE_MS, clock() + jitter())
         }
     }
@@ -240,6 +337,7 @@ internal class ReticulumNode(
             is RnsLink.Event.Data -> {
                 if (Carry.isKeyProof(event.plain)) { onKeyProof(e, event.plain, now); return emptyList() }
                 if (!e.confirmed) return emptyList()                    // nothing counts before the far end has proved the key
+                if (AskCarry.isAsk(event.plain)) { onAnswer(e, event.plain); return emptyList() }
                 val packet = e.joiner.push(event.plain) ?: return emptyList()
                 if (!e.allow(now)) return emptyList()
                 return listOf(packet to e)
@@ -356,11 +454,22 @@ internal class ReticulumNode(
         reannounceAt = 0
     }
 
+    /**
+     * Somebody is missing: no confirmed link at all, or fewer than the peers we know. A link we
+     * answered does not say whose it is, so the count is all there is to go on; a peer that left
+     * counts as missing until it is forgotten.
+     */
+    @Synchronized internal fun missing(): Boolean {
+        val n = linkCount
+        return n == 0 || n < peers.size
+    }
+
     /** Once a second: announces due, requests and links timed out, redials, forgotten peers. */
     @Synchronized fun tick() {
         if (!connected) return
         val now = clock()
-        if (now - lastAnnounce >= ANNOUNCE_MS || (reannounceAt != 0L && now >= reannounceAt)) announce()
+        val every = if (missing()) IDLE_ANNOUNCE_MS else ANNOUNCE_MS
+        if (now - lastAnnounce >= every || (reannounceAt != 0L && now >= reannounceAt)) announce()
         val expired = pending.entries.filter { now - it.value.sentAt >= LINK_TIMEOUT_MS }
         for ((id, p) in expired) {
             pending.remove(id)
@@ -383,6 +492,7 @@ internal class ReticulumNode(
 
     companion object {
         const val ANNOUNCE_MS = 10 * 60_000L
+        const val IDLE_ANNOUNCE_MS = 2 * 60_000L
         const val REANNOUNCE_MS = 3_000L
         const val LINK_TIMEOUT_MS = 10_000L
         const val STALE_MS = 12_000L

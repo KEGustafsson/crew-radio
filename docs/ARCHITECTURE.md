@@ -158,8 +158,13 @@ the two to the same bytes, and its values were checked against the reference imp
   parts, the 431-byte link payload being smaller).
 - `ReticulumNode` is the protocol without the socket, pure and tested over a fake medium: it
   announces `crewradio.channel.<tag>` (the tag from `ChannelCrypto.reticulumTag`) on connect and
-  every ten minutes; of two nodes the lower destination hash dials and the other answers a
-  newcomer's announce with its own. A link carries nothing until the far end's key proof has
+  every ten minutes, or every two while somebody is missing (no confirmed link, or fewer than the
+  peers it knows), so a transport node whose uplink bounced, or a peer that forgot us, hears of us
+  again in minutes; of two nodes the lower destination hash dials and the other answers a
+  newcomer's announce with its own, and any known node's while somebody is missing. A dropped
+  connection keeps each linked peer as fresh as its link, so the dialler redials it the moment the
+  connection is back. (The plugin also re-opens a connection when every link falls silent and
+  nothing at all arrives from the node, since Node cannot set `TCP_USER_TIMEOUT`.) A link carries nothing until the far end's key proof has
   checked out (`Carry.keyProof`: an HMAC of its role and the link id under
   `ChannelCrypto.reticulumConfirmKey`, resent every 2 s while unanswered), so neither a stranger
   who copies the public name hash nor a sealed packet copied from elsewhere gets anywhere; a link
@@ -168,7 +173,9 @@ the two to the same bytes, and its values were checked against the reference imp
   before their signature work, which runs outside the node's lock so a flood never holds up
   `send` on the audio path; a link younger than 5 s is never evicted. Timers run on a monotonic
   clock. `onFrame` returns the channel packets instead of calling the engine, so the engine is
-  never entered under the node's lock.
+  never entered under the node's lock. `ask` puts an Ask boat data question (`AskCarry`) on every
+  confirmed link and the plugin's answer, parts in any order, completes it; a phone answers
+  nobody's questions.
 - Reticulum does the multi-hop part and every node links to every other, so `relayWithin` is
   false; a phone with Reticulum and WLAN, or the plugin, bridges the two. It is the fourth
   main-screen tile (`use_reticulum`); the first tap with no transport node set asks for one in a
@@ -265,25 +272,30 @@ rejoin. The channel key is generated at random on first use
 | `transport/Transport` | The interface: `start`, `send` (returns whether anything went out), `stop`, `relayWithin` |
 | `transport/LanTransport`, `BluetoothTransport`, `WifiAwareTransport`, `ReticulumTransport` | The four carriers |
 | `transport/NetworkChoice` | Which network the Reticulum connection goes over, pure and tested |
-| `rns/Curve25519`, `RnsCrypto`, `RnsPacket`, `RnsIdentity`, `RnsLink` (+ `Carry`), `ReticulumNode` | Reticulum written from its manual: X25519/Ed25519, the token, packets and HDLC framing, announces, links and the key proof, and the node without the socket |
+| `rns/Curve25519`, `RnsCrypto`, `RnsPacket`, `RnsIdentity`, `RnsLink` (+ `Carry`), `AskCarry`, `ReticulumNode` | Reticulum written from its manual: X25519/Ed25519, the token, packets and HDLC framing, announces, links and the key proof, questions to the boat's plugin, and the node without the socket |
 | `transport/StreamLink`, `SendQueue`, `Backoff`, `Threads` | Length-prefixed framing, per-link outbound queue, retry schedule, guarded threads |
 | `transport/AwareSsi`, `BluetoothTieBreak`, `LanAddressing`, `PeerTable` | Discovery tag, one link per pair, broadcast address, peers heard from directly |
 
 ## Asking the boat
 
-`ask/` is a feature the channel knows nothing about: the phone asks the boat's Signal K server
-directly over HTTP and speaks the answer itself. Nothing new goes on the wire, and the plugin is
-unchanged — the whole-crew answer reuses its existing `POST /say`.
+`ask/` is a feature the channel's packets know nothing about: the phone asks the boat's Signal K
+server directly over HTTP and speaks the answer itself, and the whole-crew answer reuses the
+plugin's `POST /say`. A phone ashore, on the channel over Reticulum but not on the boat's LAN,
+asks the plugin on its Reticulum link instead (`ReticulumBoat`, `rns/AskCarry`; the plugin's
+`lib/askboat.js` reads its server's own tree): two more kinds of link payload beside the sealed
+packets, never a channel packet. Both are a `BoatSource`; with a server set, HTTP goes first and
+Reticulum is asked only when nothing answered there.
 
 ```
 ASK BOAT DATA row -> AskSheet -> AskController
                                    |-> AskRecognizer (on-device SpeechRecognizer) -> hypotheses
                                    |-> AskIntents      transcript  -> List<Quantity>
                                    |-> SignalKClient   GET /signalk/v1/api/vessels/self/<branch>
+                                   |   or ReticulumBoat  the same branches from the plugin, over a Reticulum link
                                    |-> SignalKTree     path (+ `*` instance) -> value + age
                                    |-> AskAnswer       SI + staleness -> Item.Value / Missing / …
                                    |-> AskWording      Items + strings.xml -> one sentence
-                                   `-> AskVoice (this phone) | SignalKClient.say (whole crew)
+                                   `-> AskVoice (this phone) | BoatSource.say (whole crew)
 ```
 
 Everything from `AskIntents` to `AskWording` is pure Kotlin with no Android in it, which is why

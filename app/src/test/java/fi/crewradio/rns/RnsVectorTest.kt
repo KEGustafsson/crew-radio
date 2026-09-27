@@ -84,4 +84,31 @@ class RnsVectorTest {
         assertEquals(parts.size, cut.size)
         for (i in parts.indices) assertArrayEquals(parts[i], cut[i])
     }
+
+    private fun partsOf(key: String): List<ByteArray> =
+        Regex("\"$key\"\\s*:\\s*\\[(.*?)\\]", RegexOption.DOT_MATCHES_ALL).find(json)!!.groupValues[1]
+            .split(",").map { h(it.trim().trim('"')) }
+
+    private fun int(section: String, key: String): Int {
+        val scope = Regex("\"$section\"\\s*:\\s*\\{(.*?)\\}", RegexOption.DOT_MATCHES_ALL).find(json)!!.groupValues[1]
+        return Regex("\"$key\"\\s*:\\s*(\\d+)").find(scope)!!.groupValues[1].toInt()
+    }
+
+    @Test
+    fun questionsForTheBoatAndTheirAnswersAreCutTheSameWayAndTheAnswerInflates() {
+        val id = int("ask", "id")
+        val read = AskCarry.cut(AskCarry.REQUEST, id, AskCarry.request(AskCarry.OP_READ, "navigation\nenvironment".toByteArray()))
+        assertEquals(partsOf("readParts").map { it.toHex() }, read.map { it.toHex() })
+        val say = ByteArray(600) { (97 + it % 26).toByte() }
+        val sayParts = AskCarry.cut(AskCarry.REQUEST, int("ask", "sayId"), AskCarry.request(AskCarry.OP_SAY, say))
+        assertEquals(partsOf("sayParts").map { it.toHex() }, sayParts.map { it.toHex() })
+        assertEquals(partsOf("offParts").map { it.toHex() }, AskCarry.cut(AskCarry.ANSWER, 1, byteArrayOf(AskCarry.OFF.toByte())).map { it.toHex() })
+        // The answer as the plugin deflated it: put back together, read, inflated to the JSON.
+        val joiner = AskCarry.Assembler(AskCarry.ANSWER)
+        val whole = partsOf("answerParts").mapNotNull { joiner.push(it) }.single()
+        assertEquals(id, whole.first)
+        val reply = AskCarry.reply(whole.second)!!
+        assertEquals(AskCarry.OK, reply.status)
+        assertEquals(String(b("ask", "answerJsonHex"), Charsets.UTF_8), AskCarry.inflate(reply.body))
+    }
 }

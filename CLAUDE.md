@@ -242,7 +242,14 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   below API 33), checked against RFC 7748/8032. Destination `crewradio.channel.<tag>`,
   `ChannelCrypto.reticulumTag` = first 8 bytes of HMAC(packet key, "CrewRadio reticulum v1") in hex;
   identity fresh per session. `ReticulumNode` (pure, tested over a fake medium) announces on connect
-  and every 10 min; the lower destination hash dials, the other re-announces for a newcomer. A link
+  and every 10 min, every 2 min while somebody is missing (`missing()`: no confirmed link, or fewer
+  than the peers known; an accepted link does not say whose it is, so a count is all there is); the
+  lower destination hash dials, the other re-announces for a newcomer, and for any known node while
+  somebody is missing (a reconnect announce otherwise reached only the side that does not dial, and
+  nothing happened for up to 10 min); a dropped connection keeps each linked peer as fresh as its
+  link (`disconnected()`/`drop()`, like `forget`), so the dialler redials at once; in the plugin,
+  every confirmed link silent with no frame at all from the node for 12 s = the connection is dead
+  and re-opened (Node has no `TCP_USER_TIMEOUT`, and TCP retransmits for ~15 min). A link
   carries NOTHING until the far end's key proof checks out: `Carry.keyProof` = `0x80 | HMAC-SHA256(
   ChannelCrypto.reticulumConfirmKey, role | link id)`, role 1 = the dialler, sent when the link comes
   up and every 2 s while unanswered (the confirmed end answers a resend with its own). Bound to the
@@ -273,8 +280,18 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   falls back to a network recogniser), `AskIntents` (transcript → `Quantity` list), `SignalKClient`
   (one GET per top-level branch of `vessels/self`), `SignalKTree` (path + `*` instance → value and
   age), `AskAnswer` (SI → crew units, and the staleness gate), `AskWording` (+ `AskVocabulary` from
-  `strings.xml`) → `AskVoice` here or the plugin's existing `POST /say` for the whole crew. Nothing
-  new on the wire and no plugin change: the channel knows nothing about this.
+  `strings.xml`) → `AskVoice` here or the plugin's `POST /say` for the whole crew. The channel's packets know
+  nothing about this. A phone ashore on Reticulum asks the plugin on its link instead
+  (`ReticulumBoat` over `ReticulumTransport.ask`, frames in `rns/AskCarry` = the plugin's
+  `lib/rns/ask.js`: `0x81` request / `0x82` answer parts `| id u16 | index | count | bytes`, any
+  order, only on confirmed links; op 1 read branches, op 2 say; status 0 ok with the read's JSON
+  zlib-deflated, 1 off, 2 busy, 3 failed); the plugin's `lib/askboat.js` answers from
+  `app.getSelfPath`, leaves cut to value/timestamp/$source, only with its setting
+  `reticulum.answerQuestions` on (off by default: it answers anyone with the channel key), 30 a
+  minute per link, a repeated id answered from memory so a retry never says twice. Both are a
+  `BoatSource`; with a server set HTTP goes first (its read stops at the first unreachable branch)
+  and Reticulum only when nothing answered, so `offered()` needs a server or the Reticulum tile
+  with a node. `sk-plugin/test/rns.vector.json` has the frames for both sides.
   Everything from `AskIntents` to `AskWording` is pure and unit-tested. Three rules: a reading older
   than its `Quantity.staleSec` never becomes a number (a dead instrument keeps its last value for
   ever, and a leaf with no timestamp is an age nobody can check, so it is stale too); `setAsking`
@@ -338,7 +355,8 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   byte for byte; `sk-plugin/test/vector.json` and the app's `CrossLanguageVectorTest` check the
   same packet, so change both when the wire changes. `lib/rns/` mirrors the app's `rns/` package
   (same design, Node's own crypto) and `lib/node.js` relays between the LAN and Reticulum with the
-  app's `relayTtl` rule when the plugin's Reticulum setting is on.
+  app's `relayTtl` rule when the plugin's Reticulum setting is on; `lib/askboat.js` answers the
+  app's Ask boat data over those links (above).
 - `lib/tts.js` (`FliteTts`): one WASI instance per sentence (Flite's entry point is not
   re-entrant), a WAV round trip through `tts-tmp` in the plugin's data directory (the OS temp dir when the
   server has no `getDataDirPath`), a byte-bounded cache, units

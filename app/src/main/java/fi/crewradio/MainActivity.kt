@@ -284,7 +284,7 @@ class MainActivity : AppCompatActivity() {
                 if (onChannel()) return@setOnClickListener   // takes effect on the next Connect anyway
                 // Reticulum is no use without a transport node: the first tap asks for one, right here.
                 if (tile.key == Prefs.KEY_USE_RETICULUM && !tile.on && prefs.reticulumNode == null) {
-                    askReticulumNode { tile.on = true; prefs.put(tile.key, true); askPermissions(thenConnect = false) }
+                    askReticulumNode { tile.on = true; prefs.put(tile.key, true); askPermissions(thenConnect = false); refreshAsk() }
                     return@setOnClickListener
                 }
                 tile.on = !tile.on
@@ -294,6 +294,7 @@ class MainActivity : AppCompatActivity() {
                 if (tile.on) askPermissions(thenConnect = false)
                 if (tile.key == Prefs.KEY_USE_BT) refreshPeer()
                 if (tile.key == Prefs.KEY_USE_AWARE && tile.on) warnIfLocationOff()
+                if (tile.key == Prefs.KEY_USE_RETICULUM) refreshAsk()           // the boat can be asked over it
             }
         }
         peerButton.setOnClickListener { v -> if (engine?.isConnected != true) showPeerMenu(v) }
@@ -639,7 +640,8 @@ class MainActivity : AppCompatActivity() {
 
     /** The peer strip: which peer Bluetooth will dial; hidden altogether while Bluetooth is off. */
     /**
-     * The ask row: hidden altogether unless the setting is on and a Signal K server is set, the
+     * The ask row: hidden altogether unless the setting is on and there is a way to the boat (a
+     * Signal K server set, or the channel over Reticulum, where the boat's plugin answers), the
      * same way the Bluetooth peer row is hidden while Bluetooth is off. A crew that does not use
      * Signal K never sees it.
      */
@@ -655,7 +657,9 @@ class MainActivity : AppCompatActivity() {
      */
     private fun openAsk() {
         if (askController == null) return
-        if (LocalNetwork.forServer(Build.VERSION.SDK_INT, prefs.askServer) && !granted(LocalNetwork.PERMISSION)) {
+        // No server set: the boat is asked over Reticulum only, and that needs nothing more here.
+        val server = prefs.askServer
+        if (server != null && LocalNetwork.forServer(Build.VERSION.SDK_INT, server) && !granted(LocalNetwork.PERMISSION)) {
             askLocalNetwork.launch(LocalNetwork.PERMISSION)
             return
         }

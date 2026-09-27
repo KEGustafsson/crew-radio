@@ -133,6 +133,8 @@ internal class RnsLink(val id: ByteArray, private val key: ByteArray, val initia
  *     whole: 0x01 | packet            part: count (2-3) | index | id u8 | bytes
  *     proof: 0x80 | HMAC-SHA256(confirm key, role | link id)   (role 1 = the end that dialled)
  *
+ * (0x81 and 0x82 lead the parts of a question for the boat and its answer: [AskCarry].)
+ *
  * The proof is how a link is confirmed: each end sends its own as soon as the link is up, and
  * nothing else goes either way until the far end's has checked out. It is bound to the link id
  * (fresh keys on every link) and to the sender's role, so a proof seen on one link is worthless on

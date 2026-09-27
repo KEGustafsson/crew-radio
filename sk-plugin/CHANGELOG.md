@@ -19,6 +19,12 @@ All notable changes to signalk-crewradio. The format follows
   announces and link requests past 10 a second cost no signature work. With the LAN down the
   channel keeps going on Reticulum alone; an announcement then waits 10 s for the LAN before going
   to the shore alone, and is said again on the LAN if it comes back mid-way.
+- Answering the app's Ask boat data over Reticulum (`lib/askboat.js`, `lib/rns/ask.js`; setting
+  Reticulum › Answer the crew's questions, off by default): a phone ashore asks on its link for
+  top-level branches of `vessels.self`, which the plugin reads from the server's own tree, cut to
+  value, timestamp and source and deflated, or has a whole-crew answer said through `say()`.
+  Only on links that have proved the channel key, 30 questions a minute per link, and a repeated
+  question (the phone's retry) is answered from memory rather than asked twice.
 
 ### Security
 
@@ -43,6 +49,13 @@ All notable changes to signalk-crewradio. The format follows
 
 ### Fixed
 
+- Reticulum: after a long quiet spell, a hub restart or the boat's internet dropping, the plugin
+  and the phones could take up to ten minutes to find each other again, and a dead connection
+  up to a quarter of an hour to be noticed. Now it announces every 2 minutes while somebody is
+  missing (every 10 once everyone is linked), answers a known node's announce as well as a new
+  one's while somebody is missing, keeps a peer it just had a link with fresh across a dropped
+  connection so it redials at once, and re-opens the connection when every link falls silent
+  and nothing at all arrives from the transport node.
 - A roster name cut to 32 bytes could split an emoji and reach the phones ending in "�": the name
   is now cut between code points, as the app's `Hello` does.
 - An alarm the crew silenced went on being announced every 30 s. Silencing takes "sound" out of the

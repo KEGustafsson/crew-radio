@@ -9,6 +9,7 @@ import android.os.ParcelFileDescriptor
 import android.system.Os
 import android.system.OsConstants
 import fi.crewradio.R
+import fi.crewradio.rns.AskCarry
 import fi.crewradio.rns.ReticulumNode
 import fi.crewradio.rns.RnsPacket
 import java.io.IOException
@@ -102,6 +103,30 @@ class ReticulumTransport(
     }
 
     override fun send(packet: ByteArray, except: Any?): Boolean = node.send(packet, except)
+
+    /** True while at least one link has proved the key: somebody a question could reach. */
+    val canAsk: Boolean get() = running && connected && node.linkCount > 0
+
+    /**
+     * Asks the boat's Crew Radio plugin a question over the links ([AskCarry] request message) and
+     * blocks for the answer: asked again, same id, halfway through [timeoutMs] if nothing has come
+     * back (a lost part loses the whole message). A refusal by then is the answer: the other links
+     * are most likely phones, which never answer. Null when there is no confirmed link or nothing
+     * answered. Blocking: the `ptt-ask` thread, never the main one.
+     */
+    internal fun ask(message: ByteArray, timeoutMs: Long = ASK_TIMEOUT_MS): AskCarry.Reply? {
+        if (!running) return null
+        val q = node.ask(message) ?: return null
+        try {
+            if (q.await(timeoutMs / 2)) return q.reply
+            q.refusal?.let { return it }
+            q.repeat()
+            q.await(timeoutMs - timeoutMs / 2)
+            return q.reply ?: q.refusal
+        } finally {
+            q.forget()
+        }
+    }
 
     override fun stop() {
         // The polite closes first, while the reader still runs: it clears the links the moment it
@@ -290,6 +315,8 @@ class ReticulumTransport(
         const val TICK_MS = 1_000L
         const val FLUSH_MS = 150L
         const val FIRST_NETWORK_MS = 1_000L
+        /** A question's whole wait: a hub round trip is a second or two, and it is asked twice. */
+        const val ASK_TIMEOUT_MS = 8_000L
         /** Whole Reticulum packets: several links' worth of frames, a PCM frame being two of them. */
         const val QUEUE_FRAMES = 128
     }
