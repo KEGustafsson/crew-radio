@@ -230,7 +230,8 @@ internal class ReticulumNode(
 
     /** A part of an answer on a confirmed link; one for a question nobody is waiting on is dropped unread. */
     private fun onAnswer(e: Entry, payload: ByteArray) {
-        if ((payload[0].toInt() and 0xFF) != AskCarry.ANSWER || !questions.containsKey(AskCarry.idOf(payload))) return
+        val kind = payload[0].toInt() and 0xFF
+        if (kind != AskCarry.ANSWER || !questions.containsKey(AskCarry.idOf(payload))) return
         val (id, message) = e.answers.push(payload) ?: return
         val r = AskCarry.reply(message) ?: return
         questions[id]?.offer(e.key, r)

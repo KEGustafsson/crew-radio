@@ -123,7 +123,9 @@ internal object AskCarry {
         val held: Int get() = pending.size
 
         fun push(payload: ByteArray): Pair<Int, ByteArray>? {
-            if (!isAsk(payload) || (payload[0].toInt() and 0xFF) != kind) return null
+            if (!isAsk(payload)) return null
+            val lead = payload[0].toInt() and 0xFF
+            if (lead != kind) return null
             val id = idOf(payload)
             val index = payload[3].toInt() and 0xFF
             val count = payload[4].toInt() and 0xFF
