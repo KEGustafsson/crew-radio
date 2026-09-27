@@ -19,7 +19,8 @@ Five things:
 4. **A web page.** Webapps › Crew Radio (`http://<server>:3000/signalk-crewradio/`) shows the
    network link, who is on the channel and who is talking, the queue, and has a test call: type a
    text, choose normal or urgent, and it is said on the channel. The quickest way to check that the
-   server reaches the phones.
+   server reaches the phones. Its header links to the latest GitHub release, where a new phone
+   gets the Android app.
 5. **The channel over Reticulum, optionally.** With Reticulum enabled the plugin also joins the
    channel through a [Reticulum](https://reticulum.network/) transport node and relays between it
    and the boat's LAN, so a phone ashore that reaches the same Reticulum network (over mobile data,
@@ -59,6 +60,9 @@ as "12.2 volts". Texts are capped at 500 characters.
 - The server on the same network as the phones: wired to the boat's router (LAN) or on its
   WLAN, either way one network with the WLAN the phones use. One phone's hotspot works too if
   the server can join it.
+- The Crew Radio app on the phones: the APK is on the
+  [latest GitHub release](https://github.com/KEGustafsson/crew-radio/releases/latest)
+  (`CrewRadio-<version>.apk`); the plugin's web page links there too.
 - The crew's channel key (on any phone: Settings › Channel key), and the WLAN link ticked on at
   least one phone; that phone relays the server to the rest.
 

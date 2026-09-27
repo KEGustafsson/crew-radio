@@ -7,6 +7,8 @@ All notable changes to signalk-crewradio. The format follows
 
 ### Added
 
+- A **Get the Android app** link in the web page's header, to the latest GitHub release of Crew
+  Radio, where the phones' APK is published; the README's requirements point there too.
 - The channel over Reticulum (`lib/rns/`, off by default): a TCP connection to a Reticulum
   transport node, the crew's other Reticulum nodes found by announce under a destination named
   from the packet key, and the channel's sealed packets carried unchanged inside Reticulum links.

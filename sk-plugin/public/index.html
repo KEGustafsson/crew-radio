@@ -12,6 +12,8 @@
   header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
   h1 { font-size: 22px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin: 0; }
   header .name { color: var(--muted); }
+  header .app { margin-left: auto; color: var(--accent); font-size: 13px; text-decoration: none; }
+  header .app:hover { text-decoration: underline; }
   #status { color: var(--muted); min-height: 1.4em; margin-bottom: 14px; }
   #status.bad { color: var(--bad); }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 18px; }
@@ -44,7 +46,7 @@
 </head>
 <body>
 <main>
-  <header><h1>Crew Radio</h1><span class="name" id="name"></span></header>
+  <header><h1>Crew Radio</h1><span class="name" id="name"></span><a class="app" href="https://github.com/KEGustafsson/crew-radio/releases/latest" target="_blank" rel="noopener" title="The latest CrewRadio APK on the project's GitHub release page">Get the Android app</a></header>
   <div id="status">Connecting to the plugin...</div>
 
   <div class="tiles">
