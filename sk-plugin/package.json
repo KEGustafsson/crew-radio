@@ -1,6 +1,6 @@
 {
   "name": "signalk-crewradio",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Crew Radio: lets Signal K tell the sailing crew what matters, by voice, on their push-to-talk phones.",
   "main": "index.js",
   "license": "EUPL-1.2",
