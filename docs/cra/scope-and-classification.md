@@ -12,7 +12,7 @@ be treated as **two products** with two declarations, two support periods and tw
 | | Android app | Signal K plugin |
 | --- | --- | --- |
 | Identity | `fi.crewradio`, "Crew Radio" | `signalk-crewradio` |
-| Versioning | `1.<commit count>`, `BuildConfig.GIT_SHA` | semver, currently `0.2.0` |
+| Versioning | `1.<commit count>`, `BuildConfig.GIT_SHA` | semver, currently `0.3.0` |
 | Platform | Android 10 (API 29) and above | Node ≥ 24, Signal K server |
 | Installed by | A crew member, on a phone | A boat-server operator, on a server |
 | Artefact | `CrewRadio-<version>.apk` | `signalk-crewradio-<version>.tgz` |

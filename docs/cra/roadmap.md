@@ -50,7 +50,8 @@ Cheap, and it is the first thing anyone can check from outside without asking yo
   `ready` KDoc in `BluetoothTransport.kt`.
 - Add the manufacturer contact block: postal address, security email, `security.txt`. One sentence
   committing to report vulnerabilities upstream in integrated components.
-- Start `CHANGELOG.md` for the app, with a `### Security` section. Fix the plugin's `0.2.0` gap.
+- Start `CHANGELOG.md` for the app, with a `### Security` section. (The plugin's `0.2.0` gap is
+  closed: its changelog has had a `0.2.0` section since `0.3.0`.)
 
 *Effort: 1.5 days. Closes: part of II(4), II(6); Annex II items 1–2.*
 

@@ -3,7 +3,7 @@
 All notable changes to signalk-crewradio. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semver.
 
-## Unreleased
+## 0.3.0 - 2026-09-28
 
 ### Added
 
@@ -42,15 +42,25 @@ All notable changes to signalk-crewradio. The format follows
   server rejects, say) took the Signal K server down. `receive()` now catches and emits `fault`.
 - `openLink()` and `pump()` were called and never awaited, so a throw became an unhandled
   rejection, which is also a process exit by default. Both have handlers now.
+- The unicast copies no longer follow an address off the plugin's own subnet. The address a packet
+  was heard from is not authenticated (the AEAD covers the header and payload, not the IP source),
+  so anyone on the path could rewrite it and have the copies sent anywhere; the group and the
+  broadcast still go out, so nothing on the channel is lost.
 
 ### Changed
 
 - The channel key is checked against the app's own length rules (8–64, and 12 or more for a key
   being typed in) and the schema carries them, so a one-character key is refused by the admin UI
   and a short one is said out loud in the settings warnings rather than silently stretched.
+- Node 24 or later again, as the README and the CI say; 0.2.0 had declared 22, which was never
+  tested.
 
 ### Fixed
 
+- say() calls arriving together could all pass the queue's room check, synthesise, and only then
+  find the queue full. The slot is now held across the synthesis and given back if it fails.
+- The web page blamed a missing read-write login for every failed test call, a server that was
+  simply down included; it says so only for 401 and 403 now.
 - Reticulum: after a long quiet spell, a hub restart or the boat's internet dropping, the plugin
   and the phones could take up to ten minutes to find each other again, and a dead connection
   up to a quarter of an hour to be noticed. Now it keeps a peer it just had a link with fresh
@@ -93,6 +103,35 @@ All notable changes to signalk-crewradio. The format follows
   lease stayed on whatever else had an address (docker0, a VPN) for good, and a new DHCP address
   left the group joined on the old one. The link now looks again every 5 s and reopens on a change,
   as the app's LanTransport does, and container, bridge and VPN interfaces rank last in `auto`.
+
+## 0.2.0 - 2026-09-07
+
+### Changed
+
+- Wire version 4, byte for byte the app's: an 18-byte header that carries the sender's clock,
+  authenticated, and a packet more than 60 s off the plugin's clock is dropped before any cache
+  sees it. The channel key goes into PBKDF2 as UTF-8 with 600 000 iterations and a new salt,
+  derived off the main thread at start; the shared test vector has a non-ASCII key, so the two
+  implementations stay tied to the same text encoding. Phones on a version 3 build cannot talk to
+  this one.
+- Speech runs in a worker thread rather than stalling the server while a sentence is made.
+- The notification bridge retries a failed say() once on its own timer, so an alarm set to be said
+  once is still said, and an alarm too long to speak is cut to 500 characters rather than dropped
+  and retried for ever.
+- The web page shows the stale-packet counter (a clock more than a minute off), the limits and the
+  settings warnings.
+
+### Security
+
+- Replayed packets can no longer steer the unicast copies: a sender's address is learnt only from
+  a packet that advances its sequence (`lib/replay.js`, a seen-cache and a wrap-aware high-water
+  mark per sender and kind, kept across link reopens).
+- `POST /say` needs a read-write user; the status stays readable by any user.
+- Each way into say() (the PUT path, the REST route, the in-process api, the notification bridge)
+  has its own rate budget, so a runaway automation on one cannot starve an alarm on another.
+- Urgent announcements are bounded too; they could grow the queue without limit.
+- A notification state named like an `Object.prototype` member is unknown rather than looked up
+  on the prototype, and `?` in an include or exclude glob is literal.
 
 ## 0.1.0 - 2026-09-06
 
