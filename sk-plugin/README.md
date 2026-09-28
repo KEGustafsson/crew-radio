@@ -156,16 +156,25 @@ dependency), not taken from the reference implementation, and checked against it
   copies the public name hash and links in gets nothing, and a sealed packet copied from elsewhere
   proves nothing. Announces and link requests beyond 10 a second are not checked at all, so a
   flood costs the server no signature work. The identity is new at every start.
-- **Finding each other again.** The plugin announces every 10 minutes, and every 30 seconds while
-  somebody is missing (no link at all, or fewer links than the nodes it knows), so after the
-  boat's internet or a hub restart, or a phone that went away and came back, links re-form within
-  half a minute at most, usually seconds. A connection that has gone dead without a word is opened
-  again rather than left to TCP, which would retransmit into it for a quarter of an hour: every
-  link silent and nothing at all from the transport node for 12 s, or, with no link at all, an
-  announce the transport node does not send back within 12 s (it sends every one back, so a
-  missing echo means the connection carries nothing). That second rule applies only once the
-  connection has echoed an announce: a transport node that never echoes is left connected, so
-  it cannot cause a reconnect loop.
+- **Finding each other.** A Reticulum transport node (`rnsd` with transport on) passes a node's
+  announces on only so often: by default its first six, then about one an hour, and that limit
+  cannot be switched off. So the plugin announces when it connects, and again every 5 minutes
+  only while it has no link at all and the node would still pass it on with two to spare; it never
+  announces in answer to a phone, nor while linked. When it hears a phone that should dial it and
+  nothing has dialled in 5 s, it dials the phone itself, since the phone may never have heard it.
+  (Answering with an announce, the first design, stopped working once the plugin had been alone on
+  a hub for a quarter of an hour: rnsd had stopped passing its announces on, and a phone that
+  joined then never found it until the plugin was restarted.)
+- **A connection that has died.** It is opened again rather than left to TCP, which would
+  retransmit into it for a quarter of an hour: every link silent and nothing at all from the
+  transport node for 12 s, or, with no link at all, an announce the node should have passed on
+  that does not come back within 12 s (it sends every one it passes on back to the sender). That
+  second rule applies only once the connection has echoed an announce, so a node that never
+  echoes cannot cause a reconnect loop.
+- **Diagnostics.** `GET /plugins/signalk-crewradio/status` carries `reticulum.detail`: the peers
+  heard (hops, how long ago, who dials, taken over, linked), the links, the announce budget,
+  echoes and announces ignored as older. With the plugin's debug log on, every peer heard, dial,
+  link up or down and reconnect is a line there.
 - **Relaying.** A first, authentic copy heard on the LAN goes on to Reticulum and the other way,
   ttl lowered by one, as a phone relays between its transports. A phone ashore shows on the
   roster with the Reticulum flag.

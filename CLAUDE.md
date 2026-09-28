@@ -241,20 +241,31 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   hand (TweetNaCl design, constants computed from their definitions; the platform has neither
   below API 33), checked against RFC 7748/8032. Destination `crewradio.channel.<tag>`,
   `ChannelCrypto.reticulumTag` = first 8 bytes of HMAC(packet key, "CrewRadio reticulum v1") in hex;
-  identity fresh per session. `ReticulumNode` (pure, tested over a fake medium) announces on connect
-  and every 10 min, every 30 s while somebody is missing (`missing()`: no confirmed link, or fewer
-  than the peers known; an accepted link does not say whose it is, so a count is all there is); the
-  lower destination hash dials, the other re-announces for a newcomer, and for any known node while
-  somebody is missing (a reconnect announce otherwise reached only the side that does not dial, and
-  nothing happened for up to 10 min); a dropped connection keeps each linked peer as fresh as its
-  link (`disconnected()`/`drop()`, like `forget`), so the dialler redials at once; in the plugin,
-  every confirmed link silent with no frame at all from the node for 12 s = the connection is dead
-  and re-opened (Node has no `TCP_USER_TIMEOUT`, and TCP retransmits for ~15 min), and so is,
-  with no link at all, an announce followed by 12 s without a frame on a connection that has
-  echoed one before (rnsd sends each announce back to its sender within a second; a connection
-  that stays open and carries nothing otherwise kept a lone plugin deaf until it was restarted,
-  reproduced against rnsd 1.5.4 on 2026-09-28; only after a first echo, so a node that never
-  echoes costs at most one reconnect). A link
+  identity fresh per session. **Announces are rationed by the transport nodes**: rnsd with
+  transport on gives every interface an announce rate limit by default (`Interface.DEFAULT_AR_TARGET`
+  3600 s, grace 5, penalty 0; it can be moved, not switched off), so a destination's first six
+  announces are passed on and after that about one an hour; the rest update that rnsd's own path
+  table and go no further. `AnnounceBudget` (pure, tested, same class in the plugin) mirrors the
+  rule. So `ReticulumNode` (pure, tested over a fake medium) announces on connect (a new identity
+  always has budget) and, only while it has no link at all, every 5 min while the budget would
+  still pass it with two to spare; never in answer to another node's announce and never as a
+  refresh while linked. The lower destination hash dials; the other, on hearing a node it did not
+  know (or any node while it has no link at all), waits `FALLBACK_MS` (5 s) and, if no link that
+  proved the key came in meanwhile, dials the newcomer itself (`takeover`) and redials it from then
+  on as its dialler would. The first design had it answer with an announce instead, plus announces
+  every 2 min while somebody was missing: after twelve minutes alone on a hub a plugin was past its
+  budget, a phone that then joined never heard it, and only a restart (a new identity) helped —
+  reproduced against rnsd 1.5.4 on 2026-09-28. `missing()` (no confirmed link, or fewer than the
+  peers known; an accepted link does not say whose it is) is left for tests and the status page. A
+  dropped connection keeps each linked peer as fresh as its link (`disconnected()`/`drop()`, like
+  `forget`), so the dialler redials at once; in the plugin, every confirmed link silent with no
+  frame at all from the node for 12 s = the connection is dead and re-opened (Node has no
+  `TCP_USER_TIMEOUT`, and TCP retransmits for ~15 min), and so is, with no link at all, an announce
+  the budget says will pass followed by 12 s without a frame on a connection that has echoed one
+  before (rnsd sends each announce it passes on back to its sender within a second; only after a
+  first echo, so a node that never echoes costs at most one reconnect). The plugin's `GET /status`
+  carries `reticulum.detail` (peers heard, who dials, takeovers, links, budget, echoes, announces
+  ignored as older) and its debug log a line per peer heard, dial, link up/down and reconnect. A link
   carries NOTHING until the far end's key proof checks out: `Carry.keyProof` = `0x80 | HMAC-SHA256(
   ChannelCrypto.reticulumConfirmKey, role | link id)`, role 1 = the dialler, sent when the link comes
   up and every 2 s while unanswered (the confirmed end answers a resend with its own). Bound to the

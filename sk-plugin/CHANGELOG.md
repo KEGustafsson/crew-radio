@@ -53,17 +53,24 @@ All notable changes to signalk-crewradio. The format follows
 
 - Reticulum: after a long quiet spell, a hub restart or the boat's internet dropping, the plugin
   and the phones could take up to ten minutes to find each other again, and a dead connection
-  up to a quarter of an hour to be noticed. Now it announces every 30 seconds while somebody is
-  missing (every 10 minutes once everyone is linked), answers a known node's announce as well as
-  a new one's while somebody is missing, keeps a peer it just had a link with fresh across a
-  dropped connection so it redials at once, and re-opens the connection when every link falls
-  silent and nothing at all arrives from the transport node.
+  up to a quarter of an hour to be noticed. Now it keeps a peer it just had a link with fresh
+  across a dropped connection so it redials at once, and re-opens the connection when every link
+  falls silent and nothing at all arrives from the transport node.
+- Reticulum: a plugin left alone on a hub for a quarter of an hour could no longer be found by a
+  phone that joined, until it was restarted. `rnsd` with transport on passes a node's announces on
+  only so often (by default the first six, then about one an hour; `announce_rate_target`, which
+  cannot be switched off), and the plugin announced every 2 minutes while alone and again in
+  answer to each phone, so it was soon past that limit and its answers went nowhere. Now it
+  announces on connecting and, while it has no link at all, every 5 minutes only while rnsd would
+  still pass it on (`AnnounceBudget`, rnsd's rule mirrored); it never answers with an announce,
+  and when it hears a phone that should dial it and nothing has dialled in 5 s it dials the phone
+  itself. Reproduced and checked against rnsd 1.5.4, with the plugin's budget spent on purpose:
+  linked in under 2 s where the plugin dials, 7 s where the phone should have.
 - Reticulum: a plugin with nobody linked could sit on a connection that stayed open and carried
   nothing, deaf to every phone that joined, until it was restarted (the links' silence is what
   gave a dead connection away, and with no link there was none). The transport node sends each
-  of the plugin's announces back to it, so an announce that is not echoed within 12 s, on a
-  connection that has echoed one before, now re-opens the connection. Reproduced and checked
-  against rnsd 1.5.4.
+  announce it passes on back to its sender, so such an announce that is not echoed within 12 s,
+  on a connection that has echoed one before, now re-opens the connection.
 - A roster name cut to 32 bytes could split an emoji and reach the phones ending in "�": the name
   is now cut between code points, as the app's `Hello` does.
 - An alarm the crew silenced went on being announced every 30 s. Silencing takes "sound" out of the
