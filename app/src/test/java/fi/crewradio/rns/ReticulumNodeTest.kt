@@ -385,7 +385,7 @@ class ReticulumNodeTest {
     }
 
     @Test
-    fun whileSomebodyIsMissingItAnnouncesEveryTwoMinutesAndAnswersAKnownNodesAnnounce() {
+    fun whileSomebodyIsMissingItAnnouncesEveryHalfMinuteAndAnswersAKnownNodesAnnounce() {
         val alone = node("3535353535353535")
         alone.connected(); queue.clear()
         val first = alone.announcedAt

@@ -12,13 +12,18 @@
  *  - Discovery. We announce on every (re)connect and every ANNOUNCE_MS, or every IDLE_ANNOUNCE_MS
  *    while somebody is missing (no confirmed link at all, or fewer than the peers we know): a
  *    transport node that lost our path (its own uplink bounced, which we never see) or a peer
- *    that forgot us learns of us in minutes, not ten. Of two nodes, the one whose destination hash
+ *    whose announce reached the hub while the boat's uplink was down learns of us within half a
+ *    minute, not ten. Of two nodes, the one whose destination hash
  *    sorts lower dials; the other, on hearing a node it did not know, or any node while somebody
  *    is missing, announces again soon so that node learns of it and dials. One link per pair.
  *  - A silent connection. A dead TCP connection with data in flight takes Linux a quarter of an
  *    hour to give up on, and Node cannot set TCP_USER_TIMEOUT as the app does. So when every
  *    confirmed link falls silent at once and nothing at all has come from the transport node
- *    meanwhile, the connection is taken for dead and opened again.
+ *    meanwhile, the connection is taken for dead and opened again. With no link at all there is
+ *    nothing to fall silent, but the transport node sends each of our announces back to us (rnsd
+ *    1.5.4 does, within a second): on a connection that has done so, an announce followed by
+ *    STALE_MS without a single frame is the same verdict. Only after a first echo, so a node that
+ *    never echoes (or stops, rate-limiting our announces) costs at most one reconnect, not a loop.
  *  - Links, not group destinations: Reticulum does not carry group packets over more than one
  *    hop. A link carries nothing but the two ends' key proofs until the far end's has checked out
  *    (an HMAC of its role and the link id under a key from the packet key, carry.js), so a
@@ -48,7 +53,7 @@ const Ask = require("./ask");
 const { PeerBudget } = require("../wirelimit");
 
 const ANNOUNCE_MS = 10 * 60_000;       // re-announce: keeps our path fresh on the transport nodes
-const IDLE_ANNOUNCE_MS = 2 * 60_000;   // ... and this often while somebody is missing
+const IDLE_ANNOUNCE_MS = 30_000;       // ... and this often while somebody is missing
 const REANNOUNCE_MS = 3_000;           // answer to a newcomer, at most this often
 const LINK_TIMEOUT_MS = 10_000;        // a request unproven this long is given up
 const STALE_MS = 12_000;               // a link silent this long is dead (the engine sends a hello every second)
@@ -103,6 +108,7 @@ class ReticulumTransport extends EventEmitter {
     this.lastAnnounce = 0;
     this.reannounceAt = 0;
     this.lastRx = 0;            // the last frame from the transport node, of any kind
+    this.echoes = false;        // this connection has sent one of our announces back to us
     this.stats = { announces: 0, linksUp: 0, linksDropped: 0, tx: 0, rx: 0 };
   }
 
@@ -177,6 +183,7 @@ class ReticulumTransport extends EventEmitter {
       this.connected = true;
       this.connectedAt = this.now();
       this.lastRx = this.connectedAt;
+      this.echoes = false;
       this.emit("state", true);
       this.status(`Reticulum: connected to ${this.host}:${this.port}`);
       this.announce();
@@ -250,7 +257,7 @@ class ReticulumTransport extends EventEmitter {
   onAnnounce(p) {
     if (p.destType !== P.DestType.SINGLE || p.data.length < I.ANNOUNCE_MIN) return;
     if (!p.data.subarray(I.PUBLIC_BYTES, I.PUBLIC_BYTES + I.NAME_HASH_BYTES).equals(this.nameHash)) return;   // not our channel: no signature check spent
-    if (p.destination.equals(this.destination)) return;                                                          // our own, echoed back
+    if (p.destination.equals(this.destination)) { this.echoes = true; return; }                                  // our own, echoed back: the connection works
     const hash = P.packetHash(p.raw).toString("hex");
     if (this.verified.has(hash)) return;                                                                          // a copy of one already checked: no budget spent on it
     if (!this.gate.allow("announce")) return;                                                                     // a flood under our public name: no signature check for it
@@ -523,6 +530,12 @@ class ReticulumTransport extends EventEmitter {
   tick() {
     if (!this.connected) return;
     const now = this.now();
+    // Our last announce went out STALE_MS ago on a connection that echoes them, and nothing at all
+    // has come back since: dead, whether or not any link was there to notice.
+    if (this.echoes && this.lastRx < this.lastAnnounce && now - this.lastAnnounce > STALE_MS) {
+      this.lost("silent: our announce was not echoed");
+      return;
+    }
     const every = this.missing() ? IDLE_ANNOUNCE_MS : ANNOUNCE_MS;
     if (now - this.lastAnnounce >= every || (this.reannounceAt && now >= this.reannounceAt)) this.announce();
     for (const [id, p] of this.pending) {

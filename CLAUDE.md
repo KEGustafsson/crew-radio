@@ -242,14 +242,19 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   below API 33), checked against RFC 7748/8032. Destination `crewradio.channel.<tag>`,
   `ChannelCrypto.reticulumTag` = first 8 bytes of HMAC(packet key, "CrewRadio reticulum v1") in hex;
   identity fresh per session. `ReticulumNode` (pure, tested over a fake medium) announces on connect
-  and every 10 min, every 2 min while somebody is missing (`missing()`: no confirmed link, or fewer
+  and every 10 min, every 30 s while somebody is missing (`missing()`: no confirmed link, or fewer
   than the peers known; an accepted link does not say whose it is, so a count is all there is); the
   lower destination hash dials, the other re-announces for a newcomer, and for any known node while
   somebody is missing (a reconnect announce otherwise reached only the side that does not dial, and
   nothing happened for up to 10 min); a dropped connection keeps each linked peer as fresh as its
   link (`disconnected()`/`drop()`, like `forget`), so the dialler redials at once; in the plugin,
   every confirmed link silent with no frame at all from the node for 12 s = the connection is dead
-  and re-opened (Node has no `TCP_USER_TIMEOUT`, and TCP retransmits for ~15 min). A link
+  and re-opened (Node has no `TCP_USER_TIMEOUT`, and TCP retransmits for ~15 min), and so is,
+  with no link at all, an announce followed by 12 s without a frame on a connection that has
+  echoed one before (rnsd sends each announce back to its sender within a second; a connection
+  that stays open and carries nothing otherwise kept a lone plugin deaf until it was restarted,
+  reproduced against rnsd 1.5.4 on 2026-09-28; only after a first echo, so a node that never
+  echoes costs at most one reconnect). A link
   carries NOTHING until the far end's key proof checks out: `Carry.keyProof` = `0x80 | HMAC-SHA256(
   ChannelCrypto.reticulumConfirmKey, role | link id)`, role 1 = the dialler, sent when the link comes
   up and every 2 s while unanswered (the confirmed end answers a resend with its own). Bound to the

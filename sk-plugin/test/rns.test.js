@@ -278,14 +278,20 @@ test("carry: whole, two and three parts; a lost or reordered part drops only tha
 
 /** A broadcast medium: every frame one socket writes reaches every other socket, as on one LoRa channel or one hub segment. */
 class Medium {
-  constructor() { this.socks = new Set(); this.refuse = false; }
+  // echo: every write comes back to its writer too, as rnsd sends a lone node's announces back.
+  // black: the connections stay open and carry nothing, a wedged hub or middlebox.
+  constructor() { this.socks = new Set(); this.refuse = false; this.echo = false; this.black = false; }
   connect() {
     if (this.refuse) throw new Error("refused");
     const medium = this;
     const s = Object.assign(new EventEmitter(), {
       destroyed: false,
       setNoDelay() {},
-      write(buf) { for (const o of medium.socks) if (o !== s && !o.destroyed) o.emit("data", Buffer.from(buf)); return true; },
+      write(buf) {
+        if (medium.black) return true;
+        for (const o of medium.socks) if ((o !== s || medium.echo) && !o.destroyed) o.emit("data", Buffer.from(buf));
+        return true;
+      },
       destroy() { this.destroyed = true; medium.socks.delete(s); },
       end() { this.destroy(); },
     });
@@ -575,7 +581,51 @@ test("transport: every link silent and nothing from the node either: the connect
   b.stop();
 });
 
-test("transport: while somebody is missing it announces every two minutes and answers a known node's announce", async () => {
+test("transport: alone, an announce the transport node does not echo means the connection is dead", async () => {
+  let t = 4_000_000;
+  const medium = new Medium();
+  medium.echo = true;
+  const { a } = pair(medium, "3737373737373737", () => t);
+  a.start();
+  await settle();
+  assert.equal(a.echoes, true, "the connect announce came back");
+  const first = a.sock;
+  // Echoed: quiet as it is, the connection is fine.
+  for (let i = 0; i < 3; i++) { t += IDLE_ANNOUNCE_MS; a.tick(); await settle(); }
+  assert.equal(a.sock, first);
+  assert.equal(a.connected, true);
+  // It stops carrying anything: the next announce goes unanswered, and STALE_MS later it is dead.
+  medium.black = true;
+  t += IDLE_ANNOUNCE_MS; a.tick(); await settle();
+  t += STALE_MS; a.tick();
+  assert.equal(a.connected, true, "not before STALE_MS");
+  t += 1; a.tick();
+  assert.equal(a.connected, false, "taken for dead");
+  // Reopened, it announces; the answer is what arms the rule again.
+  medium.black = false;
+  await new Promise((r) => setTimeout(r, 1100));
+  await settle();
+  assert.notEqual(a.sock, first);
+  assert.equal(a.connected, true);
+  assert.equal(a.echoes, true);
+  a.stop();
+});
+
+test("transport: a transport node that never echoes an announce is not taken for dead", async () => {
+  let t = 5_000_000;
+  const medium = new Medium();
+  const { a } = pair(medium, "3838383838383838", () => t);
+  a.start();
+  await settle();
+  const first = a.sock;
+  for (let i = 0; i < 4; i++) { t += IDLE_ANNOUNCE_MS; a.tick(); t += STALE_MS + 1; a.tick(); }
+  assert.equal(a.echoes, false);
+  assert.equal(a.sock, first);
+  assert.equal(a.connected, true);
+  a.stop();
+});
+
+test("transport: while somebody is missing it announces every half minute and answers a known node's announce", async () => {
   let t = 3_000_000;
   const medium = new Medium();
   const { a, b } = pair(medium, "3535353535353535", () => t);

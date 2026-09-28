@@ -156,12 +156,14 @@ dependency), not taken from the reference implementation, and checked against it
   copies the public name hash and links in gets nothing, and a sealed packet copied from elsewhere
   proves nothing. Announces and link requests beyond 10 a second are not checked at all, so a
   flood costs the server no signature work. The identity is new at every start.
-- **Finding each other again.** The plugin announces every 10 minutes, and every 2 minutes while
+- **Finding each other again.** The plugin announces every 10 minutes, and every 30 seconds while
   somebody is missing (no link at all, or fewer links than the nodes it knows), so after the
   boat's internet or a hub restart, or a phone that went away and came back, links re-form within
-  a couple of minutes at most, usually seconds. A connection that has gone dead without a word
-  (every link silent and nothing at all from the transport node for 12 s) is opened again rather
-  than left to TCP, which would retransmit into it for a quarter of an hour.
+  half a minute at most, usually seconds. A connection that has gone dead without a word is opened
+  again rather than left to TCP, which would retransmit into it for a quarter of an hour: every
+  link silent and nothing at all from the transport node for 12 s, or, with no link at all, an
+  announce the transport node does not send back within 12 s (it sends every one back, so a
+  missing echo means the connection carries nothing).
 - **Relaying.** A first, authentic copy heard on the LAN goes on to Reticulum and the other way,
   ttl lowered by one, as a phone relays between its transports. A phone ashore shows on the
   roster with the Reticulum flag.

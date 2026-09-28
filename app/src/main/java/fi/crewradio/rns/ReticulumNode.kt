@@ -11,7 +11,8 @@ package fi.crewradio.rns
  *    ([fi.crewradio.ChannelCrypto.reticulumTag]); the identity is made fresh for each session.
  *  - We announce on connect and every [ANNOUNCE_MS], or every [IDLE_ANNOUNCE_MS] while somebody
  *    is missing ([missing]: no confirmed link, or fewer than the peers we know), so a transport
- *    node that lost our path or a peer that forgot us learns of us in minutes, not ten. Of two
+ *    node that lost our path, a peer that forgot us, or one whose announce was lost on the way
+ *    (it reached the hub while the boat's uplink was down) learns of us within half a minute. Of two
  *    nodes the one whose destination hash sorts lower dials; the other answers the announce of a
  *    newcomer, or of anyone while somebody is missing, with its own, soon.
  *  - A link carries nothing but the two ends' key proofs ([Carry.keyProof], under [confirmKey])
@@ -492,7 +493,7 @@ internal class ReticulumNode(
 
     companion object {
         const val ANNOUNCE_MS = 10 * 60_000L
-        const val IDLE_ANNOUNCE_MS = 2 * 60_000L
+        const val IDLE_ANNOUNCE_MS = 30_000L
         const val REANNOUNCE_MS = 3_000L
         const val LINK_TIMEOUT_MS = 10_000L
         const val STALE_MS = 12_000L
