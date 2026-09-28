@@ -163,7 +163,9 @@ dependency), not taken from the reference implementation, and checked against it
   again rather than left to TCP, which would retransmit into it for a quarter of an hour: every
   link silent and nothing at all from the transport node for 12 s, or, with no link at all, an
   announce the transport node does not send back within 12 s (it sends every one back, so a
-  missing echo means the connection carries nothing).
+  missing echo means the connection carries nothing). That second rule applies only once the
+  connection has echoed an announce: a transport node that never echoes is left connected, so
+  it cannot cause a reconnect loop.
 - **Relaying.** A first, authentic copy heard on the LAN goes on to Reticulum and the other way,
   ttl lowered by one, as a phone relays between its transports. A phone ashore shows on the
   roster with the Reticulum flag.
