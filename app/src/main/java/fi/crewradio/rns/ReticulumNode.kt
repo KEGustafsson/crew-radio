@@ -9,11 +9,18 @@ package fi.crewradio.rns
  *
  *  - Our destination is `crewradio.channel.<tag>`, the tag from the packet key
  *    ([fi.crewradio.ChannelCrypto.reticulumTag]); the identity is made fresh for each session.
- *  - We announce on connect and every [ANNOUNCE_MS], or every [IDLE_ANNOUNCE_MS] while somebody
- *    is missing ([missing]: no confirmed link, or fewer than the peers we know), so a transport
- *    node that lost our path or a peer that forgot us learns of us in minutes, not ten. Of two
- *    nodes the one whose destination hash sorts lower dials; the other answers the announce of a
- *    newcomer, or of anyone while somebody is missing, with its own, soon.
+ *  - Announces stay within the transport nodes' budget ([AnnounceBudget]: rnsd with transport on
+ *    passes a destination's announces on at most about once an hour after the first six; the
+ *    rest go no further than its own path table). So we announce on connect (a new identity
+ *    always has budget), and again every [IDLE_ANNOUNCE_MS] while we have no link at all and the
+ *    budget has room to spare; never in answer to somebody else's, never as a refresh while
+ *    linked. Of two nodes the one whose destination hash sorts lower dials; the other, on hearing
+ *    a node it did not know (or any node while it has no link at all), cannot count on being
+ *    heard in turn: when nothing has dialled it [FALLBACK_MS] later, it dials the newcomer itself
+ *    and redials it from then on as its dialler would. Answering with an announce was the first
+ *    design; rnsd blocks that once a node has announced six times in an hour, and a node alone on
+ *    a hub for twelve minutes could then not be found until it restarted (reproduced against
+ *    rnsd 1.5.4, whose defaults these are).
  *  - A link carries nothing but the two ends' key proofs ([Carry.keyProof], under [confirmKey])
  *    until the far end's has checked out, so a stranger who copies our public name hash and links
  *    in learns nothing but that we exist, and a sealed packet copied from elsewhere proves nothing.
@@ -34,8 +41,7 @@ internal class ReticulumNode(
     private val write: (ByteArray) -> Unit,
     private val onLinks: (Int) -> Unit = {},
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
-    val identity: RnsIdentity = RnsIdentity.generate(),
-    private val jitter: () -> Long = { 500L + (Math.random() * 1500).toLong() }
+    val identity: RnsIdentity = RnsIdentity.generate()
 ) {
     /** One link's state; the transport hands it to the engine as the packet's `link`. */
     inner class Entry(val link: RnsLink, val peer: String?) {
@@ -68,6 +74,11 @@ internal class ReticulumNode(
         var dialAt = 0L
         var backoffMs = 1000L
         var link: Entry? = null
+        /** We dial it although its hash sorts lower: it had not heard us, so it was never going to. */
+        var takeover = false
+        /** When to take over, if nothing has dialled us by then ([acceptedMark] tells). */
+        var fallbackAt = 0L
+        var acceptedMark = 0
     }
 
     private class Pending(val request: RnsLink.Request, val peer: String, val sentAt: Long)
@@ -146,7 +157,9 @@ internal class ReticulumNode(
     private val pending = HashMap<String, Pending>()
     private var connected = false
     private var lastAnnounce = 0L
-    private var reannounceAt = 0L
+    private val announceBudget = AnnounceBudget()
+    /** Links others dialled that proved the key: a newcomer that did dial us shows here. */
+    private var acceptedConfirmed = 0
     private val questions = HashMap<Int, Question>()
     private var nextQuestion = (Math.random() * 65536).toInt()
 
@@ -161,9 +174,10 @@ internal class ReticulumNode(
     @Synchronized internal fun peerSeenAt(peerDestination: ByteArray): Long? = peers[peerDestination.toHex()]?.seenAt
     @Synchronized internal fun peerEmitted(peerDestination: ByteArray): Long? = peers[peerDestination.toHex()]?.emitted
     @Synchronized internal fun budgetLeft(): Pair<Double, Double> = announceGate.left() to requestGate.left()
-    /** For tests: when we last announced, and whether an answering announce is due. */
+    /** For tests: when we last announced, the budget's violations, and whether we took over dialling a peer. */
     @get:Synchronized internal val announcedAt: Long get() = lastAnnounce
-    @get:Synchronized internal val reannounceDue: Boolean get() = reannounceAt != 0L
+    @get:Synchronized internal val announceViolations: Int get() = announceBudget.violations
+    @Synchronized internal fun tookOver(peerDestination: ByteArray): Boolean? = peers[peerDestination.toHex()]?.takeover
 
     /** The transport node is reachable: announce at once. */
     @Synchronized fun connected() {
@@ -283,10 +297,11 @@ internal class ReticulumNode(
             // A newer announce while our link to it has gone quiet: it reconnected, that link is dead.
             peer.link?.let { if (clock() - it.lastIn > 3000) close(it) }
             if (peer.link == null && !pendingFor(key)) { peer.dialAt = 0; linkTo(key, peer) }
-        } else if (fresh || missing()) {
-            // It dials us, but first it has to hear of us. A node we already knew too, while somebody
-            // is missing: it may be the one that forgot us, and nothing else would tell it.
-            reannounceAt = maxOf(reannounceAt, lastAnnounce + REANNOUNCE_MS, clock() + jitter())
+        } else if ((fresh || linkCount == 0) && peer.link == null && !pendingFor(key)) {
+            // It dials us only if it has heard us, and a transport node may have stopped passing our
+            // announces on. Give it FALLBACK_MS; a link that proves the key meanwhile is taken for its.
+            peer.fallbackAt = clock() + FALLBACK_MS
+            peer.acceptedMark = acceptedConfirmed
         }
     }
 
@@ -355,6 +370,7 @@ internal class ReticulumNode(
             return
         }
         e.confirmed = true
+        if (e.peer == null) acceptedConfirmed++
         linksChanged()
     }
 
@@ -447,17 +463,18 @@ internal class ReticulumNode(
 
     private fun linksChanged() = onLinks(linkCount)
 
+    /** Always on connect: the transport node's path table needs it even when it passes it on no further. */
     private fun announce() {
         val (dest, data) = RnsIdentity.buildAnnounce(identity, nameHash)
         write(RnsPacket.encode(RnsPacket.ANNOUNCE, RnsPacket.SINGLE, dest, data = data))
         lastAnnounce = clock()
-        reannounceAt = 0
+        announceBudget.record(lastAnnounce)
     }
 
     /**
      * Somebody is missing: no confirmed link at all, or fewer than the peers we know. A link we
      * answered does not say whose it is, so the count is all there is to go on; a peer that left
-     * counts as missing until it is forgotten.
+     * counts as missing until it is forgotten. For tests and diagnostics.
      */
     @Synchronized internal fun missing(): Boolean {
         val n = linkCount
@@ -468,8 +485,12 @@ internal class ReticulumNode(
     @Synchronized fun tick() {
         if (!connected) return
         val now = clock()
-        val every = if (missing()) IDLE_ANNOUNCE_MS else ANNOUNCE_MS
-        if (now - lastAnnounce >= every || (reannounceAt != 0L && now >= reannounceAt)) announce()
+        // Alone: say so again now and then, while the transport node would still pass it on with
+        // some to spare. Linked: nothing, the links say all there is to say.
+        if (linkCount == 0 && now - lastAnnounce >= IDLE_ANNOUNCE_MS) {
+            val (passes, violations) = announceBudget.peek(now)
+            if (passes && violations <= announceBudget.grace - RATE_RESERVE) announce()
+        }
         val expired = pending.entries.filter { now - it.value.sentAt >= LINK_TIMEOUT_MS }
         for ((id, p) in expired) {
             pending.remove(id)
@@ -483,17 +504,27 @@ internal class ReticulumNode(
         while (it.hasNext()) {
             val (key, peer) = it.next()
             if (peer.link == null && now - peer.seenAt > PEER_FORGET_MS) { it.remove(); continue }
-            // Redial while it is still announcing (every ANNOUNCE_MS); after that its next announce does it.
-            if (peer.link == null && weDial(peer.announce.destination) && !pendingFor(key) && now >= peer.dialAt &&
-                now - peer.seenAt < ANNOUNCE_MS + 60_000
-            ) linkTo(key, peer)
+            if (peer.link != null || pendingFor(key)) { peer.fallbackAt = 0; continue }
+            if (peer.fallbackAt != 0L && now >= peer.fallbackAt) {
+                peer.fallbackAt = 0
+                // Nothing has dialled us since we heard it: it has not heard us, so we dial, now and on every redial.
+                if (acceptedConfirmed == peer.acceptedMark) { peer.takeover = true; peer.dialAt = 0 }
+            }
+            // Redial for a while after it was last heard; after that its next announce does it.
+            val dialler = weDial(peer.announce.destination) || peer.takeover
+            if (dialler && now >= peer.dialAt && now - peer.seenAt < REDIAL_MS) linkTo(key, peer)
         }
     }
 
     companion object {
-        const val ANNOUNCE_MS = 10 * 60_000L
-        const val IDLE_ANNOUNCE_MS = 2 * 60_000L
-        const val REANNOUNCE_MS = 3_000L
+        /** Again while we have no link at all, when the announce budget has room to spare. */
+        const val IDLE_ANNOUNCE_MS = 5 * 60_000L
+        /** A newcomer that has not dialled us by then is dialled by us. */
+        const val FALLBACK_MS = 5_000L
+        /** A peer whose link dropped is redialled this long after it was last heard. */
+        const val REDIAL_MS = 11 * 60_000L
+        /** Announces the idle repeat leaves unspent, for reconnects. */
+        const val RATE_RESERVE = 2
         const val LINK_TIMEOUT_MS = 10_000L
         const val STALE_MS = 12_000L
         const val CONFIRM_MS = 15_000L
@@ -502,7 +533,7 @@ internal class ReticulumNode(
         const val GATE_BURST = 20
         private const val VERIFIED_MAX = 256
         private const val PER_SECOND = 10
-        const val PEER_FORGET_MS = 3 * ANNOUNCE_MS
+        const val PEER_FORGET_MS = 30 * 60_000L
         const val MAX_LINKS = 32
         const val MAX_PEERS = 64
         private const val RATE = 400

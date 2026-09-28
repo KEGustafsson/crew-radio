@@ -157,11 +157,13 @@ the two to the same bytes, and its values were checked against the reference imp
   end plus `Carry`, the one-byte framing of a channel packet inside a link (a PCM frame goes in two
   parts, the 431-byte link payload being smaller).
 - `ReticulumNode` is the protocol without the socket, pure and tested over a fake medium: it
-  announces `crewradio.channel.<tag>` (the tag from `ChannelCrypto.reticulumTag`) on connect and
-  every ten minutes, or every two while somebody is missing (no confirmed link, or fewer than the
-  peers it knows), so a transport node whose uplink bounced, or a peer that forgot us, hears of us
-  again in minutes; of two nodes the lower destination hash dials and the other answers a
-  newcomer's announce with its own, and any known node's while somebody is missing. A dropped
+  announces `crewradio.channel.<tag>` (the tag from `ChannelCrypto.reticulumTag`) on connect, and
+  again every five minutes only while it has no link at all and the transport nodes' announce
+  budget has room to spare. rnsd with transport on passes a destination's announces on at most
+  about once an hour after the first six (its default, mirrored by `AnnounceBudget`), so an
+  announce is something a newcomer makes, not an answer. Of two nodes the lower destination hash
+  dials; the other, on hearing a newcomer, waits five seconds and dials it itself when nothing has
+  dialled in meanwhile (the newcomer may never hear it). A dropped
   connection keeps each linked peer as fresh as its link, so the dialler redials it the moment the
   connection is back. (The plugin also re-opens a connection when every link falls silent and
   nothing at all arrives from the node, since Node cannot set `TCP_USER_TIMEOUT`.) A link carries nothing until the far end's key proof has

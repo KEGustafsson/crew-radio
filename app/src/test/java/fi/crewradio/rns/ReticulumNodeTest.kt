@@ -19,7 +19,7 @@ class ReticulumNodeTest {
 
     private fun node(tag: String = "a2ddc18dee75e2bd", confirmKey: ByteArray = crewKey): ReticulumNode {
         lateinit var n: ReticulumNode
-        n = ReticulumNode(tag, confirmKey, write = { raw -> queue.addLast(n to raw) }, clock = { now }, jitter = { 0 })
+        n = ReticulumNode(tag, confirmKey, write = { raw -> queue.addLast(n to raw) }, clock = { now })
         nodes.add(n)
         inbox[n] = ArrayList()
         return n
@@ -385,37 +385,69 @@ class ReticulumNodeTest {
     }
 
     @Test
-    fun whileSomebodyIsMissingItAnnouncesEveryTwoMinutesAndAnswersAKnownNodesAnnounce() {
+    fun itAnnouncesOnConnectAgainWhileAloneWithBudgetToSpareNeverWhileLinkedAndNeverInAnswer() {
         val alone = node("3535353535353535")
         alone.connected(); queue.clear()
         val first = alone.announcedAt
         now += ReticulumNode.IDLE_ANNOUNCE_MS - 1000; alone.tick()
         assertEquals("not yet", first, alone.announcedAt)
-        now += 1000; alone.tick(); queue.clear()
-        assertEquals("alone: every IDLE_ANNOUNCE_MS", now, alone.announcedAt)
+        val made = ArrayList<Boolean>()
+        repeat(5) {
+            now += 1000; alone.tick(); made += alone.announcedAt == now
+            now += ReticulumNode.IDLE_ANNOUNCE_MS - 1000
+        }
+        queue.clear()
+        assertEquals("three more, and two left for reconnects", listOf(true, true, true, false, false), made)
+        assertEquals(3, alone.announceViolations)
         nodes.clear(); inbox.clear(); queue.clear()
+        // Linked: b's announce on connecting was all it took (a dialled); b did not answer a's, and
+        // neither announces again while the link lasts (the hellos keep it fresh).
         val (a, b) = linked("3636363636363636")
-        assertFalse(a.missing())
-        assertFalse(b.missing())
-        // Everybody linked: back to every ANNOUNCE_MS (the hellos keep the link fresh meanwhile).
-        now += ReticulumNode.REANNOUNCE_MS; a.tick(); b.tick(); settle()   // b's answer to a newcomer, spent
-        val linkedAt = b.announcedAt
+        val aAt = a.announcedAt
+        val bAt = b.announcedAt
         repeat((ReticulumNode.IDLE_ANNOUNCE_MS / 10_000).toInt() + 1) {
             now += 10_000
             val hello = sealed(Packet.Codec.HELLO, Hello("A", 8, 4, 1).encode(), it + 1)
             a.send(hello, null); b.send(hello, null); settle()
             a.tick(); b.tick(); settle()
         }
-        assertEquals(linkedAt, b.announcedAt)
-        // b, which does not dial, loses the link: a's next announce is answered, although a is not
-        // new to it, so a, which dials, hears of b again at once rather than in ten minutes.
-        b.disconnected(); b.connected(); queue.clear()
-        assertTrue(b.missing())
-        now += 5000; b.tick(); queue.clear()                      // the announce on connecting is spent
-        assertFalse(b.reannounceDue)
-        val (d, data) = RnsIdentity.buildAnnounce(a.identity, a.nameHash)
-        b.onFrame(RnsPacket.encode(RnsPacket.ANNOUNCE, RnsPacket.SINGLE, d, data = data))
-        assertTrue("an announce is due", b.reannounceDue)
+        assertEquals(1, a.linkCount)
+        assertEquals(aAt, a.announcedAt)
+        assertEquals(bAt, b.announcedAt)
+    }
+
+    @Test
+    fun aNewcomerThatHasNotHeardUsIsDialledByUsAfterTheFallbackAndRedialled() {
+        val x = node("3a3a3a3a3a3a3a3a")
+        val y = node("3a3a3a3a3a3a3a3a")
+        val (a, b) = if (compare(x.destination, y.destination) < 0) x to y else y to x
+        b.connected(); queue.clear()                                   // b was there first: its announce reached nobody
+        a.connected(); settle()
+        assertFalse("a never heard b", a.knows(b.destination))
+        assertTrue(b.knows(a.destination))
+        now += ReticulumNode.FALLBACK_MS - 1; b.tick(); settle()
+        assertEquals("not yet: a might still dial", 0, b.linkCount)
+        now += 1; b.tick(); settle()
+        assertEquals("b dialled a instead", 1, b.linkCount)
+        assertEquals(1, a.linkCount)
+        assertEquals(true, b.tookOver(a.destination))
+        // The connection drops and comes back (both announces lost): b redials a, as a dialler would.
+        a.disconnected(); b.disconnected(); a.connected(); b.connected(); queue.clear()
+        now += 1000; b.tick(); settle()
+        assertEquals("redialled", 1, b.linkCount)
+
+        // d is alone and c comes; this time d's next announce reaches c, which dials d itself.
+        nodes.clear(); inbox.clear(); queue.clear()
+        val p = node("3b3b3b3b3b3b3b3b")
+        val q = node("3b3b3b3b3b3b3b3b")
+        val (c, d) = if (compare(p.destination, q.destination) < 0) p to q else q to p
+        d.connected(); queue.clear()
+        c.connected(); settle()                                        // d heard c
+        d.disconnected(); d.connected(); settle()                      // d's reconnect announce reaches c
+        assertEquals("c dialled d", 1, d.linkCount)
+        now += ReticulumNode.FALLBACK_MS; d.tick(); settle()
+        assertEquals("d dialled nobody: the link that came is taken for c's", 1, d.entries().size)
+        assertEquals(false, d.tookOver(c.destination))
     }
 
     @Test
@@ -424,13 +456,13 @@ class ReticulumNodeTest {
         assertEquals(1, a.linkCount)
         val heard = a.peerSeenAt(b.destination)!!
         // The link carried traffic for a long while after b's last announce, then the connection dropped.
-        repeat(((ReticulumNode.ANNOUNCE_MS + 60_000) / 10_000).toInt() + 1) {
+        repeat(((ReticulumNode.REDIAL_MS + 60_000) / 10_000).toInt() + 1) {
             now += 10_000
             b.send(sealed(Packet.Codec.HELLO, Hello("B", 8, 4, 1).encode(), it + 1), null); settle()
             a.tick(); b.tick(); settle()
         }
         a.disconnected(); b.disconnected(); queue.clear()
-        assertTrue("as fresh as the link, not as its announce", a.peerSeenAt(b.destination)!! > heard + ReticulumNode.ANNOUNCE_MS)
+        assertTrue("as fresh as the link, not as its announce", a.peerSeenAt(b.destination)!! > heard + ReticulumNode.REDIAL_MS)
         a.connected(); b.connected(); queue.clear()                // the announces of reconnecting, lost
         now += 1000; a.tick(); settle()
         assertEquals("redialled without waiting for b's next announce", 1, a.linkCount)

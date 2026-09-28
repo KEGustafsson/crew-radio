@@ -10,7 +10,7 @@ const I = require("../lib/rns/identity");
 const L = require("../lib/rns/link");
 const Carry = require("../lib/rns/carry");
 const Ask = require("../lib/rns/ask");
-const { ReticulumTransport, ANNOUNCE_MS, IDLE_ANNOUNCE_MS, STALE_MS, CONFIRM_MS, LINK_TIMEOUT_MS, GRACE_MS, STABLE_MS, GATE_BURST } = require("../lib/rns/transport");
+const { ReticulumTransport, AnnounceBudget, IDLE_ANNOUNCE_MS, FALLBACK_MS, REDIAL_MS, RATE_TARGET_MS, RATE_GRACE, STALE_MS, CONFIRM_MS, LINK_TIMEOUT_MS, GRACE_MS, STABLE_MS, GATE_BURST } = require("../lib/rns/transport");
 const { ChannelCrypto } = require("../lib/crypto");
 const CP = require("../lib/packet");
 
@@ -278,14 +278,20 @@ test("carry: whole, two and three parts; a lost or reordered part drops only tha
 
 /** A broadcast medium: every frame one socket writes reaches every other socket, as on one LoRa channel or one hub segment. */
 class Medium {
-  constructor() { this.socks = new Set(); this.refuse = false; }
+  // echo: every write comes back to its writer too, as rnsd sends a lone node's announces back.
+  // black: the connections stay open and carry nothing, a wedged hub or middlebox.
+  constructor() { this.socks = new Set(); this.refuse = false; this.echo = false; this.black = false; }
   connect() {
     if (this.refuse) throw new Error("refused");
     const medium = this;
     const s = Object.assign(new EventEmitter(), {
       destroyed: false,
       setNoDelay() {},
-      write(buf) { for (const o of medium.socks) if (o !== s && !o.destroyed) o.emit("data", Buffer.from(buf)); return true; },
+      write(buf) {
+        if (medium.black) return true;
+        for (const o of medium.socks) if ((o !== s || medium.echo) && !o.destroyed) o.emit("data", Buffer.from(buf));
+        return true;
+      },
       destroy() { this.destroyed = true; medium.socks.delete(s); },
       end() { this.destroy(); },
     });
@@ -326,7 +332,7 @@ test("transport: two nodes find each other, link, prove the key to each other an
   // b heard a's announce first or second; either way one announce round later they are linked.
   b.tick();
   a.tick();
-  b.reannounceAt = 1; b.tick();
+  b.tick();
   await settle();
   assert.equal(a.linkCount, 1, "each end's key proof checked out at the other");
   assert.equal(b.linkCount, 1);
@@ -362,7 +368,7 @@ test("transport: a stranger who copies the name hash gets and passes nothing, ho
   stranger.start();
   await settle();
   mine.tick(); stranger.tick();
-  mine.reannounceAt = 1; stranger.reannounceAt = 1; mine.tick(); stranger.tick();
+  mine.tick(); stranger.tick();
   await settle();
   assert.equal(mine.links.size, 1, "linked");
   const first = [...mine.links.keys()][0];
@@ -393,7 +399,7 @@ test("transport: a question on a confirmed link reaches the plugin once, its ans
   a.start();
   b.start();
   await settle();
-  b.tick(); a.tick(); b.reannounceAt = 1; b.tick();
+  b.tick(); a.tick(); b.tick();
   await settle();
   assert.equal(a.linkCount, 1);
   // b plays the plugin; a plays the phone, whose own answers arrive as parts on its side.
@@ -444,7 +450,7 @@ test("transport: a question on a link that has not proved the key is dropped unr
   a.start();
   b.start();
   await settle();
-  b.tick(); a.tick(); b.reannounceAt = 1; b.tick();
+  b.tick(); a.tick(); b.tick();
   await settle();
   assert.equal(a.links.size, 1);
   for (const n of [a, b]) {
@@ -470,7 +476,7 @@ test("transport: a key proof lost on the way is sent again, and the ends still c
   a.start();
   b.start();
   await settle();
-  b.tick(); a.tick(); b.reannounceAt = 1; b.tick();
+  b.tick(); a.tick(); b.tick();
   await settle();
   assert.equal(a.linkCount + b.linkCount, 0);
   // Both resend; the end that confirms first answers the other's next resend with its own again.
@@ -517,7 +523,7 @@ test("transport: silent links are closed, the dialler redials, unproven requests
   a.start();
   b.start();
   await settle();
-  b.reannounceAt = 1; b.tick(); a.tick();
+  b.tick(); a.tick();
   await settle();
   assert.equal(a.linkCount, 1);
   // A link that goes silent is dropped, at both ends, while the transport node itself still
@@ -551,7 +557,7 @@ test("transport: every link silent and nothing from the node either: the connect
   a.start();
   b.start();
   await settle();
-  b.reannounceAt = 1; b.tick(); a.tick();
+  b.tick(); a.tick();
   await settle();
   assert.equal(a.linkCount, 1);
   const first = a.sock;
@@ -566,7 +572,7 @@ test("transport: every link silent and nothing from the node either: the connect
   await settle();
   assert.notEqual(a.sock, first);
   assert.equal(a.connected, true);
-  t += 1000; b.tick(); a.tick(); b.reannounceAt = 1; b.tick(); a.reannounceAt = 1; a.tick();
+  t += 1000; b.tick(); a.tick(); b.tick(); a.tick();
   await settle();
   t += 3000; a.tick(); b.tick();
   await settle();
@@ -575,40 +581,192 @@ test("transport: every link silent and nothing from the node either: the connect
   b.stop();
 });
 
-test("transport: while somebody is missing it announces every two minutes and answers a known node's announce", async () => {
+test("transport: alone, an announce the transport node does not echo means the connection is dead", async () => {
+  let t = 4_000_000;
+  const medium = new Medium();
+  medium.echo = true;
+  const { a } = pair(medium, "3737373737373737", () => t);
+  a.start();
+  await settle();
+  assert.equal(a.echoes, true, "the connect announce came back");
+  const first = a.sock;
+  // Echoed: quiet as it is, the connection is fine.
+  for (let i = 0; i < 2; i++) { t += IDLE_ANNOUNCE_MS; a.tick(); await settle(); }
+  assert.equal(a.lastAnnounce, t, "alone, it announced again");
+  assert.equal(a.sock, first);
+  assert.equal(a.connected, true);
+  // It stops carrying anything: the next announce goes unanswered, and STALE_MS later it is dead.
+  medium.black = true;
+  t += IDLE_ANNOUNCE_MS; a.tick(); await settle();
+  t += STALE_MS; a.tick();
+  assert.equal(a.connected, true, "not before STALE_MS");
+  t += 1; a.tick();
+  assert.equal(a.connected, false, "taken for dead");
+  // Reopened, it announces; the answer is what arms the rule again.
+  medium.black = false;
+  await new Promise((r) => setTimeout(r, 1100));
+  await settle();
+  assert.notEqual(a.sock, first);
+  assert.equal(a.connected, true);
+  assert.equal(a.echoes, true);
+  // Past the budget an announce goes no further than the node, which sends nothing back: no verdict.
+  while (a.expectEcho) { t += 1000; a.announce(); await settle(); }
+  medium.black = true;
+  const second = a.sock;
+  t += STALE_MS + 1; a.tick();
+  assert.equal(a.sock, second);
+  assert.equal(a.connected, true, "an announce the node was never going to pass on proves nothing");
+  a.stop();
+});
+
+test("transport: diagnostics tell a peer heard, who dials, a link, an echo and an announce ignored as older", async () => {
+  let t = 6_000_000;
+  const medium = new Medium();
+  const { a, b } = pair(medium, "3939393939393939", () => t);
+  const lines = [];
+  a.on("debug", (l) => lines.push(l));
+  a.start();
+  b.start();
+  await settle();
+  b.tick(); a.tick();
+  await settle();
+  assert.equal(a.linkCount, 1);
+  const d = a.diagnostics();
+  assert.equal(d.connected, true);
+  assert.equal(d.destination, a.destination.toString("hex").slice(0, 8));
+  assert.equal(d.missing, false);
+  assert.equal(d.peers.length, 1);
+  assert.deepEqual({ ...d.peers[0], heardAgo: 0, emittedAgo: 0 }, { destination: b.destination.toString("hex").slice(0, 8), hops: 1, heardAgo: 0, emittedAgo: 0, weDial: true, takeover: false, linked: true });
+  assert.equal(d.links.length, 1);
+  assert.equal(d.links[0].confirmed, true);
+  assert.ok(lines.some((l) => /heard .* we dial/.test(l)), lines.join("\n"));
+  assert.ok(lines.some((l) => /dialling/.test(l)));
+  assert.ok(lines.some((l) => /confirmed/.test(l)));
+  // b's clock went back an hour: its announce is older than the one already heard, and ignored.
+  const older = I.buildAnnounce(b.identity, b.nameHash, Buffer.alloc(0), undefined, Math.floor(Date.now() / 1000) - 3600);
+  a.onFrame(P.encode({ packetType: P.PacketType.ANNOUNCE, destType: P.DestType.SINGLE, destination: older.destination, data: older.data }));
+  assert.equal(a.diagnostics().stats.older, 1);
+  assert.ok(lines.some((l) => /ignored an announce of .* emitted 3[56]\d\d s before/.test(l)), lines.join("\n"));
+  // Our own announce echoed back is counted.
+  a.onFrame(P.encode({ packetType: P.PacketType.ANNOUNCE, destType: P.DestType.SINGLE, destination: a.destination, data: I.buildAnnounce(a.identity, a.nameHash).data }));
+  assert.equal(a.diagnostics().stats.echoes, 1);
+  assert.equal(a.diagnostics().echoes, true);
+  a.stop();
+  b.stop();
+  assert.equal(a.diagnostics().connected, false);
+});
+
+test("transport: a transport node that never echoes an announce is not taken for dead", async () => {
+  let t = 5_000_000;
+  const medium = new Medium();
+  const { a } = pair(medium, "3838383838383838", () => t);
+  a.start();
+  await settle();
+  const first = a.sock;
+  for (let i = 0; i < 4; i++) { t += IDLE_ANNOUNCE_MS; a.tick(); t += STALE_MS + 1; a.tick(); }
+  assert.equal(a.echoes, false);
+  assert.equal(a.sock, first);
+  assert.equal(a.connected, true);
+  a.stop();
+});
+
+test("transport: the announce budget mirrors rnsd's: six at once, then one an hour", () => {
+  const b = new AnnounceBudget();
+  let t = 0;
+  const passed = [];
+  for (let i = 0; i < 8; i++) { passed.push(b.record(t)); t += 60_000; }
+  assert.deepEqual(passed, [true, true, true, true, true, true, false, false], "the first opens the record, five more are the grace");
+  assert.equal(b.peek(t).passes, false);
+  // An hour after the last one passed, one passes again, and the next one soon after does not.
+  t = 5 * 60_000 + RATE_TARGET_MS + 1;
+  assert.equal(b.peek(t).passes, true);
+  assert.equal(b.record(t), true);
+  assert.equal(b.record(t + 60_000), false);
+  // Spaced an hour apart they always pass, and each one forgives a violation.
+  let u = t + RATE_TARGET_MS * 2;
+  for (let i = 0; i < 6; i++) { assert.equal(b.record(u), true); u += RATE_TARGET_MS; }
+  assert.equal(b.violations, 0);
+  assert.equal(RATE_GRACE, 5);
+});
+
+test("transport: it announces on connecting, again while alone with budget to spare, never while linked and never in answer", async () => {
   let t = 3_000_000;
   const medium = new Medium();
   const { a, b } = pair(medium, "3535353535353535", () => t);
-  const announces = (n) => n.lastAnnounce;
   a.start();
   await settle();
-  const alone = announces(a);
+  const first = a.lastAnnounce;
   t += IDLE_ANNOUNCE_MS - 1000; a.tick();
-  assert.equal(announces(a), alone, "not yet");
-  t += 1000; a.tick();
-  assert.equal(announces(a), t, "alone: every IDLE_ANNOUNCE_MS");
+  assert.equal(a.lastAnnounce, first, "not yet");
+  const times = [];
+  for (let i = 0; i < 5; i++) { t += 1000; a.tick(); times.push(a.lastAnnounce === t ? t : 0); t += IDLE_ANNOUNCE_MS - 1000; }
+  assert.deepEqual(times.map((x) => x > 0), [true, true, true, false, false], "three more, and two left for reconnects");
+  assert.equal(a.announces.violations, 3);
+  // An hour after the last one that passed there is room again.
+  t = times[2] + RATE_TARGET_MS + 1; a.tick();
+  assert.equal(a.lastAnnounce, t);
+  // b comes: its own announce on connecting is all it takes (a dials), and a does not answer it.
+  const before = a.lastAnnounce;
   b.start();
-  await settle();
-  b.reannounceAt = 1; b.tick(); a.tick();
   await settle();
   assert.equal(a.linkCount, 1);
   assert.equal(b.linkCount, 1);
-  const linked = announces(b);
-  t += IDLE_ANNOUNCE_MS + 1000; a.lastRx = t; b.lastRx = t;
-  for (const e of [...a.links.values(), ...b.links.values()]) e.lastIn = t;
-  b.tick();
-  assert.equal(announces(b), linked, "everybody linked: back to every ANNOUNCE_MS");
-  assert.ok(ANNOUNCE_MS > IDLE_ANNOUNCE_MS);
-  // b (which does not dial) knows a but loses the link: a's next announce is answered, although
-  // a is not new to it, so a, which dials, hears of b again at once rather than in ten minutes.
-  for (const e of [...b.links.values()]) b.forget(e);
-  assert.equal(b.missing(), true);
-  b.reannounceAt = 0;
-  a.announce();
-  await settle();
-  assert.ok(b.reannounceAt > 0, "an announce is due");
+  assert.equal(a.lastAnnounce, before, "no answering announce");
+  const bAt = b.lastAnnounce;
+  for (let i = 0; i < 4; i++) {
+    t += IDLE_ANNOUNCE_MS;
+    for (const e of [...a.links.values(), ...b.links.values()]) e.lastIn = t;
+    a.lastRx = t; b.lastRx = t;
+    a.tick(); b.tick();
+  }
+  assert.equal(a.lastAnnounce, before, "linked: no announces");
+  assert.equal(b.lastAnnounce, bAt);
   a.stop();
   b.stop();
+});
+
+test("transport: a newcomer that has not heard us is dialled by us after FALLBACK_MS, and redialled; one that dials is left to it", async () => {
+  let t = 7_000_000;
+  const medium = new Medium();
+  const { a, b } = pair(medium, "3a3a3a3a3a3a3a3a", () => t);
+  // b is there first and alone; a comes later and hears nothing of b (b does not announce in answer).
+  b.start();
+  await settle();
+  a.start();
+  await settle();
+  assert.equal(a.peers.size, 0, "a never heard b");
+  assert.equal(b.peers.size, 1, "b heard a's announce on connecting");
+  t += FALLBACK_MS - 1; b.tick();
+  assert.equal(b.pending.size, 0, "not yet: a might still dial");
+  t += 1; b.tick();
+  await settle();
+  assert.equal(b.linkCount, 1, "b dialled a instead");
+  assert.equal(a.linkCount, 1);
+  assert.equal([...b.peers.values()][0].takeover, true);
+  // The link drops: b redials it, as a dialler would.
+  for (const e of [...b.links.values()]) b.forget(e);
+  for (const e of [...a.links.values()]) a.forget(e);
+  t += 2000; b.tick();
+  await settle();
+  assert.equal(b.linkCount, 1, "redialled");
+  a.stop();
+  b.stop();
+
+  // d is alone and c comes; this time c hears d (an announce that passed) and dials d itself.
+  const { a: c, b: d } = pair(new Medium(), "3b3b3b3b3b3b3b3b", () => t);
+  d.start();
+  await settle();
+  c.start();
+  await settle();
+  d.announce();
+  await settle();
+  assert.equal(d.linkCount, 1, "c dialled d");
+  t += FALLBACK_MS; d.tick();
+  await settle();
+  assert.equal(d.links.size, 1, "d dialled nobody: the link that came is taken for c's");
+  assert.equal([...d.peers.values()][0].takeover, false);
+  c.stop();
+  d.stop();
 });
 
 test("transport: a dropped connection keeps each linked peer as fresh as its link, so the dialler redials it at once", async () => {
@@ -618,13 +776,13 @@ test("transport: a dropped connection keeps each linked peer as fresh as its lin
   a.start();
   b.start();
   await settle();
-  b.reannounceAt = 1; b.tick(); a.tick();
+  b.tick(); a.tick();
   await settle();
   assert.equal(a.linkCount, 1);
   const peer = [...a.peers.values()][0];
   const heard = peer.seenAt;
   // The link carried traffic for a long while after b's last announce, then the connection dropped.
-  t += ANNOUNCE_MS;
+  t += REDIAL_MS;
   for (const e of a.links.values()) e.lastIn = t;
   a.drop();
   assert.equal(peer.seenAt, t, "as fresh as the link, not as its announce");

@@ -587,6 +587,7 @@ class FakeRns extends EventEmitter {
     return this.ready;
   }
   confirm() {}
+  diagnostics() { return { peers: [] }; }
   answer(via, id, message) { (this.answers ??= []).push({ via, id, message }); return true; }
 }
 
@@ -618,13 +619,15 @@ test("Reticulum: off by default; when enabled it starts with the channel's tag a
     const logged = app.log.length;
     r.emit("status", "Reticulum: 2 links");
     assert.equal(app.log.length, logged, "the same line again is not logged again");
+    r.emit("debug", "Reticulum: dialling 01234567");
+    assert.ok(app.log.includes("Reticulum: dialling 01234567"), "the transport's debug lines go to the debug log");
     const router = fakeRouter(true);
     p.registerWithRouter(router);
     const res = fakeRes();
     router.routes["GET /status"]({}, res);
     assert.deepEqual(res.body.reticulum, {
       host: "hub.example", port: 4965, connected: true, links: 2, status: "Reticulum: 2 links",
-      answerQuestions: false, questions: { reads: 0, says: 0, refused: 0 },
+      answerQuestions: false, questions: { reads: 0, says: 0, refused: 0 }, detail: { peers: [] },
     });
     p.stop();
     assert.equal(r.stopped, 1);
