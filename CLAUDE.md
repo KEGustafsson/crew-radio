@@ -9,7 +9,7 @@ flooding relay so multiple transports and multi-hop topologies work.
 ## Stack
 - Android Gradle Plugin 9.4 with its built-in Kotlin (the Kotlin Android plugin is applied nowhere; the root
   build puts Kotlin 2.4 on the build classpath, which is how the built-in compiler is moved past AGP's
-  default), Gradle 9.7, compileSdk 37, minSdk 29, targetSdk 37, JDK 17 (a real toolchain: Gradle
+  default), Gradle 9.8, compileSdk 37, minSdk 29, targetSdk 37, JDK 17 (a real toolchain: Gradle
   will not download one). R8 shrinks release builds with names kept, so crash traces stay readable.
   Dependabot keeps AndroidX current; the toolchain itself (AGP, Kotlin, Gradle majors, compileSdk)
   is moved by hand, since a new AndroidX generation often needs a newer compileSdk or AGP (core 1.19
