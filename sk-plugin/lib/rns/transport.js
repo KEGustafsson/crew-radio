@@ -73,6 +73,12 @@ const CONFIRM_MS = 15_000;             // a link whose far end has not proved th
 const PROOF_RESEND_MS = 2_000;         // our proof again, while the far end's has not arrived
 const GRACE_MS = 5_000;                // a link or request younger than this is never evicted
 const STABLE_MS = 30_000;              // a connection that lasted this long resets the backoff
+// Bytes the socket may hold unsent before the connection counts as dead: the app's send queue of
+// 128 frames, at half a full frame each. Node buffers every write, so an uplink that takes bytes
+// but never gets them out (a marina's congested 4G) would otherwise grow the plugin's memory and
+// the voice's delay without bound, and neither dead-connection rule sees it while frames still
+// arrive from the hub.
+const MAX_BACKLOG_BYTES = 128 * 512;
 const GATE_PER_S = 10;                 // announce checks and link requests we spend a signature on, a second
 const GATE_BURST = 20;
 const VERIFIED_MAX = 256;              // announces remembered as checked
@@ -282,6 +288,11 @@ class ReticulumTransport extends EventEmitter {
 
   write(raw) {
     if (!this.sock || !this.connected) return;
+    if ((this.sock.writableLength ?? 0) > MAX_BACKLOG_BYTES) {
+      // As the app does with a send queue stuck full: closed, and dialled again with the backoff.
+      this.lost(`not sending (${Math.round(this.sock.writableLength / 1024)} KB unsent)`);
+      return;
+    }
     try {
       this.sock.write(P.frame(raw));
     } catch { /* the close event follows */ }
@@ -688,4 +699,4 @@ class ReticulumTransport extends EventEmitter {
   }
 }
 
-module.exports = { ReticulumTransport, AnnounceBudget, IDLE_ANNOUNCE_MS, FALLBACK_MS, REDIAL_MS, RATE_TARGET_MS, RATE_GRACE, LINK_TIMEOUT_MS, STALE_MS, CONFIRM_MS, GRACE_MS, STABLE_MS, GATE_BURST, MAX_LINKS, MAX_PEERS };
+module.exports = { ReticulumTransport, AnnounceBudget, IDLE_ANNOUNCE_MS, FALLBACK_MS, REDIAL_MS, RATE_TARGET_MS, RATE_GRACE, LINK_TIMEOUT_MS, STALE_MS, CONFIRM_MS, GRACE_MS, STABLE_MS, GATE_BURST, MAX_LINKS, MAX_PEERS, MAX_BACKLOG_BYTES };

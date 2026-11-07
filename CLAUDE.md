@@ -263,7 +263,9 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   `TCP_USER_TIMEOUT`, and TCP retransmits for ~15 min), and so is, with no link at all, an announce
   the budget says will pass followed by 12 s without a frame on a connection that has echoed one
   before (rnsd sends each announce it passes on back to its sender within a second; only after a
-  first echo, so a node that never echoes costs at most one reconnect). The plugin's `GET /status`
+  first echo, so a node that never echoes costs at most one reconnect); and, as the app closes a
+  connection whose 128-frame send queue is stuck full, a plugin socket holding over 64 KiB unsent
+  (`MAX_BACKLOG_BYTES`) is closed and redialled, since Node buffers every write without limit. The plugin's `GET /status`
   carries `reticulum.detail` (peers heard, who dials, takeovers, links, budget, echoes, announces
   ignored as older) and its debug log a line per peer heard, dial, link up/down and reconnect. A link
   carries NOTHING until the far end's key proof checks out: `Carry.keyProof` = `0x80 | HMAC-SHA256(
@@ -369,7 +371,8 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   anything under `docs/` would be unreachable and the Webapps card would show a monogram. `lib/packet.js`, `lib/crypto.js` and
   `lib/node.js` mirror `Packet.kt`, `ChannelCrypto.kt`, `Hello.kt` and the engine's roster rules
   byte for byte; `sk-plugin/test/vector.json` and the app's `CrossLanguageVectorTest` check the
-  same packet, so change both when the wire changes. `lib/rns/` mirrors the app's `rns/` package
+  same packet (and its `relayed` copy, ttl 2 against hops 4, so a swap of the two bytes or the
+  wrong one zeroed in the AAD shows), so change both when the wire changes. `lib/rns/` mirrors the app's `rns/` package
   (same design, Node's own crypto) and `lib/node.js` relays between the LAN and Reticulum with the
   app's `relayTtl` rule when the plugin's Reticulum setting is on; `lib/askboat.js` answers the
   app's Ask boat data over those links (above).
