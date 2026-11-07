@@ -842,10 +842,19 @@ test("transport: an uplink that takes bytes and never sends them is closed and d
   assert.equal(r.ready, false);
   assert.equal(r.stats.reconnects, 1);
   assert.match(lines.at(-1), /not sending \(\d+ KB unsent\); retrying in 1 s/);
-  // The next connection, on an uplink that moves again, carries on.
+  assert.equal(r.send(Buffer.alloc(40)), false, "nothing reported sent once it is closed");
+  // The scheduled retry, on an uplink that moves again, carries on.
   medium.stuck = false;
-  clearTimeout(r.retryTimer); r.retryTimer = null; r.dial(); await settle();
+  await new Promise((done) => setTimeout(done, 1100));
+  await settle();
   assert.equal(r.ready, true);
+  assert.notEqual([...medium.socks][0], first);
+  // A stuck socket nothing more is written to is found by the once-a-second tick.
+  const second = [...medium.socks][0];
+  second.writableLength = MAX_BACKLOG_BYTES + 1;
+  r.tick();
+  assert.equal(second.destroyed, true);
+  assert.equal(r.stats.reconnects, 2);
   r.stop();
 });
 

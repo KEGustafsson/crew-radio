@@ -57,8 +57,8 @@ class CrossLanguageVectorTest {
     }
 
     /**
-     * With ttl == hops in the packet above, a parser that swapped the two bytes, or an AAD that
-     * zeroed the hops byte instead of the ttl, would still pass. Here they differ.
+     * With ttl == hops in the packet above, a parser that swapped the two bytes would still pass;
+     * here they differ. It also opens after a relay's rewrite of the ttl, which the AAD leaves out.
      */
     @Test
     fun aRelayedPacketOpensWithItsTtlLeftOutOfTheAad() {

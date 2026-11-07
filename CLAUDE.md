@@ -9,7 +9,7 @@ flooding relay so multiple transports and multi-hop topologies work.
 ## Stack
 - Android Gradle Plugin 9.4 with its built-in Kotlin (the Kotlin Android plugin is applied nowhere; the root
   build puts Kotlin 2.4 on the build classpath, which is how the built-in compiler is moved past AGP's
-  default), Gradle 9.8, compileSdk 37, minSdk 29, targetSdk 37, JDK 17 (a real toolchain: Gradle
+  default), Gradle 9.9, compileSdk 37, minSdk 29, targetSdk 37, JDK 17 (a real toolchain: Gradle
   will not download one). R8 shrinks release builds with names kept, so crash traces stay readable.
   Dependabot keeps AndroidX current; the toolchain itself (AGP, Kotlin, Gradle majors, compileSdk)
   is moved by hand, since a new AndroidX generation often needs a newer compileSdk or AGP (core 1.19
@@ -371,8 +371,8 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   anything under `docs/` would be unreachable and the Webapps card would show a monogram. `lib/packet.js`, `lib/crypto.js` and
   `lib/node.js` mirror `Packet.kt`, `ChannelCrypto.kt`, `Hello.kt` and the engine's roster rules
   byte for byte; `sk-plugin/test/vector.json` and the app's `CrossLanguageVectorTest` check the
-  same packet (and its `relayed` copy, ttl 2 against hops 4, so a swap of the two bytes or the
-  wrong one zeroed in the AAD shows), so change both when the wire changes. `lib/rns/` mirrors the app's `rns/` package
+  same packet (and its `relayed` copy, ttl 2 against hops 4, so a swap of the two bytes shows
+  and the AAD is seen to leave a relay's rewrite out), so change both when the wire changes. `lib/rns/` mirrors the app's `rns/` package
   (same design, Node's own crypto) and `lib/node.js` relays between the LAN and Reticulum with the
   app's `relayTtl` rule when the plugin's Reticulum setting is on; `lib/askboat.js` answers the
   app's Ask boat data over those links (above).

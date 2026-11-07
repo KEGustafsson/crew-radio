@@ -215,11 +215,14 @@ class ReticulumTransport extends EventEmitter {
     let sent = false;
     for (const e of this.links.values()) {
       if (e === except || !e.link.active || !e.confirmed) continue;
-      for (const part of Carry.cut(buf, e.cutId++ & 0xff)) this.write(e.link.dataPacket(part));
-      sent = true;
+      let whole = true;
+      for (const part of Carry.cut(buf, e.cutId++ & 0xff)) whole = this.write(e.link.dataPacket(part)) && whole;
+      sent = sent || whole;
+      if (!this.connected) break;  // The backlog closed the connection mid-way
     }
-    if (sent) this.stats.tx++;
-    return sent;
+    // Sent only where every part went out: not when the backlog closed the connection instead.
+    if (sent && this.connected) this.stats.tx++;
+    return sent && this.connected;
   }
 
   // ---- connection ----
@@ -286,16 +289,28 @@ class ReticulumTransport extends EventEmitter {
     for (const p of this.peers.values()) { p.link = null; p.dialAt = 0; }
   }
 
+  /** One packet framed onto the socket: false when it was not, the connection gone or just closed. */
   write(raw) {
-    if (!this.sock || !this.connected) return;
-    if ((this.sock.writableLength ?? 0) > MAX_BACKLOG_BYTES) {
-      // As the app does with a send queue stuck full: closed, and dialled again with the backoff.
-      this.lost(`not sending (${Math.round(this.sock.writableLength / 1024)} KB unsent)`);
-      return;
-    }
+    if (!this.sock || !this.connected) return false;
+    if (this.backlogged()) return false;
     try {
-      this.sock.write(P.frame(raw));
-    } catch { /* the close event follows */ }
+      this.sock.write(P.frame(raw));  // false only means buffered, which backlogged() bounds
+      return true;
+    } catch {
+      return false;  // The close event follows
+    }
+  }
+
+  /**
+   * True, and the connection closed to be dialled again with the backoff, when the socket holds
+   * more than MAX_BACKLOG_BYTES unsent: as the app does with a send queue stuck full. Checked on
+   * every write and once a second (tick), so a stuck socket nobody writes to is noticed too.
+   */
+  backlogged() {
+    const unsent = this.sock?.writableLength ?? 0;
+    if (unsent <= MAX_BACKLOG_BYTES) return false;
+    this.lost(`not sending (${Math.round(unsent / 1024)} KB unsent)`);
+    return true;
   }
 
   status(line) {
@@ -644,6 +659,7 @@ class ReticulumTransport extends EventEmitter {
   /** Once a second: announces due, requests and links timed out, redials, forgotten peers. */
   tick() {
     if (!this.connected) return;
+    if (this.backlogged()) return;
     const now = this.now();
     // Our last announce went out STALE_MS ago on a connection that echoes them, and nothing at all
     // has come back since: dead, whether or not any link was there to notice.

@@ -8,7 +8,8 @@ All notable changes to signalk-crewradio. The format follows
 ### Fixed
 
 - Reticulum: a connection whose socket holds more than 64 KiB unsent is closed and dialled
-  again, as the app does when its 128-frame send queue is stuck full. Node buffers every write,
+  again (checked on each write and once a second), as the app does when its 128-frame send queue
+  is stuck full; a packet is counted as sent only when every part of it went out. Node buffers every write,
   so an uplink that took bytes but never got them out grew the plugin's memory and the voice's
   delay without bound, and neither dead-connection rule saw it while the hub's frames still came
   in.
@@ -17,7 +18,7 @@ All notable changes to signalk-crewradio. The format follows
 
 - `test/vector.json` has a relayed copy of its packet (the ttl rewritten to 2, hops still 4),
   checked here and by the app's `CrossLanguageVectorTest`: with ttl equal to hops, a parser that
-  swapped the two bytes or an AAD that zeroed the hops byte would have passed.
+  swapped the two bytes would have passed, and the copy opens as a relay forwards it.
 
 ## 0.3.0 - 2026-09-28
 
