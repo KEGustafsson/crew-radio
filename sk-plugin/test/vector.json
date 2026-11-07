@@ -37,5 +37,18 @@
     },
     "plainHex": "020104008606536972697573",
     "packetHex": "50540402040412345678000000076a9dfe80000102030405060708090a0bc145ac43b630a49efbefda586ed1d1a51ee727db88a0dfab0ee4a247"
+  },
+  "relayed": {
+    "comment": "The first packet as it arrives two relays on: the ttl byte rewritten from 4 to 2, nothing resealed. It parses to ttl 2, hops 4 only where the two bytes are not swapped (ttl == hops above hides a swap), and it opens, so a relay's rewrite is left out of the AAD as it must be.",
+    "header": {
+      "codec": 2,
+      "ttl": 2,
+      "hops": 4,
+      "senderId": 305419896,
+      "seq": 7,
+      "time": 1788739200
+    },
+    "plainHex": "020104008606536972697573",
+    "packetHex": "50540402020412345678000000076a9dfe80000102030405060708090a0b00622f484f4a8de723109250e778f788e7f50beb461834130f404b53"
   }
 }

@@ -10,7 +10,7 @@ const I = require("../lib/rns/identity");
 const L = require("../lib/rns/link");
 const Carry = require("../lib/rns/carry");
 const Ask = require("../lib/rns/ask");
-const { ReticulumTransport, AnnounceBudget, IDLE_ANNOUNCE_MS, FALLBACK_MS, REDIAL_MS, RATE_TARGET_MS, RATE_GRACE, STALE_MS, CONFIRM_MS, LINK_TIMEOUT_MS, GRACE_MS, STABLE_MS, GATE_BURST } = require("../lib/rns/transport");
+const { ReticulumTransport, AnnounceBudget, IDLE_ANNOUNCE_MS, FALLBACK_MS, REDIAL_MS, RATE_TARGET_MS, RATE_GRACE, STALE_MS, CONFIRM_MS, LINK_TIMEOUT_MS, GRACE_MS, STABLE_MS, GATE_BURST, MAX_BACKLOG_BYTES } = require("../lib/rns/transport");
 const { ChannelCrypto } = require("../lib/crypto");
 const CP = require("../lib/packet");
 
@@ -287,7 +287,10 @@ class Medium {
     const s = Object.assign(new EventEmitter(), {
       destroyed: false,
       setNoDelay() {},
+      writableLength: 0,
       write(buf) {
+        // stuck: the bytes are taken and never leave, a congested uplink that still delivers
+        if (medium.stuck) { s.writableLength += buf.length; return false; }
         if (medium.black) return true;
         for (const o of medium.socks) if ((o !== s || medium.echo) && !o.destroyed) o.emit("data", Buffer.from(buf));
         return true;
@@ -818,6 +821,41 @@ test("transport: a refused or dropped connection is retried with backoff, reset 
   r.stop();
   assert.equal(r.retryTimer, null);
   assert.throws(() => new ReticulumTransport({ host: "h", port: 1, tag: "4444444444444444" }), /confirmKey/);
+});
+
+test("transport: an uplink that takes bytes and never sends them is closed and dialled again", async () => {
+  const medium = new Medium();
+  const r = new ReticulumTransport({ host: "hub", port: 4242, tag: "4444444444444444", confirmKey: CK, connect: () => medium.connect() });
+  const lines = [];
+  r.on("status", (l) => lines.push(l));
+  r.start();
+  await settle();
+  assert.equal(r.ready, true);
+  const first = [...medium.socks][0];
+  medium.stuck = true;
+  // Announces and keepalives into a socket whose buffer only grows: no more than the cap is held.
+  for (let i = 0; i < 1000 && !first.destroyed; i++) {
+    r.write(Buffer.alloc(400));
+    assert.ok(first.writableLength <= MAX_BACKLOG_BYTES + 2 * 400 + 2, "never far past the cap");
+  }
+  assert.equal(first.destroyed, true);
+  assert.equal(r.ready, false);
+  assert.equal(r.stats.reconnects, 1);
+  assert.match(lines.at(-1), /not sending \(\d+ KB unsent\); retrying in 1 s/);
+  assert.equal(r.send(Buffer.alloc(40)), false, "nothing reported sent once it is closed");
+  // The scheduled retry, on an uplink that moves again, carries on.
+  medium.stuck = false;
+  await new Promise((done) => setTimeout(done, 1100));
+  await settle();
+  assert.equal(r.ready, true);
+  assert.notEqual([...medium.socks][0], first);
+  // A stuck socket nothing more is written to is found by the once-a-second tick.
+  const second = [...medium.socks][0];
+  second.writableLength = MAX_BACKLOG_BYTES + 1;
+  r.tick();
+  assert.equal(second.destroyed, true);
+  assert.equal(r.stats.reconnects, 2);
+  r.stop();
 });
 
 test("transport: full tables make room for the crew by dropping what never proved the key, never what did", async () => {

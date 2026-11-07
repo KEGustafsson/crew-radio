@@ -328,6 +328,10 @@ test("with Reticulum: our packets go both ways, the hello says so, and the node 
   lan.emit("packet", fromLan, { address: "10.0.0.7" });
   assert.equal(rns.sent.length, 2);
   assert.equal(P.parseHeader(rns.sent[1].buf).ttl, 3);
+  // Only the ttl byte changes: the hops byte (the sender's signed budget) and the rest go as sent.
+  const expectedFromLan = Buffer.from(fromLan);
+  expectedFromLan[4] = 3;
+  assert.deepEqual(rns.sent[1].buf, expectedFromLan);
   assert.equal(n.stats.relayed, 1);
 
   // From Reticulum to the LAN, with the unicast copies.
@@ -336,6 +340,9 @@ test("with Reticulum: our packets go both ways, the hello says so, and the node 
   rns.emit("packet", fromRns, via);
   const relayed = lan.sent.at(-1);
   assert.equal(P.parseHeader(relayed.buf).ttl, 3);
+  const expectedFromRns = Buffer.from(fromRns);
+  expectedFromRns[4] = 3;
+  assert.deepEqual(relayed.buf, expectedFromRns);
   assert.deepEqual(relayed.targets, ["10.0.0.7"]);
   assert.equal(rns.sent.length, 2, "nothing goes back into Reticulum");
 

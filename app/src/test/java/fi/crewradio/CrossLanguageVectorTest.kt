@@ -21,6 +21,8 @@ class CrossLanguageVectorTest {
     private val time = 1_788_739_200L
     private val awarePassphrase = "nM6G++UJzXiOghDLRtm8cTjb+OGhA0RZyFWgLSqVip8"
     private val awareIdTagHex = "c5bac4b54dc0db33"
+    /** vector.json's "relayed": the same packet two relays on, its ttl byte rewritten from 4 to 2. */
+    private val relayedHex = "50540402020412345678000000076a9dfe80000102030405060708090a0b00622f484f4a8de723109250e778f788e7f50beb461834130f404b53"
 
     /** The plugin derives from the UTF-8 bytes of the passphrase; so must we, for a key that is not ASCII. */
     private val nonAsciiKey = "Pohjantähti-2026"
@@ -52,6 +54,25 @@ class CrossLanguageVectorTest {
         assertEquals(Hello.LAN, hello.transports)
         assertEquals(4, hello.ttl)
         assertEquals(134, hello.versionCode)
+    }
+
+    /**
+     * With ttl == hops in the packet above, a parser that swapped the two bytes would still pass;
+     * here they differ. It also opens after a relay's rewrite of the ttl, which the AAD leaves out.
+     */
+    @Test
+    fun aRelayedPacketOpensWithItsTtlLeftOutOfTheAad() {
+        val packet = relayedHex.hexToBytes()
+        val h = Packet.parse(packet)
+        assertNotNull(h)
+        assertEquals(2, h!!.ttl)
+        assertEquals(4, h.hops)
+        val plain = TestKeys.crypto.open(Packet.aadOf(packet), packet, Packet.HEADER, packet.size - Packet.HEADER)
+        assertNotNull(plain)
+        assertEquals(plainHex, plain!!.toHex())
+        val sent = packetHex.hexToBytes()
+        sent[4] = 2
+        assertEquals(relayedHex, sent.toHex())
     }
 
     @Test

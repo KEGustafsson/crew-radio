@@ -94,6 +94,25 @@ test("cross-language vector: a packet sealed here opens on the phone, and vice v
   assert.equal(tag.toString("hex"), vector.awareIdTagHex);
 });
 
+test("cross-language vector, relayed: the ttl is rewritten in place and left out of the AAD", () => {
+  const vector = require("./vector.json");
+  const relayed = vector.relayed;
+  const key = ChannelCrypto.forChannelKeySync(vector.channelKey);
+  const packet = Buffer.from(relayed.packetHex, "hex");
+  const header = P.parseHeader(packet);
+  assert.deepEqual(header, relayed.header);
+  assert.ok(header.ttl !== header.hops, "a vector where the two bytes differ");
+  assert.equal(key.open(P.aadOf(packet), packet.subarray(P.HEADER)).toString("hex"), relayed.plainHex);
+  // The sender's packet with only the ttl byte changed, as a relay forwards it.
+  const sent = Buffer.from(vector.packetHex, "hex");
+  sent[4] = relayed.header.ttl;
+  assert.equal(sent.toString("hex"), relayed.packetHex);
+  // Zeroing the hops byte instead of the ttl does not open it.
+  const wrong = Buffer.from(packet.subarray(0, P.HEADER));
+  wrong[5] = 0;
+  assert.equal(key.open(wrong, packet.subarray(P.HEADER)), null);
+});
+
 test("cross-language vector, non-ASCII channel key: the passphrase is the key's UTF-8 bytes", () => {
   const vector = require("./vector.json").nonAscii;
   assert.equal(Buffer.from(vector.channelKey, "utf8").toString("hex"), vector.channelKeyUtf8Hex);
