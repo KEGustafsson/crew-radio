@@ -65,6 +65,7 @@ const { EventEmitter } = require("node:events");
 const P = require("./packet");
 const I = require("./identity");
 const L = require("./link");
+const { mono } = require("../clock");
 const Carry = require("./carry");
 const Ask = require("./ask");
 const { PeerBudget } = require("../wirelimit");
@@ -169,7 +170,7 @@ class ReticulumTransport extends EventEmitter {
     this.connectFn = o.connect ?? ((host, port) => net.connect({ host, port }));
     // Monotonic: every value is compared only with another, and a server clock set from GPS or NTP
     // can step backwards, which would stop every timer here for as long as the step.
-    this.now = o.now ?? (() => performance.now());
+    this.now = o.now ?? mono;
     this.identity = o.identity ?? I.Identity.generate();
     this.nameHash = I.nameHash(`crewradio.channel.${o.tag}`);
     this.destination = I.destinationHash(this.nameHash, this.identity.hash);

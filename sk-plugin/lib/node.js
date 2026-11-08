@@ -29,6 +29,7 @@ const { EventEmitter } = require("node:events");
 const P = require("./packet");
 const { ReplayGuard } = require("./replay");
 const { WireLimiter } = require("./wirelimit");
+const { mono } = require("./clock");
 const F = require("./forwarding");
 
 const FRAME_BYTES = 640; // 16 kHz * 20 ms * 2 bytes
@@ -54,7 +55,7 @@ class ChannelNode extends EventEmitter {
    * @param {boolean} [opts.relay=true]      forward between the link and `rns` (off only in tests: the hello still offers us as the forwarder)
    * @param {() => number} [opts.now]       wall clock, milliseconds: the packets' `time` is stamped and checked with it
    * @param {() => number} [opts.clock]     monotonic milliseconds for every elapsed time (silence, busy, roster, pacing,
-   *                                        local peers); performance.now() by default, the test's `now` when only that is given
+   *                                        local peers); lib/clock.js's mono() by default, the test's `now` when only that is given
    */
   constructor(opts) {
     super();
@@ -72,7 +73,7 @@ class ChannelNode extends EventEmitter {
     this.now = opts.now ?? Date.now;
     // Elapsed times run on a monotonic clock: a server clock stepped back by GPS or NTP must not keep a
     // quiet channel busy, a talker talking or a node on the roster. Only packet timestamps are wall time.
-    this.clock = opts.clock ?? (opts.now ? opts.now : () => performance.now());
+    this.clock = opts.clock ?? (opts.now ? opts.now : mono);
     this.guard = opts.guard ?? new ReplayGuard();
     this.limiter = opts.limiter ?? new WireLimiter({ now: () => this.clock() });
     this.senderId = randomSenderId();
