@@ -108,7 +108,7 @@ The same works as a PUT to `vessels.self.communication.crewradio.say` with a str
 | Network interface | auto | The server's interface on the boat network, wired (eth0) or WLAN (wlan0). auto: wlan first, then eth/en, then anything with an IPv4 address, container/bridge/VPN interfaces last; looked at again every 5 s. |
 | Hop budget | 4 | How far phones may relay the server's packets. |
 | Reticulum: enabled | off | Join the channel through a Reticulum transport node as well, and relay between it and the LAN. |
-| Reticulum: transport node host, port | 127.0.0.1, 4242 | The TCP server interface of an rnsd with `enable_transport = Yes`: the boat's own, or a hub ashore. |
+| Reticulum: transport node host, port | 127.0.0.1, 4242 | The TCP listener of an rnsd with `enable_transport = Yes`, a `BackboneInterface` (recommended on Linux) or a `TCPServerInterface`, either the same to the plugin: the boat's own, or a hub ashore. |
 | Reticulum: answer the crew's questions | off | A phone ashore can use the app's Ask boat data over its Reticulum link: the plugin reads the answer from this server and says a Whole crew answer. Anyone holding the channel key can then read the vessel's data this way. |
 | Announce from state | alarm | alert, warn, alarm or emergency. |
 | Say the state and the path first | on | "Alarm, navigation position: no contact with sensor for 70 seconds" rather than the message alone, so the crew hears where it comes from. |
@@ -174,12 +174,16 @@ dependency), not taken from the reference implementation, and checked against it
   second rule applies only once the connection has echoed an announce, so a node that never
   echoes cannot cause a reconnect loop. Third: bytes that have waited 10 s with the socket
   taking none of them.
-- **A slow uplink.** The plugin keeps one write in the socket at a time and queues the rest;
-  all of a frame's packets, one per link, go in one write. Voice that has waited 200 ms when its
-  turn comes is dropped (late voice is no use, and writing it would make the next frame later
-  still); hellos, key proofs and link control always go. A backlog is never a reason to
-  reconnect: that turned one busy moment into every link of the node being rebuilt.
-  `reticulum.detail` counts the frames dropped (`stats.voiceDropped`) and shows what waits.
+- **A slow uplink.** The plugin keeps one write in the socket at a time, of 16 KiB at most, and
+  queues the rest; all of a frame's packets, one per link, go in one write. Voice that has waited
+  200 ms when its turn comes is dropped (late voice is no use, and writing it would make the next
+  frame later still); hellos and link control always go, link control ahead of everything else
+  waiting, so no backlog keeps a link from its keep-alives. Answers to the crew's questions may
+  hold 64 KiB of the queue at most: one that does not fit is refused whole, and the phone's repeat
+  of the question is answered once there is room. A backlog is never a reason to reconnect: that
+  turned one busy moment into every link of the node being rebuilt. `reticulum.detail` counts the
+  frames dropped (`stats.voiceDropped`), the answers refused (`stats.answersRefused`) and shows
+  what waits.
 - **Diagnostics.** `GET /plugins/signalk-crewradio/status` carries `reticulum.detail`: the peers
   heard (hops, how long ago, who dials, taken over, linked), the links, the announce budget,
   echoes and announces ignored as older. With the plugin's debug log on, every peer heard, dial,
@@ -188,7 +192,7 @@ dependency), not taken from the reference implementation, and checked against it
   and with all of them forwarding, one talker put about ten copies of each frame through the hub.
   So the nodes on a boat elect one forwarder from their hellos, without any message of their own:
   among the nodes heard on the LAN directly (not relayed) in the last 15 s that are on the hub
-  right now, the one that prefers to forward wins (the plugin always does, being on the boat's
+  right now with at least one link that has proved the key, the one that prefers to forward wins (the plugin always does, being on the boat's
   wire), else the lowest id. Only the forwarder carries LAN voice to Reticulum, and Reticulum
   voice to the LAN; a talker that is on the hub itself is never repeated, since it sends its own
   voice there; and no Reticulum link gets a frame whose far end hears the boat on the LAN anyway

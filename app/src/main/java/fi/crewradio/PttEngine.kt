@@ -698,34 +698,35 @@ class PttEngine(
      * again and reported. Returns without blocking.
      */
     fun startTalking() {
-        var gen = 0
         var busyBy: Int? = null
         synchronized(talkLock) {
             if (talking || floor.keyed || transports.isEmpty() || held || asking) return
             // Full duplex mixes talkers on purpose: the floor rules are for half duplex.
             when (val k = floor.key(SystemClock.elapsedRealtime(), listen = mode == Mode.HALF_DUPLEX)) {
-                Floor.Key.OnAir -> gen = goOnAirLocked()
+                Floor.Key.OnAir -> goOnAirLocked()
                 is Floor.Key.Refused -> busyBy = k.by
                 Floor.Key.Held -> return
             }
         }
-        val by = busyBy
-        if (by != null) {
-            // Listen before talk: somebody has the channel. The key stays down, silent; held
-            // through OVERRIDE_MS it keys anyway.
-            channelBusy(by)
-            scheduleOverride(Floor.OVERRIDE_MS)
-            return
-        }
-        audioCtl.execute { openTalk(gen) }
+        val by = busyBy ?: return
+        // Listen before talk: somebody has the channel. The key stays down, silent; held
+        // through OVERRIDE_MS it keys anyway.
+        channelBusy(by)
+        scheduleOverride(Floor.OVERRIDE_MS)
     }
 
-    /** Under [talkLock]: the mic goes live; the generation is what [openTalk] belongs to. */
-    private fun goOnAirLocked(): Int {
+    /**
+     * Under [talkLock]: the mic goes live and its opening is queued on the audio-control thread.
+     * Queued under the same lock as the state change, like every close ([stopTalking],
+     * [floorHeard]): the thread then runs opens and closes in the order the state changed, so a
+     * close left over from a yield can never land after, and stop, the capture of the next key.
+     */
+    private fun goOnAirLocked() {
         talking = true
         armed = false
         pending.clear()
-        return ++talkGen
+        val gen = ++talkGen
+        audioCtl.execute { openTalk(gen) }
     }
 
     private fun scheduleOverride(inMs: Long) {
@@ -737,15 +738,13 @@ class PttEngine(
 
     /** A refused key still held after [Floor.OVERRIDE_MS] keys anyway, as an override burst. */
     private fun overrideDue() {
-        val gen: Int
         synchronized(talkLock) {
             val at = floor.overrideAt() ?: return              // released, or keyed already
             if (transports.isEmpty()) return
             val now = SystemClock.elapsedRealtime()
             if (!floor.due(now)) { scheduleOverride(maxOf(1L, at - now)); return }
-            gen = goOnAirLocked()
+            goOnAirLocked()
         }
-        audioCtl.execute { openTalk(gen) }
     }
 
     /** The busy cue, and "Channel busy: <name>" unless the caller says it later: the key did not key, or this phone yielded to [by]. */
@@ -769,13 +768,13 @@ class PttEngine(
             else {
                 talking = false
                 pending.clear()
+                // Queued with the state change, under the lock: see goOnAirLocked.
+                val busy = busyText(sender)
+                audioCtl.execute { closeTalk(busy) }         // the status line says who has the channel
                 true
             }
         }
-        if (!yielded) return
-        val busy = busyText(sender)
-        audioCtl.execute { closeTalk(busy) }                 // the status line says who has the channel
-        channelBusy(sender, alsoStatus = false)
+        if (yielded) channelBusy(sender, alsoStatus = false)
     }
 
     /** Audio-control thread: opens the encoder and, unless the monitor feeds us, the mic; then lets the waiting frames go. */
@@ -877,9 +876,9 @@ class PttEngine(
             talking = false
             gateTalking = false
             pending.clear()
+            if (wasTalking) audioCtl.execute { closeTalk() }   // with the state change: see goOnAirLocked
         }
-        if (wasTalking) audioCtl.execute { closeTalk() }
-        else onStatus(str(if (mode == Mode.FULL_DUPLEX) R.string.status_duplex_mic_off else R.string.status_listening))
+        if (!wasTalking) onStatus(str(if (mode == Mode.FULL_DUPLEX) R.string.status_duplex_mic_off else R.string.status_listening))
     }
 
     /**
@@ -995,7 +994,6 @@ class PttEngine(
             return
         }
         if ((packetCount.incrementAndGet() and 0xFF) == 0) pruneDecoders()
-        val playing = !(mode == Mode.HALF_DUPLEX && talking)   // radio semantics: not while we transmit
 
         // Admission and delivery under the sender's lock. Ingress admits one sender's frames in
         // order, but the same stream arrives on every transport, each on its own thread: without
@@ -1009,6 +1007,9 @@ class PttEngine(
             if (gap < 0) return
             // Another talker is heard, half duplex or not: the floor's busy rule and its collision rule.
             floorHeard(h.senderId, now)
+            // Radio semantics: not while we transmit. Decided after the floor, so a phone that has just
+            // yielded to this talker plays it from this frame on.
+            val playing = !(mode == Mode.HALF_DUPLEX && talking)
             if (gap > 0 && playing && gap <= Conceal.MAX_FRAMES) mixer.conceal(h.senderId, gap)
             // Only an admitted frame is proof of life: one refused as late or replayed lights nobody.
             val node = heardAudio(h.senderId, from)
@@ -1073,7 +1074,9 @@ class PttEngine(
 
     /**
      * The transports flags of our hello: what can carry a packet right now, and [Hello.RNS_UP] while
-     * the Reticulum socket is up. A phone sets neither forwarder preference.
+     * the Reticulum socket is up AND at least one link has proved the key: a socket alone delivers
+     * to nobody, and the boat's forwarder must keep carrying a talker until it does. A phone sets
+     * neither forwarder preference.
      */
     private fun ownFlags(): Int {
         var flags = 0
@@ -1083,7 +1086,7 @@ class PttEngine(
         for (t in transports) {
             if (!t.ready) continue
             flags = flags or Hello.bitFor(t.name)
-            if (t is ReticulumTransport) flags = flags or Hello.RNS_UP
+            if (t is ReticulumTransport && t.linked) flags = flags or Hello.RNS_UP
         }
         return flags
     }

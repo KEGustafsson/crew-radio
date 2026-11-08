@@ -46,23 +46,26 @@ test("local peers: RNS_UP required to be a candidate, expiry after LOCAL_MS, me 
   assert.equal(local.forwarder(me), 50, "FWD_PREFER outranks it");
   assert.equal(local.forwarder({ senderId: 50, transports: T.LAN }), 10, "me without RNS_UP: the phone");
 
-  t += F.LOCAL_MS;
+  t += F.LOCAL_MS - 1;
   assert.equal(local.isLocal(10), true, "still within LOCAL_MS");
   t += 1;
-  assert.equal(local.isLocal(10), false);
+  assert.equal(local.isLocal(10), false, "exactly LOCAL_MS old: expired, as in the app");
   assert.equal(local.rnsUp(10), false);
   assert.equal(local.forwarder({ senderId: 50, transports: UP }), 50, "expired: no longer a candidate");
   assert.deepEqual(local.list(), []);
   local.sweep();
   assert.equal(local.peers.size, 0);
 
-  // A bounded table: the oldest goes first.
+  // A full table: the entry heard longest ago makes room, fresh or not (the ESP32's rule).
   const small = new F.LocalPeers({ now: () => t, max: 2 });
   small.heard(1, UP);
+  t += 10;
   small.heard(2, UP);
+  t += 10;
   small.heard(1, UP);                                // heard again: now the newest
-  small.heard(3, UP);
+  small.heard(3, UP);                                // 2, heard longest ago though still fresh, goes
   assert.deepEqual(small.list().map((p) => p.senderId), [1, 3]);
+  assert.equal(small.isLocal(2), false);
 });
 
 test("forwarding rules D1-D4: where an audio frame goes", () => {

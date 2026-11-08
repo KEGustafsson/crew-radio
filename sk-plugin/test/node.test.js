@@ -305,6 +305,7 @@ test("the caller's cancel flag stops an announcement even before its first frame
 function fakeRns(ready = true) {
   const r = new EventEmitter();
   r.ready = ready;
+  r.linkCount = ready ? 1 : 0;
   r.sent = [];
   r.send = (buf, except) => { r.sent.push({ buf: Buffer.from(buf), except }); return true; };
   return r;
@@ -321,6 +322,11 @@ test("with Reticulum: our packets go both ways, the hello says so, and the node 
   assert.equal(rns.sent.length, 1, "the hello goes over Reticulum too");
   const hello = P.decodeHello(crypto.open(P.aadOf(rns.sent[0].buf), rns.sent[0].buf.subarray(P.HEADER)));
   assert.equal(hello.transports, P.Transports.LAN | P.Transports.RETICULUM | P.Transports.RNS_UP | P.Transports.FWD_PREFER);
+  // RNS_UP is the socket up AND a link that proved the key: a socket alone carries nobody's voice.
+  rns.linkCount = 0;
+  assert.equal(n.transports(), P.Transports.LAN | P.Transports.RETICULUM | P.Transports.FWD_PREFER);
+  assert.equal(n.isForwarder(), false, "no confirmed link: no forwarder");
+  rns.linkCount = 1;
 
   // From the LAN to Reticulum, ttl lowered by one; the first copy only.
   const fromLan = packet({ senderId: 11, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60, 3) });
@@ -507,5 +513,28 @@ test("an announcement never talks over the crew: it stops at another talker's fi
   // A wait can be given up from outside (an urgent announcement, the node replaced).
   link.emit("packet", packet({ senderId: 77, seq: 2, codec: P.Codec.OPUS, payload: Buffer.alloc(60) }), { address: "10.0.0.5" });
   assert.equal(await node.waitForSilence(BUSY_MS, 5000, () => true), false);
+  node.stop();
+});
+
+test("silence and busy run on the monotonic clock: a wall clock stepped back keeps no quiet channel busy", async () => {
+  let wall = Date.now();
+  let mono = 50_000;
+  const link = new EventEmitter();
+  link.send = () => true;
+  const node = new ChannelNode({ name: "Sirius", crypto, link, heartbeatMs: 100000, now: () => wall, clock: () => mono });
+  node.start();
+  link.emit("packet", packet({ senderId: 77, seq: 1, codec: P.Codec.OPUS, time: Math.floor(wall / 1000), payload: Buffer.alloc(60) }), { address: "10.0.0.5" });
+  assert.equal(node.busy, true);
+  assert.equal(node.roster()[0].talking, true);
+  wall -= 3_600_000;                                   // GPS or NTP steps the server's clock an hour back
+  mono += BUSY_MS;
+  assert.equal(node.busy, false, "quiet after BUSY_MS, whatever the wall clock did");
+  assert.equal(node.roster()[0].talking, false);
+  assert.equal(await node.waitForSilence(BUSY_MS, 1000), true);
+  // The packets' own stamps are still wall time: our hello carries the stepped clock.
+  const sent = [];
+  link.send = (buf) => { sent.push(buf); return true; };
+  node.tick();
+  assert.equal(P.parseHeader(sent[0]).time, Math.floor(wall / 1000));
   node.stop();
 });

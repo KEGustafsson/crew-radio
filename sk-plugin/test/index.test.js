@@ -848,7 +848,9 @@ test("Reticulum: past the grace it goes to the shore alone, and if the LAN comes
     const r = FakeRns.last;
     r.linkCount = 1;
     const hello = r.accepted.map((b) => P.decodeHello(crypto.open(P.aadOf(b), b.subarray(P.HEADER)))).find(Boolean);
-    assert.equal(hello.transports, P.Transports.RETICULUM | P.Transports.RNS_UP | P.Transports.FWD_PREFER, "while the LAN is down the hello does not claim it");
+    assert.equal(hello.transports & ~P.Transports.RNS_UP, P.Transports.RETICULUM | P.Transports.FWD_PREFER, "while the LAN is down the hello does not claim it");
+    const later = r.accepted.map((b) => P.decodeHello(crypto.open(P.aadOf(b), b.subarray(P.HEADER)))).filter(Boolean);
+    assert.equal(later[0].transports & P.Transports.RNS_UP, 0, "no RNS_UP before a link had proved the key");
     const said = app.props["signalk-crewradio.api"].say({ text: "Anchor dragging" });
     await until(() => pcm(r.accepted) > 0, 3000);
     FakeLink.failOpen = false;                                         // the LAN comes back mid-announcement

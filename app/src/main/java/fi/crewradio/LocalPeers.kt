@@ -18,7 +18,8 @@ package fi.crewradio
  *
  * Pure Kotlin and thread-safe (hellos arrive on every transport's thread); the clock is the
  * caller's monotonic milliseconds. At most [capacity] senders are tracked: their hellos are
- * authenticated, but a crew is small and a ceiling costs nothing.
+ * authenticated, but a crew is small and a ceiling costs nothing; when full, the one heard
+ * longest ago makes room for a newcomer.
  */
 class LocalPeers(private val localMs: Long = LOCAL_MS, private val capacity: Int = MAX_SENDERS) {
     private class Seen(var at: Long, var transports: Int)
@@ -36,9 +37,12 @@ class LocalPeers(private val localMs: Long = LOCAL_MS, private val capacity: Int
         if (s != null) {
             s.at = now
             s.transports = transports
-        } else if (seen.size < capacity) {
-            seen[sender] = Seen(now, transports)
+            return
         }
+        // Full: the entry heard longest ago makes room (the ESP32's rule). A newcomer is never
+        // refused, so a sender that really is on the boat cannot be shut out by a full table.
+        if (seen.size >= capacity) seen.entries.minByOrNull { it.value.at }?.let { seen.remove(it.key) }
+        seen[sender] = Seen(now, transports)
     }
 
     /** True while [sender] is local: a local, unrelayed hello of its own within [localMs]. */

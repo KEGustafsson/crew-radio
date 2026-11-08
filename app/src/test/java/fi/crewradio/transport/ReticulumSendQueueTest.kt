@@ -94,6 +94,35 @@ class ReticulumSendQueueTest {
     }
 
     @Test
+    fun aWriteThatKeepsMovingIsNotAStall() {
+        val q = queue()
+        q.offer(listOf(b(1)), voice = false)
+        q.take()                                             // handed to the socket at t = 0
+        now = ReticulumSendQueue.NO_PROGRESS_MS - 1
+        q.progressed()                                       // a chunk went
+        now = 2 * ReticulumSendQueue.NO_PROGRESS_MS - 2
+        assertFalse(q.stalled())
+        now = 2 * ReticulumSendQueue.NO_PROGRESS_MS - 1
+        assertTrue("nothing since that chunk", q.stalled())
+        q.written()
+        q.progressed()                                       // no write in progress: nothing to refresh
+        assertFalse(q.stalled())
+    }
+
+    @Test(timeout = 5_000)
+    fun closeWakesAWriterWaitingInTake() {
+        val q = queue()
+        var got: ByteArray? = byteArrayOf(1)
+        val writer = Thread { got = q.take() }
+        writer.start()
+        while (writer.state != Thread.State.WAITING) Thread.sleep(5)   // parked in take()
+        q.close()
+        writer.join(2_000)
+        assertFalse("take returned", writer.isAlive)
+        assertNull(got)
+    }
+
+    @Test
     fun closeEndsTheQueueForBothSides() {
         val q = queue()
         q.offer(listOf(b(1)), voice = true)

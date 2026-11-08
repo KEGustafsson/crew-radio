@@ -25,6 +25,10 @@ class TonesTest {
         assertTrue(busy.size != Tones.micOn().size && busy.size != Tones.micOff().size)
         // The gap between the notes is silent: frames 4 to 7.
         for (n in 4..7) for (i in 0 until AudioConfig.FRAME_SAMPLES) assertEquals(0, sample(busy[n], i))
+        // Both notes sound: frames 0 to 3 and 8 to 11.
+        for (note in listOf(0..3, 8..11)) {
+            assertTrue("note $note", note.any { n -> (0 until AudioConfig.FRAME_SAMPLES).any { sample(busy[n], it) != 0 } })
+        }
         // Lower than both key beeps: count zero crossings over the first note.
         fun crossings(frames: List<ByteArray>): Int {
             var c = 0

@@ -373,9 +373,11 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     // boat's own phones - the announcement's first audience - would miss it: it waits for the LAN
     // for lanGraceMs first (an interface change or a Wi-Fi reconnect is over in a second or two),
     // and goes out on Reticulum alone only after that, and only to confirmed links.
-    const t0 = Date.now();
+    // Every wait here, and the node's silence and busy tests, run on the monotonic clock: a server
+    // clock stepped back must not hold an announcement or keep a quiet channel busy.
+    const t0 = performance.now();
     const onLan = () => node && node.link !== OFFLINE;
-    const ashoreOnly = () => node && node.link === OFFLINE && rns?.linkCount > 0 && Date.now() - t0 >= lanGraceMs;
+    const ashoreOnly = () => node && node.link === OFFLINE && rns?.linkCount > 0 && performance.now() - t0 >= lanGraceMs;
     //
     // The plugin never talks over the crew (the channel's floor rule for announcements): it starts
     // only after a gap of BUSY_MS, and the moment another talker is heard it stops. Then it waits
@@ -390,7 +392,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     for (;;) {
       while (!onLan() && !ashoreOnly()) {
         if (!running || cancelled()) return;
-        if (Date.now() - t0 > LINK_WAIT_MS) throw new Error("not on the channel (network link down)");
+        if (performance.now() - t0 > LINK_WAIT_MS) throw new Error("not on the channel (network link down)");
         await new Promise((r) => setTimeout(r, 100));
       }
       // The node is held here: the link may drop (and the node with it) during the wait for a
@@ -658,10 +660,10 @@ function schema(app) {
       reticulum: {
         type: "object",
         title: "Reticulum",
-        description: "The channel over Reticulum as well: a phone ashore with the RETICULUM tile on and the same transport node (or one on the same Reticulum network) is on the crew channel, with this server relaying between it and the boat's LAN. Needs a Reticulum transport node with a TCP server interface and enable_transport = Yes: a hub ashore, or the boat's own rnsd connected on to one (docs/RETICULUM_HUB.md in the repository). Interface access codes are not supported.",
+        description: "The channel over Reticulum as well: a phone ashore with the RETICULUM tile on and the same transport node (or one on the same Reticulum network) is on the crew channel, with this server relaying between it and the boat's LAN. Needs a Reticulum transport node with a TCP listener (a BackboneInterface, recommended on Linux, or a TCPServerInterface) and enable_transport = Yes: a hub ashore, or the boat's own rnsd connected on to one (docs/RETICULUM_HUB.md in the repository). Interface access codes are not supported.",
         properties: {
           enabled: { type: "boolean", title: "Enabled", default: false },
-          host: { type: "string", title: "Transport node host", default: "127.0.0.1", description: "The rnsd TCPServerInterface to connect to: the hub's name or address, or 127.0.0.1 for one on this server. host:port is accepted too." },
+          host: { type: "string", title: "Transport node host", default: "127.0.0.1", description: "The rnsd TCP listener to connect to (a BackboneInterface or a TCPServerInterface: the plugin connects to either the same way): the hub's name or address, or 127.0.0.1 for one on this server. host:port is accepted too." },
           port: { type: "integer", title: "Transport node port", default: 4242, minimum: 1, maximum: 65535 },
           answerQuestions: { type: "boolean", title: "Answer the crew's questions", default: false, description: "A phone ashore on Reticulum can use Ask boat data: the plugin reads the answer from this server's data and says a Whole crew answer on the channel. Anyone holding the channel key can then read this vessel's data (position included) this way, whatever this server's own security says, so it is off until you turn it on." },
         },

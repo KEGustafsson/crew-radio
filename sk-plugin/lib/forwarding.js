@@ -9,7 +9,7 @@
  * written so that two nodes that briefly see it differently make a duplicate (which the seen-cache
  * drops), never a gap.
  *
- *  - Local peers. A sender is local when, within LOCAL_MS, a hello of its own came over a local
+ *  - Local peers. A sender is local when, less than LOCAL_MS ago, a hello of its own came over a local
  *    transport (the LAN, here) unrelayed: hops == ttl in its header, so nobody forwarded it.
  *  - The forwarder. Candidates are this node, when it is on the Reticulum hub right now (RNS_UP),
  *    and every local sender whose last local hello said RNS_UP. The highest rank wins (FWD_PREFER
@@ -85,7 +85,12 @@ class LocalPeers {
     this.peers = new Map();   // senderId -> {at, transports}, oldest first
   }
 
-  /** A hello from `senderId` came over a local transport, unrelayed. */
+  /**
+   * A hello from `senderId` came over a local transport, unrelayed. The table is kept in the order
+   * heard (an entry heard again moves to the end), so when it is full the entry heard longest ago
+   * makes room, as the ESP32 does: every sender here has passed the channel's AEAD, so it is a
+   * crew member, and one heard now matters more than one heard longest ago.
+   */
   heard(senderId, transports) {
     const id = senderId | 0;
     this.peers.delete(id);
@@ -93,10 +98,15 @@ class LocalPeers {
     while (this.peers.size > this.max) this.peers.delete(this.peers.keys().next().value);
   }
 
+  /** True while an entry is fresh: heard less than LOCAL_MS ago (at exactly LOCAL_MS it has expired, as in the app). */
+  fresh(p) {
+    return this.now() - p.at < this.localMs;
+  }
+
   /** The entry while it is fresh, else null. */
   get(senderId) {
     const p = this.peers.get(senderId | 0);
-    return p && this.now() - p.at <= this.localMs ? p : null;
+    return p && this.fresh(p) ? p : null;
   }
 
   isLocal(senderId) {
@@ -111,7 +121,7 @@ class LocalPeers {
 
   /** Forgets the entries past LOCAL_MS. */
   sweep() {
-    for (const [id, p] of this.peers) if (this.now() - p.at > this.localMs) this.peers.delete(id);
+    for (const [id, p] of this.peers) if (!this.fresh(p)) this.peers.delete(id);
   }
 
   /**
@@ -122,7 +132,7 @@ class LocalPeers {
     const candidates = [];
     if (me.transports & Transports.RNS_UP) candidates.push(me);
     for (const [senderId, p] of this.peers) {
-      if (this.now() - p.at <= this.localMs && (p.transports & Transports.RNS_UP)) candidates.push({ senderId, transports: p.transports });
+      if (this.fresh(p) && (p.transports & Transports.RNS_UP)) candidates.push({ senderId, transports: p.transports });
     }
     return elect(candidates);
   }
@@ -130,7 +140,7 @@ class LocalPeers {
   /** The local senders now, for the status page. */
   list() {
     const out = [];
-    for (const [senderId, p] of this.peers) if (this.now() - p.at <= this.localMs) out.push({ senderId, transports: p.transports });
+    for (const [senderId, p] of this.peers) if (this.fresh(p)) out.push({ senderId, transports: p.transports });
     return out;
   }
 }

@@ -93,12 +93,16 @@ class LocalPeersTest {
     }
 
     @Test
-    fun theTableIsBounded() {
+    fun aFullTableMakesRoomByForgettingTheSenderHeardLongestAgo() {
         val p = LocalPeers(capacity = 2)
-        p.direct(1, Hello.LAN, 0); p.direct(2, Hello.LAN, 0); p.direct(3, Hello.LAN, 0)
-        assertFalse(p.isLocal(3, 0))
-        assertEquals(2, p.count(0))
-        p.direct(3, Hello.LAN, LocalPeers.LOCAL_MS)       // the others expired and are swept
-        assertTrue(p.isLocal(3, LocalPeers.LOCAL_MS))
+        p.direct(1, Hello.LAN, 0); p.direct(2, Hello.LAN, 100)
+        p.direct(1, Hello.LAN, 200)                      // 1 heard again: 2 is now the oldest
+        p.direct(3, Hello.LAN, 300)
+        assertTrue("a newcomer is never refused", p.isLocal(3, 300))
+        assertTrue(p.isLocal(1, 300))
+        assertFalse("the one heard longest ago made room", p.isLocal(2, 300))
+        assertEquals(2, p.count(300))
+        p.direct(4, Hello.LAN, LocalPeers.LOCAL_MS + 300) // the others expired and are swept
+        assertTrue(p.isLocal(4, LocalPeers.LOCAL_MS + 300))
     }
 }

@@ -45,9 +45,9 @@
  *    from it (learnFarEnd), so the engine can leave out links to nodes that hear the boat itself.
  *  - Sending. One socket write in flight at a time; what is sent meanwhile waits in our own queue,
  *    where a voice frame that has waited VOICE_MAX_AGE_MS is dropped rather than written (late voice
- *    is no use to anyone, and writing it only makes the next frame later), and everything else
- *    (hellos, proofs, link control) waits its turn. All of a frame's packets, one per link, go in
- *    one write. A backlog is never a reason to redial; bytes that have waited NO_PROGRESS_MS
+ *    is no use to anyone, and writing it only makes the next frame later), link control goes first,
+ *    hellos wait their turn, and answers to questions are bounded. All of a frame's packets, one per
+ *    link, go in one write, and no write is larger than it has to be (WRITE_MAX_BYTES). A backlog is never a reason to redial; bytes that have waited NO_PROGRESS_MS
  *    without the socket taking any are (a stuck uplink that never errors).
  *
  * Asking the boat (ask.js): a confirmed link may also carry a question for the boat's Signal K
@@ -88,9 +88,22 @@ const STABLE_MS = 30_000;              // a connection that lasted this long res
 // A backlog alone never closes the connection (redialling every link of the node for one busy
 // moment was the 64 KiB rule's failure, 2026-11-08); bytes that have waited NO_PROGRESS_MS with the
 // socket taking none of them do.
+//
+// What waits is of four kinds. Link control (requests, proofs, RTTs, keep-alives, closes, key
+// proofs, announces) goes first in every write, so nothing queued can hold it past a link's
+// timeout. Channel data that is not voice (hellos) keeps its place and is never dropped. Answers to
+// the crew's questions (bulk) are bounded: an answer that would take the queued answers past
+// BULK_MAX_BYTES is refused whole, and the asker's repeat is answered from memory once there is room.
+// Each write carries at most WRITE_MAX_BYTES (and always one whole item), so the socket's callback
+// for it, which is the progress NO_PROGRESS_MS looks for, comes at least every WRITE_MAX_BYTES taken:
+// Node counts a pending write as wholly unsent until its callback, so a single large write would hide
+// a slow but moving uplink until it was all gone.
 const VOICE_MAX_AGE_MS = 200;
 const NO_PROGRESS_MS = 10_000;
 const QUEUE_PRUNE = 32;                // past this many waiting, late voice is dropped as more comes in
+const WRITE_MAX_BYTES = 16 * 1024;     // one socket write at most (one item may be larger: a frame for many links)
+const BULK_MAX_BYTES = 64 * 1024;      // answers to questions waiting at most
+const Kind = Object.freeze({ CONTROL: "control", DATA: "data", BULK: "bulk", VOICE: "voice" });
 const GATE_PER_S = 10;                 // announce checks and link requests we spend a signature on, a second
 const GATE_BURST = 20;
 const VERIFIED_MAX = 256;              // announces remembered as checked
@@ -181,10 +194,11 @@ class ReticulumTransport extends EventEmitter {
     this.acceptedConfirmed = 0; // links dialled by others that proved the key: a newcomer that dialled us shows here
     this.lastRx = 0;            // the last frame from the transport node, of any kind
     this.echoes = false;        // this connection has sent one of our announces back to us
-    this.outq = [];             // {bytes, voice, at}: written once the socket has taken the write in flight
+    this.outq = [];             // {bytes, kind, at}: written once the socket has taken the write in flight
+    this.bulkBytes = 0;         // the answers' share of outq
     this.inFlight = 0;          // bytes handed to the socket and not yet taken by it
     this.progressAt = 0;        // when the socket last took bytes, or bytes started waiting
-    this.stats = { announces: 0, older: 0, echoes: 0, linksUp: 0, linksDropped: 0, tx: 0, rx: 0, reconnects: 0, unproven: 0, unanswered: 0, voiceDropped: 0 };
+    this.stats = { announces: 0, older: 0, echoes: 0, linksUp: 0, linksDropped: 0, tx: 0, rx: 0, reconnects: 0, unproven: 0, unanswered: 0, voiceDropped: 0, answersRefused: 0 };
     this.lastAnnounceWall = 0;  // our last announce's emission time, seconds of wall clock, as it went out
   }
 
@@ -241,7 +255,7 @@ class ReticulumTransport extends EventEmitter {
       for (const part of Carry.cut(buf, e.cutId++ & 0xff)) frames.push(P.frame(e.link.dataPacket(part)));
     }
     if (frames.length === 0) return false;
-    if (!this.enqueue(frames.length === 1 ? frames[0] : Buffer.concat(frames), !!opts.voice)) return false;
+    if (!this.enqueue(frames.length === 1 ? frames[0] : Buffer.concat(frames), opts.voice ? Kind.VOICE : Kind.DATA)) return false;
     this.stats.tx++;
     return true;
   }
@@ -318,30 +332,45 @@ class ReticulumTransport extends EventEmitter {
     this.links.clear();
     this.pending.clear();
     this.outq = [];
+    this.bulkBytes = 0;
     this.inFlight = 0;
     for (const p of this.peers.values()) { p.link = null; p.dialAt = 0; }
   }
 
-  /** One packet framed onto the socket, never dropped by age: false when the connection is gone. */
+  /** One link-control packet framed onto the socket, first in the next write: false when the connection is gone. */
   write(raw) {
-    return this.enqueue(P.frame(raw), false);
+    return this.enqueue(P.frame(raw), Kind.CONTROL);
   }
 
   /**
-   * Bytes for the socket: written now when nothing is in flight or waiting, else queued behind
-   * what is. False when there is no connection to take them.
+   * The parts of an answer on link `e`, all or none: none (false) when the connection is gone or
+   * the answers already waiting leave no room for all of them (counted; the asker asks again).
    */
-  enqueue(bytes, voice) {
+  writeBulk(e, parts) {
+    if (!this.sock || !this.connected) return false;
+    const frames = parts.map((part) => P.frame(e.link.dataPacket(part)));
+    const size = frames.reduce((n, f) => n + f.length, 0);
+    if (this.bulkBytes + size > BULK_MAX_BYTES) { this.stats.answersRefused++; return false; }
+    for (const f of frames) this.enqueue(f, Kind.BULK);
+    return true;
+  }
+
+  /**
+   * Bytes for the socket: written now when nothing is in flight or waiting, else queued. False
+   * when there is no connection to take them.
+   */
+  enqueue(bytes, kind) {
     if (!this.sock || !this.connected) return false;
     if (this.inFlight === 0 && this.outq.length === 0) return this.put(bytes);
-    this.outq.push({ bytes, voice, at: this.now() });
-    if (voice && this.outq.length > QUEUE_PRUNE) this.prune(this.now());
+    this.outq.push({ bytes, kind, at: this.now() });
+    if (kind === Kind.BULK) this.bulkBytes += bytes.length;
+    if (kind === Kind.VOICE && this.outq.length > QUEUE_PRUNE) this.prune(this.now());
     return true;
   }
 
   /** Drops the voice that has waited past VOICE_MAX_AGE_MS from the queue (counted); the rest keeps its order. */
   prune(now) {
-    const keep = this.outq.filter((q) => !(q.voice && now - q.at > VOICE_MAX_AGE_MS));
+    const keep = this.outq.filter((q) => !(q.kind === Kind.VOICE && now - q.at > VOICE_MAX_AGE_MS));
     this.stats.voiceDropped += this.outq.length - keep.length;
     this.outq = keep;
   }
@@ -368,14 +397,28 @@ class ReticulumTransport extends EventEmitter {
   }
 
   /**
-   * Everything queued, less the voice past its age, in one write: when the socket has taken the
-   * last one, or (`force`, on stop) at once.
+   * The next write, when the socket has taken the last one: the voice past its age dropped, every
+   * link-control packet waiting, then the rest in order up to WRITE_MAX_BYTES (one item at least).
+   * `force` (on stop): everything, at once.
    */
   flush(force = false) {
     if (this.outq.length === 0 || !this.sock || !this.connected || (this.inFlight > 0 && !force)) return;
     this.prune(this.now());
-    const out = this.outq.map((q) => q.bytes);
-    this.outq = [];
+    const out = [];
+    const rest = [];
+    let size = 0;
+    for (const q of this.outq) {
+      if (q.kind === Kind.CONTROL) { out.push(q.bytes); size += q.bytes.length; } else rest.push(q);
+    }
+    let taken = 0;
+    for (const q of rest) {
+      if (!force && size > 0 && size + q.bytes.length > WRITE_MAX_BYTES) break;
+      out.push(q.bytes);
+      size += q.bytes.length;
+      if (q.kind === Kind.BULK) this.bulkBytes -= q.bytes.length;
+      taken++;
+    }
+    this.outq = rest.slice(taken);
     if (out.length) this.put(out.length === 1 ? out[0] : Buffer.concat(out));
   }
 
@@ -529,8 +572,9 @@ class ReticulumTransport extends EventEmitter {
 
   /**
    * The answer to question `id` that came on the link `via`, remembered for a repeat. False when
-   * the link has gone meanwhile (the asker will ask again on its next one) or the answer is too
-   * large to carry, in which case a short failure goes instead.
+   * the link has gone meanwhile (the asker will ask again on its next one), or the answers already
+   * waiting leave no room for it (the asker's repeat finds it remembered). One too large to carry
+   * becomes a short failure instead.
    */
   answer(via, id, message) {
     if (this.links.get(via.key) !== via || !via.link.active) return false;
@@ -542,12 +586,11 @@ class ReticulumTransport extends EventEmitter {
       parts = Ask.cut(Ask.ANSWER, id, message);
     }
     if (via.asked.has(id)) via.asked.set(id, message);
-    for (const part of parts) this.write(via.link.dataPacket(part));
-    return true;
+    return this.writeBulk(via, parts);
   }
 
   writeAnswer(e, id, message) {
-    for (const part of Ask.cut(Ask.ANSWER, id, message)) this.write(e.link.dataPacket(part));
+    this.writeBulk(e, Ask.cut(Ask.ANSWER, id, message));
   }
 
   /** The far end's key proof: the link is confirmed, and ours goes again if it seems to have missed it. */
@@ -697,7 +740,7 @@ class ReticulumTransport extends EventEmitter {
       lastAnnounceAgo: ago(this.lastAnnounce),
       lastAnnounceEmittedAgo: this.lastAnnounceWall ? wall - this.lastAnnounceWall : null,
       pending: this.pending.size,
-      waiting: { writes: this.outq.length, bytes: this.inFlight + this.outq.reduce((n, q) => n + q.bytes.length, 0) },
+      waiting: { writes: this.outq.length, answerBytes: this.bulkBytes, bytes: this.inFlight + this.outq.reduce((n, q) => n + q.bytes.length, 0) },
       budget: { violations: this.announces.violations, nextPasses: this.announces.peek(now).passes },
       stats: { ...this.stats },
       peers: [...this.peers.entries()].map(([k, p]) => ({
@@ -796,4 +839,4 @@ class ReticulumTransport extends EventEmitter {
   }
 }
 
-module.exports = { ReticulumTransport, AnnounceBudget, IDLE_ANNOUNCE_MS, FALLBACK_MS, REDIAL_MS, RATE_TARGET_MS, RATE_GRACE, LINK_TIMEOUT_MS, STALE_MS, CONFIRM_MS, GRACE_MS, STABLE_MS, GATE_BURST, MAX_LINKS, MAX_PEERS, VOICE_MAX_AGE_MS, NO_PROGRESS_MS };
+module.exports = { ReticulumTransport, AnnounceBudget, IDLE_ANNOUNCE_MS, FALLBACK_MS, REDIAL_MS, RATE_TARGET_MS, RATE_GRACE, LINK_TIMEOUT_MS, STALE_MS, CONFIRM_MS, GRACE_MS, STABLE_MS, GATE_BURST, MAX_LINKS, MAX_PEERS, VOICE_MAX_AGE_MS, NO_PROGRESS_MS, WRITE_MAX_BYTES, BULK_MAX_BYTES };

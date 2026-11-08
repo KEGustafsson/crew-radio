@@ -10,7 +10,7 @@ const I = require("../lib/rns/identity");
 const L = require("../lib/rns/link");
 const Carry = require("../lib/rns/carry");
 const Ask = require("../lib/rns/ask");
-const { ReticulumTransport, AnnounceBudget, IDLE_ANNOUNCE_MS, FALLBACK_MS, REDIAL_MS, RATE_TARGET_MS, RATE_GRACE, STALE_MS, CONFIRM_MS, LINK_TIMEOUT_MS, GRACE_MS, STABLE_MS, GATE_BURST, VOICE_MAX_AGE_MS, NO_PROGRESS_MS } = require("../lib/rns/transport");
+const { ReticulumTransport, AnnounceBudget, IDLE_ANNOUNCE_MS, FALLBACK_MS, REDIAL_MS, RATE_TARGET_MS, RATE_GRACE, STALE_MS, CONFIRM_MS, LINK_TIMEOUT_MS, GRACE_MS, STABLE_MS, GATE_BURST, VOICE_MAX_AGE_MS, NO_PROGRESS_MS, WRITE_MAX_BYTES, BULK_MAX_BYTES } = require("../lib/rns/transport");
 const { ChannelCrypto } = require("../lib/crypto");
 const CP = require("../lib/packet");
 
@@ -280,15 +280,32 @@ test("carry: whole, two and three parts; a lost or reordered part drops only tha
 class Medium {
   // echo: every write comes back to its writer too, as rnsd sends a lone node's announces back.
   // black: the connections stay open and carry nothing, a wedged hub or middlebox.
-  // stuck: writes are held, their callbacks with them, until release(): an uplink that stops taking bytes.
-  constructor() { this.socks = new Set(); this.refuse = false; this.echo = false; this.black = false; this.stuck = false; this.held = []; this.writes = 0; }
+  // stuck: writes are held, their callbacks with them, until release(): an uplink that stops taking
+  // bytes. true holds every socket's writes; a socket holds only that one's.
+  // sent: every write that left, with the socket that wrote it.
+  constructor() { this.socks = new Set(); this.refuse = false; this.echo = false; this.black = false; this.stuck = false; this.held = []; this.writes = 0; this.sent = []; }
   /** The held writes leave, in order, and their callbacks run: the uplink moves again. */
   release() {
     const held = this.held;
     this.held = [];
     for (const { s, buf, cb } of held) { this.deliver(s, buf); cb?.(); }
   }
+  /**
+   * A slow uplink takes `n` more bytes of what is held: a write whose last byte is taken leaves and
+   * its callback runs (Node's for a socket too comes only then), the rest of it keeps waiting.
+   */
+  releaseBytes(n) {
+    while (n > 0 && this.held.length > 0) {
+      const h = this.held[0];
+      h.left ??= h.buf.length;
+      const k = Math.min(n, h.left);
+      h.left -= k;
+      n -= k;
+      if (h.left === 0) { this.held.shift(); this.deliver(h.s, h.buf); h.cb?.(); }
+    }
+  }
   deliver(s, buf) {
+    this.sent.push({ s, buf: Buffer.from(buf) });
     if (this.black) return;
     for (const o of this.socks) if ((o !== s || this.echo) && !o.destroyed) o.emit("data", Buffer.from(buf));
   }
@@ -302,7 +319,7 @@ class Medium {
       // The callback says the socket took the bytes; called at once here, so a test sees a write's effect without waiting.
       write(buf, cb) {
         medium.writes++;
-        if (medium.stuck) { s.writableLength += buf.length; medium.held.push({ s, buf, cb }); return false; }
+        if (medium.stuck === true || medium.stuck === s) { s.writableLength += buf.length; medium.held.push({ s, buf, cb }); return false; }
         medium.deliver(s, buf);
         cb?.();
         return true;
@@ -930,6 +947,86 @@ test("transport: bytes that wait NO_PROGRESS_MS with the socket taking none clos
   await settle();
   assert.equal(a.ready, true);
   assert.notEqual(a.sock, first);
+  a.stop();
+  b.stop();
+});
+
+test("transport: with two confirmed links, a frame reaches both far ends in one socket write", async () => {
+  const medium = new Medium();
+  const mk = () => new ReticulumTransport({ host: "hub", port: 4242, tag: "a2ddc18dee75e2bd", confirmKey: CK, connect: () => medium.connect() });
+  const nodes = [mk(), mk(), mk()];
+  const got = nodes.map(() => []);
+  nodes.forEach((n, i) => n.on("packet", (buf) => got[i].push(buf)));
+  for (const n of nodes) n.start();
+  await settle();
+  for (let round = 0; round < 3; round++) { for (const n of nodes) n.tick(); await settle(); }
+  assert.deepEqual(nodes.map((n) => n.linkCount), [2, 2, 2], "every node linked to both others");
+  const crypto = ChannelCrypto.forChannelKeySync("north-star-2026");
+  const pcm = sealed(crypto, CP.Codec.PCM, Buffer.alloc(640, 2), 7, 3);
+  const w0 = medium.writes;
+  assert.equal(nodes[0].send(pcm, null, { voice: true }), true);
+  assert.equal(medium.writes - w0, 1, "four packets (two parts on each of two links), one write");
+  assert.deepEqual(got[1], [pcm]);
+  assert.deepEqual(got[2], [pcm]);
+  assert.deepEqual(got[0], []);
+  for (const n of nodes) n.stop();
+});
+
+test("transport: link control goes first, answers waiting are bounded, and no write is larger than it has to be", async () => {
+  let t = 1_000_000;
+  const medium = new Medium();
+  const { a, b } = await linked(medium, () => t);
+  const [e] = a.links.values();
+  medium.stuck = true;
+  assert.equal(a.send(Buffer.alloc(40)), true);                            // in flight
+  const answer = Array.from({ length: 40 }, (_, i) => Buffer.alloc(400, i)); // ~19 KB framed
+  assert.equal(a.writeBulk(e, answer), true);
+  assert.equal(a.writeBulk(e, answer), true);
+  assert.equal(a.writeBulk(e, answer), true);
+  assert.equal(a.writeBulk(e, answer), false, "past BULK_MAX_BYTES: refused whole, not cut");
+  assert.equal(a.stats.answersRefused, 1);
+  assert.ok(a.diagnostics().waiting.answerBytes <= BULK_MAX_BYTES);
+  const ctl = Buffer.from("link control, queued last");
+  assert.equal(a.write(ctl), true);
+  const from = medium.sent.length;
+  medium.stuck = false;
+  medium.release();
+  const writes = medium.sent.slice(from + 1).filter((w) => w.s === a.sock).map((w) => w.buf);
+  assert.ok(writes.length >= 4, `the answers in several writes (${writes.length})`);
+  assert.ok(writes[0].subarray(0, P.frame(ctl).length).equals(P.frame(ctl)), "the control packet first, ahead of the answers");
+  assert.ok(writes.every((w) => w.length <= WRITE_MAX_BYTES), writes.map((w) => w.length).join(" "));
+  assert.equal(a.diagnostics().waiting.answerBytes, 0);
+  assert.equal(a.writeBulk(e, answer), true, "room again");
+  a.stop();
+  b.stop();
+});
+
+test("transport: a slow uplink that keeps taking bytes is never closed, however long its backlog waits", async () => {
+  let t = 1_000_000;
+  const medium = new Medium();
+  const { a, b } = await linked(medium, () => t);
+  const [e] = a.links.values();
+  medium.stuck = a.sock;                                                    // a's uplink only: b still reaches a
+  const answer = Array.from({ length: 40 }, (_, i) => Buffer.alloc(400, i));
+  for (let i = 0; i < 3; i++) assert.equal(a.writeBulk(e, answer), true);  // ~58 KB waiting
+  // 16 KiB taken every 9 s: in one 58 KB write its callback would come after 36 s, and the
+  // connection be closed at 10; in writes of WRITE_MAX_BYTES at most, each 9 s ends one.
+  for (let step = 0; step < 3; step++) {
+    t += NO_PROGRESS_MS - 1000;
+    medium.releaseBytes(WRITE_MAX_BYTES);
+    b.send(Buffer.alloc(40));                                               // (the far end keeps the link alive)
+    a.tick();
+    assert.equal(a.ready, true, `step ${step}: bytes taken within NO_PROGRESS_MS are progress`);
+  }
+  assert.equal(a.stats.reconnects, 0);
+  // It stops taking any: NO_PROGRESS_MS later the connection goes.
+  assert.ok(medium.held.length > 0 || a.diagnostics().waiting.writes > 0);
+  a.send(Buffer.alloc(40));
+  t += NO_PROGRESS_MS;
+  b.send(Buffer.alloc(40));
+  a.tick();
+  assert.equal(a.ready, false);
+  assert.equal(a.stats.reconnects, 1);
   a.stop();
   b.stop();
 });

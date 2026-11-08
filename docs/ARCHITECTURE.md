@@ -204,14 +204,16 @@ link, rnsd forwards from one thread with a blocking send, and a full send queue 
 connection. The app, the Signal K plugin and the ESP32 gauges now follow one rule set; nothing on
 the wire changed but three spare bits of the hello's transports byte.
 
-- Hello bits: `RNS_UP` 0x10 (the Reticulum socket is up right now, cleared the moment it is not),
+- Hello bits: `RNS_UP` 0x10 (connected to the hub with at least one confirmed link right now,
+  cleared the moment either goes: a socket alone delivers to nobody),
   `FWD_PREFER` 0x20 (the plugin) and `FWD_AVOID` 0x40 (an ESP32); a phone sets neither preference.
   0x80 stays reserved, and a decoder carries bits it does not know.
 - Local peers (`LocalPeers`, pure and tested): a sender is local while a hello of its own reached
   us over WLAN, Bluetooth or Aware unrelayed (`hops == ttl`) within the last 15 s. The boat's
   forwarder is elected from what each node hears, without a message: us if our `RNS_UP` is set
   and every local sender whose last local hello had it; highest rank (prefer 2, neither 1, avoid
-  0), ties to the lowest sender id compared as unsigned 32-bit.
+  0), ties to the lowest sender id compared as unsigned 32-bit. A full table of local senders
+  forgets the one heard longest ago; a newcomer is never refused.
 - Audio forwarding (`Forwarding`, a pure table): our own voice goes to the local transports and to
   every Reticulum link except those whose far end is a local sender (split horizon; a link whose
   far end is not known yet gets it). A frame heard locally goes to Reticulum only from the
@@ -226,7 +228,8 @@ the wire changed but three spare bits of the hello's transports byte.
   one item, and the writer puts everything waiting out in one write and flush; voice older than
   200 ms when its turn comes is dropped and counted (hellos, proofs and link control never are);
   a backlog never closes the connection, only a socket that has accepted none of what waits for
-  10 s.
+  10 s (the batch is written in 1 KiB chunks, each one taken counting as progress, so a slow
+  socket that is still moving is not taken for a dead one).
 - The floor (`Floor`, pure and tested; half duplex only, since full duplex mixes talkers on
   purpose): another talker is heard while an authentic first-copy audio frame from someone else
   arrived within the last 400 ms. A key pressed then does not key: the busy cue
@@ -235,8 +238,8 @@ the wire changed but three spare bits of the hello's transports byte.
   override), a frame from a talker with a lower unsigned id makes us yield at once, locked out
   until the key is released; both ends compare the same two ids, so exactly one survives. The
   receive path keeps running while we talk (only playback is silent), which is how the collision
-  is seen. `PttEngine.isKeyed` is the key's state, `isTalking` the mic's, and a toggling key
-  reads the first.
+  is seen, and a phone that yields plays the winner from that frame on. `PttEngine.isKeyed` is
+  the key's state, `isTalking` the mic's, and a toggling key reads the first.
 
 Reconnect lives inside each transport, never in the engine: Bluetooth re-dials its chosen peer
 from the reader's `finally`, and waits for the adapter to come back on when it is switched off;

@@ -16,7 +16,8 @@ import kotlin.concurrent.withLock
  *  - A backlog never closes the connection (the first design closed it after three seconds full,
  *    which turned a busy hub into a full relink of every link). The connection is given up only
  *    when bytes have been waiting and the socket has accepted none for [noProgressMs] ([stalled]),
- *    besides the transport's own dead-link rules.
+ *    besides the transport's own dead-link rules. The writer reports each chunk the socket takes
+ *    ([progressed]), so a slow write that is still moving is not a stall.
  *  - The queue is bounded at [capacity] items all the same: the oldest voice goes first ([dropped]),
  *    and only with no voice left the oldest item of any kind.
  *
@@ -109,6 +110,9 @@ internal class ReticulumSendQueue(
 
     /** The socket accepted what [take] handed out: progress. */
     fun written() = lock.withLock { writingSince = -1L }
+
+    /** The socket accepted part of what [take] handed out: progress, the write goes on. */
+    fun progressed() = lock.withLock { if (writingSince >= 0) writingSince = clock() }
 
     /** True when bytes have been waiting on the socket, none accepted, for [noProgressMs]: give the connection up. */
     fun stalled(): Boolean = lock.withLock { writingSince >= 0 && clock() - writingSince >= noProgressMs }

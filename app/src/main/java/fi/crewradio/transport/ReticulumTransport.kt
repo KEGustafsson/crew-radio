@@ -124,6 +124,9 @@ class ReticulumTransport(
     /** True while at least one link has proved the key: somebody a question could reach. */
     val canAsk: Boolean get() = running && connected && node.linkCount > 0
 
+    /** Connected to the hub with at least one confirmed link: what the hello's RNS_UP says. */
+    val linked: Boolean get() = connected && node.linkCount > 0
+
     /**
      * Asks the boat's Crew Radio plugin a question over the links ([AskCarry] request message) and
      * blocks for the answer: asked again, same id, halfway through [timeoutMs] if nothing has come
@@ -242,8 +245,16 @@ class ReticulumTransport(
             transportThread("ptt-rns-tx", {}) {
                 try {
                     while (true) {
-                        val batch = q.take() ?: break   // everything waiting: one write, one flush
-                        out.write(batch)
+                        val batch = q.take() ?: break   // everything waiting: one flush
+                        // In chunks, each one accepted counting as progress: a slow socket that is
+                        // still taking bytes is not the stall that ends the connection.
+                        var at = 0
+                        while (at < batch.size) {
+                            val n = minOf(WRITE_CHUNK, batch.size - at)
+                            out.write(batch, at, n)
+                            at += n
+                            q.progressed()
+                        }
                         out.flush()
                         q.written()
                     }
@@ -341,5 +352,7 @@ class ReticulumTransport(
         const val FIRST_NETWORK_MS = 1_000L
         /** A question's whole wait: a hub round trip is a second or two, and it is asked twice. */
         const val ASK_TIMEOUT_MS = 8_000L
+        /** A batch goes to the socket this much at a time, so the stall check sees a slow write move. */
+        const val WRITE_CHUNK = 1024
     }
 }

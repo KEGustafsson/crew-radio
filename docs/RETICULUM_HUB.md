@@ -214,7 +214,8 @@ transport instance, `enable_transport` is not on.
   lists that node with **Reticulum** among its links.
 - **The boat.** In the signalk-crewradio plugin's settings, under **Reticulum**, tick **Enabled**
   and set **Transport node host** to the hub (`hub.example.org`) and **Transport node port** to
-  4242. The plugin dials out over whatever internet
+  4242: the port of the hub's listener, a `BackboneInterface` or a `TCPServerInterface`, which the
+  plugin connects to the same way. The plugin dials out over whatever internet
   the boat has, and relays between Reticulum and the boat's WLAN, so the phones aboard need
   nothing new.
 - **Several crews** can share one hub. Each channel key makes its own Reticulum destination, and
@@ -323,7 +324,15 @@ sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
 
 If it does not come back up, the log file says why (a misspelt option, a port in use); put the
-copy back (`sudo cp -p $C.<date> $C`) and restart.
+copy back and restart. The copy is named after the day it was made (`config.2026-11-08`, say);
+`ls -l $C.*` lists them, and the one to restore is the newest, from before this edit. Put its
+name in the command yourself, for example:
+
+```sh
+ls -l $C.*
+sudo cp -p $C.2026-11-08 $C     # the date of your copy, as ls shows it
+sudo systemctl restart rnsd
+```
 
 ### From `TCPServerInterface` to `BackboneInterface`
 
@@ -332,18 +341,30 @@ A hub set up before 2026-11-08 has a `TCPServerInterface` listener. On Linux, ch
 
 ```sh
 C=/var/lib/rns/.reticulum/config
-sudo cp -p $C $C.tcpserver
-sudo sed -i 's/type = TCPServerInterface/type = BackboneInterface/; s/listen_ip = /listen_on = /; s/listen_port = /port = /' $C
-sudo sed -n '/\[interfaces\]/,$p' $C
+# The first backup is the one to go back to: a second run must not overwrite it.
+if sudo test -e $C.tcpserver; then echo "$C.tcpserver exists already: stopping"; else
+  sudo cp -p $C $C.tcpserver &&
+  sudo sed -i '/^ *\[\[Crew Radio hub\]\]/,/^ *\[\[/{s/type = TCPServerInterface/type = BackboneInterface/; s/listen_ip = /listen_on = /; s/listen_port = /port = /}' $C &&
+  sudo sed -n '/\[interfaces\]/,$p' $C
+fi
+```
+
+The `sed` changes only the block that starts at `[[Crew Radio hub]]` and ends at the next `[[`:
+the name section 4 gives the hub's listener. If yours is named otherwise, put its name in the
+command, or make the three changes in that block by hand (`type`, `listen_ip` to `listen_on`,
+`listen_port` to `port`); other interfaces (a `TCPClientInterface` out to another hub, a UDP
+interface, the boat's `127.0.0.1` listener from section 6) keep theirs. If the command stopped
+because `$C.tcpserver` exists, the migration has been run before: look at the config, and keep
+that file, which is the config as it was before the first run. Check the `sed -n` output, then:
+
+```sh
 sudo systemctl restart rnsd
 sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
 
-Check the `sed -n` output before restarting: only the hub's own listener should have changed. A
-config with other TCP interfaces (a `TCPClientInterface` out to another hub, or the boat's
-`127.0.0.1` listener from section 6) needs the edit by hand instead. `rnstatus` should then list
-`BackboneInterface[Crew Radio hub/0.0.0.0:4242]` and, within a few seconds, the same `Clients`
-count as before. To go back: `sudo cp -p $C.tcpserver $C` and restart.
+`rnstatus` should then list `BackboneInterface[Crew Radio hub/0.0.0.0:4242]` and, within a few
+seconds, the same `Clients` count as before. To go back: `sudo cp -p $C.tcpserver $C` and
+restart.
 
 ### Removing it
 
