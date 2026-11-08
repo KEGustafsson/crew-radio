@@ -203,15 +203,16 @@ class ChannelNode extends EventEmitter {
    *
    * It never keys over a talker: when another talker is heard (busy) before a frame, the frames
    * stop there and it resolves {yielded: true, by: senderId}; else {yielded: false}. Saying it
-   * again after a gap is the caller's choice (index.js does, once).
+   * again after a gap is the caller's choice (index.js does, once). With `opts.override` (an
+   * urgent announcement) it keys whatever it hears, to the last frame.
    */
-  speak(pcmBytes, cancelled = () => false) {
-    const turn = this.chain.then(() => this.sendFrames(pcmBytes, cancelled));
+  speak(pcmBytes, cancelled = () => false, opts = {}) {
+    const turn = this.chain.then(() => this.sendFrames(pcmBytes, cancelled, opts));
     this.chain = turn.catch(() => {});
     return turn;
   }
 
-  async sendFrames(pcmBytes, isCancelled = () => false) {
+  async sendFrames(pcmBytes, isCancelled = () => false, { override = false } = {}) {
     const result = { yielded: false, by: 0 };
     if (isCancelled()) return result;
     const frames = [];
@@ -234,8 +235,9 @@ class ChannelNode extends EventEmitter {
       // cushion never shrinks over a long announcement.
       const t0 = this.clock();
       for (let i = 0; i < frames.length && !cancelled && !isCancelled(); i++) {
-        // Somebody keyed: they have the channel (the plugin always yields, the app's floor rule 4).
-        if (this.busy) {
+        // Somebody keyed: they have the channel (the plugin yields, the app's floor rule 4), unless
+        // this is an override (an urgent announcement), which nobody stops.
+        if (this.busy && !override) {
           result.yielded = true;
           result.by = this.heardFrom;
           this.stats.yielded++;

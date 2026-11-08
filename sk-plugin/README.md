@@ -103,7 +103,7 @@ The same works as a PUT to `vessels.self.communication.crewradio.say` with a str
 | Voice | slt | slt (female), kal16, rms, awb (male). |
 | Speaking rate | 1 | 0.7 slow to 1.3 fast. |
 | Chime | on | Two notes before an announcement, three quick ones before an urgent one. |
-| Wait for a gap in talk | 2000 ms | An announcement never talks over the crew. It waits this long at most for a gap in talk (400 ms of nobody talking), and stops if someone keys while it is said; either way it is said again, whole, at the next gap (waited for up to a minute), once, and after that dropped with a line in the debug log. |
+| Wait for a gap in talk | 2000 ms | A normal announcement never talks over the crew. It waits this long at most for a gap in talk (400 ms of nobody talking), and stops if someone keys while it is said; either way it is said again, whole, at the next gap (waited for up to a minute), once, and after that dropped with a line in the debug log. An urgent announcement is the crew's override: it waits this long at most, then is said over whoever is talking, to the end. |
 | Multicast group, UDP port | 239.255.42.1, 47474 | Must match the phones' WLAN settings. |
 | Network interface | auto | The server's interface on the boat network, wired (eth0) or WLAN (wlan0). auto: wlan first, then eth/en, then anything with an IPv4 address, container/bridge/VPN interfaces last; looked at again every 5 s. |
 | Hop budget | 4 | How far phones may relay the server's packets. |

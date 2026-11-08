@@ -123,7 +123,7 @@ class AnnouncementQueue extends EventEmitter {
         this.current = entry;
         this.emit("started", entry.item, entry.priority);
         try {
-          await this.play(entry.item, () => entry.cancelled);
+          await this.play(entry.item, () => entry.cancelled, entry.priority);
         } catch (e) {
           this.log(`announcement failed: ${e.message}`);
         } finally {

@@ -103,7 +103,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       return;
     }
     queue = new AnnouncementQueue({
-      play: (pcm, cancelled) => playOnChannel(pcm, cancelled),
+      play: (pcm, cancelled, priority) => playOnChannel(pcm, cancelled, priority),
       onCancel: () => node?.cancel(),
       log: (m) => app.debug(m),
     });
@@ -366,7 +366,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
   /** How long an announcement waits for the network link to come back before it is dropped. */
   const LINK_WAIT_MS = 60_000;
 
-  async function playOnChannel(pcm, cancelled) {
+  async function playOnChannel(pcm, cancelled, priority = "normal") {
     // The link reconnects on its own (1 s doubling to 15 s); an announcement made while it is
     // down waits for it at the head of the queue instead of being thrown away. With Reticulum on,
     // the node that keeps the channel while the LAN is down reaches only the crew ashore, so the
@@ -384,6 +384,11 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     // for the next gap and says the announcement again, whole, once; stopped again (or no gap at
     // all), it is dropped with a log line. The first wait for a gap is the setting's, the second
     // up to RETRY_WAIT_MS (a minute).
+    //
+    // An urgent announcement is the crew's override (the floor rule's hold through the busy cue):
+    // it waits for a gap only the setting's time, then keys anyway, and is never stopped by a
+    // talker. An emergency must get through a crew that keeps talking.
+    const urgent = priority === "urgent";
     let yielded = 0;
     const giveWay = (why) => {
       if (++yielded > 1) throw new Error(`dropped: ${why} again`);
@@ -401,8 +406,9 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       const quiet = await n.waitForSilence(BUSY_MS, yielded === 0 ? cfg.waitForSilenceMs : retryWaitMs, () => !running || cancelled() || node !== n);
       if (!running || cancelled()) return;
       if (node !== n) continue;
-      if (!quiet) { giveWay(`the channel is busy (${talkerName(n, n.heardFrom)} talking)`); continue; }
-      const r = await n.speak(pcm, cancelled);   // the queue's own flag: an urgent one may cut in before the first frame
+      if (!quiet && urgent) app.debug(`urgent announcement: over ${talkerName(n, n.heardFrom)}, who is talking`);
+      if (!quiet && !urgent) { giveWay(`the channel is busy (${talkerName(n, n.heardFrom)} talking)`); continue; }
+      const r = await n.speak(pcm, cancelled, { override: urgent });   // the queue's own flag: an urgent one may cut in before the first frame
       // Cut short because the LAN came back: the boat heard none of it, so it goes again, whole,
       // on the LAN node (which carries it to Reticulum as well).
       if (n.link === OFFLINE && node !== n && running && !cancelled()) continue;
@@ -652,7 +658,7 @@ function schema(app) {
       voice: { type: "string", title: "Voice", enum: VOICES, default: "slt", description: "Flite voices, English: slt (female), kal16, rms and awb (male)." },
       rate: { type: "number", title: "Speaking rate", default: 1, minimum: 0.7, maximum: 1.3, description: "1 is the voice's own pace; 0.8 slower for a noisy deck." },
       chime: { type: "boolean", title: "Chime before each announcement", default: true, description: "Two notes; three quick ones before an urgent announcement." },
-      waitForSilenceMs: { type: "integer", title: "Wait for a gap in talk (ms)", default: 2000, minimum: 0, maximum: 30000, description: "An announcement never talks over the crew: it waits this long at most for a gap in talk, and stops if someone keys while it is said. Either way it is said again, whole, at the next gap (waiting up to a minute for it), once; then it is dropped." },
+      waitForSilenceMs: { type: "integer", title: "Wait for a gap in talk (ms)", default: 2000, minimum: 0, maximum: 30000, description: "A normal announcement never talks over the crew: it waits this long at most for a gap in talk, and stops if someone keys while it is said. Either way it is said again, whole, at the next gap (waiting up to a minute for it), once; then it is dropped. An urgent one waits this long at most, then is said over whoever is talking, to the end." },
       group: { type: "string", title: "Multicast group", default: "239.255.42.1", description: "Must match the phones' WLAN setting (Settings › WLAN group and port)." },
       port: { type: "integer", title: "UDP port", default: 47474, minimum: 1024, maximum: 65535 },
       iface: { type: "string", title: "Network interface", default: "auto", description: "The server's interface on the boat network: wired LAN (eth0) or WLAN (wlan0), as long as it is the same network the phones' WLAN is on. auto: a wlan interface, else eth/en, else the first with an IPv4 address (container, bridge and VPN interfaces last); looked at again every 5 s." },

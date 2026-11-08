@@ -25,6 +25,9 @@ are unchanged, and older clients keep working beside these (they only save nothi
 
 ### Changed
 
+- An urgent announcement is the override of the channel's busy rule: it waits for a gap in talk at
+  most the setting's time, then is said over whoever is talking, and nobody stops it. A normal one
+  still gives way.
 - Announcements never talk over the crew: one starts only after 400 ms with nobody talking,
   stops at the first frame of another talker, and is said again, whole, at the next gap (waited
   for up to a minute), once; then it is dropped with a log line. Before, an announcement cut in

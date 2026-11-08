@@ -614,6 +614,28 @@ test("an announcement waiting for a gap that never comes is never keyed over the
   }
 });
 
+test("an urgent announcement is the override: after the wait for a gap it keys over a talker, to the last frame", async () => {
+  FakeLink.last = undefined;
+  const app = fakeApp();
+  const p = plugin(app, { ...deps, retryWaitMs: 300 });
+  p.start({ channelKey: KEY, waitForSilenceMs: 100, chime: false, bridge: { enabled: false } });
+  await until(() => FakeLink.last && FakeLink.last.sent.length > 0);
+  const link = FakeLink.last;
+  let seq = 0;
+  const talk = setInterval(() => link.emit("packet", phonePacket(78, seq++, Buffer.alloc(640), P.Codec.PCM), { address: "10.0.0.6" }), 20);
+  try {
+    await until(() => seq > 3);
+    const r = await app.props["signalk-crewradio.api"].say({ text: "Man overboard", priority: "urgent" });
+    const frames = Math.ceil((r.seconds * 1000) / 20);
+    await until(() => link.sent.filter((b) => P.parseHeader(b).codec === P.Codec.PCM).length >= frames, 5000);
+    assert.ok(!app.log.some((l) => /announcement failed/.test(l)), "never dropped");
+    assert.ok(!app.log.some((l) => /announcement: .*said again/.test(l)), "never gave way");
+  } finally {
+    clearInterval(talk);
+    p.stop();
+  }
+});
+
 test("POST /say: a body cut short by the client going away is not said", async () => {
   FakeLink.last = undefined;
   const app = fakeApp();
