@@ -339,10 +339,13 @@ sudo systemctl restart rnsd
 A hub set up before 2026-11-08 has a `TCPServerInterface` listener. On Linux, change it (section
 4 says why); the clients need nothing. The option names change with the type.
 
-If the config is a symbolic link kept by a configuration tool (NixOS, a dotfiles manager, or the
-like; `ls -l /var/lib/rns/.reticulum/config` shows `->`), do not run the commands below: `sed -i` replaces the link with a
-regular file of its own, and the tool would put the old listener back on its next run (or lose
-track of the file). Make the same three changes in that tool's copy of the config instead.
+If a configuration tool manages the config (NixOS, Ansible, a dotfiles manager or the like), do
+not run the commands below, whether the config is a symbolic link (`ls -l
+/var/lib/rns/.reticulum/config` shows `->`; `sed -i` would replace the link with a regular file of
+its own) or a regular file the tool writes: the tool would put the old listener back on its next
+run. Make the same three changes in the tool's source instead, apply it the tool's way (for
+example `nixos-rebuild switch`, or a playbook run), restart `rnsd` if the tool does not, and
+check with `rnstatus` that the listener is now a `BackboneInterface`.
 
 ```sh
 C=/var/lib/rns/.reticulum/config
