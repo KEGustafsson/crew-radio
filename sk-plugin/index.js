@@ -27,7 +27,7 @@ const path = require("node:path");
 const { ChannelCrypto } = require("./lib/crypto");
 const { Transports, sanitiseName, REPLAY_WINDOW_S } = require("./lib/packet");
 const { LanLink } = require("./lib/lan");
-const { ChannelNode } = require("./lib/node");
+const { ChannelNode, BUSY_MS } = require("./lib/node");
 const { ReticulumTransport } = require("./lib/rns/transport");
 const { ReplayGuard } = require("./lib/replay");
 const { SourceLimiter } = require("./lib/ratelimit");
@@ -54,6 +54,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
   const Tts = deps.Tts ?? FliteTts;
   const Rns = deps.Reticulum ?? ReticulumTransport;
   const lanGraceMs = deps.lanGraceMs ?? LAN_GRACE_MS;
+  const retryWaitMs = deps.retryWaitMs ?? RETRY_WAIT_MS;
   const plugin = {
     id: "signalk-crewradio",
     name: "Crew Radio",
@@ -375,6 +376,17 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     const t0 = Date.now();
     const onLan = () => node && node.link !== OFFLINE;
     const ashoreOnly = () => node && node.link === OFFLINE && rns?.linkCount > 0 && Date.now() - t0 >= lanGraceMs;
+    //
+    // The plugin never talks over the crew (the channel's floor rule for announcements): it starts
+    // only after a gap of BUSY_MS, and the moment another talker is heard it stops. Then it waits
+    // for the next gap and says the announcement again, whole, once; stopped again (or no gap at
+    // all), it is dropped with a log line. The first wait for a gap is the setting's, the second
+    // up to RETRY_WAIT_MS (a minute).
+    let yielded = 0;
+    const giveWay = (why) => {
+      if (++yielded > 1) throw new Error(`dropped: ${why} again`);
+      app.debug(`announcement: ${why}; said again once the channel is quiet`);
+    };
     for (;;) {
       while (!onLan() && !ashoreOnly()) {
         if (!running || cancelled()) return;
@@ -384,15 +396,22 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       // The node is held here: the link may drop (and the node with it) during the wait for a
       // gap in talk, and the announcement then goes back to waiting for the link.
       const n = node;
-      if (cfg.waitForSilenceMs > 0) await n.waitForSilence(300, cfg.waitForSilenceMs);
+      const quiet = await n.waitForSilence(BUSY_MS, yielded === 0 ? cfg.waitForSilenceMs : retryWaitMs, () => !running || cancelled() || node !== n);
       if (!running || cancelled()) return;
       if (node !== n) continue;
-      await n.speak(pcm, cancelled);   // the queue's own flag: an urgent one may cut in before the first frame
+      if (!quiet) { giveWay(`the channel is busy (${talkerName(n, n.heardFrom)} talking)`); continue; }
+      const r = await n.speak(pcm, cancelled);   // the queue's own flag: an urgent one may cut in before the first frame
       // Cut short because the LAN came back: the boat heard none of it, so it goes again, whole,
       // on the LAN node (which carries it to Reticulum as well).
       if (n.link === OFFLINE && node !== n && running && !cancelled()) continue;
+      if (r?.yielded && running && !cancelled()) { giveWay(`stopped for ${talkerName(n, r.by)}`); continue; }
       return;
     }
+  }
+
+  /** A talker as the log names it: its roster name, else its id. */
+  function talkerName(n, id) {
+    return n.nodes.get(id)?.name ?? `#${(id >>> 0).toString(16)}`;
   }
 
   /** The plugin's state for the web page: link, roster, queue, voice, counters, limits. */
@@ -407,6 +426,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       link: linkInfo ? { iface: linkInfo.iface, address: linkInfo.address } : null,
       reticulum: rns ? {
         host: cfg.reticulum.host, port: cfg.reticulum.port, connected: rns.ready, links: rns.linkCount, status: rnsStatus,
+        forwarder: !!node?.isForwarder(), boat: node ? node.local.list().map((p) => ({ id: (p.senderId >>> 0).toString(16), transports: p.transports })) : [],
         answerQuestions: cfg.reticulum.answerQuestions, questions: answers ? { ...answers.stats } : null,
         detail: rns.diagnostics(),
       } : null,
@@ -415,7 +435,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       speaking: !!node?.speaking,
       queued: (queue?.size ?? 0) + (queue?.current && !node?.speaking ? 1 : 0),
       roster: roster.map((n) => ({ name: n.name, transports: describeTransports(n.transports), hops: n.hops, versionCode: n.versionCode, talking: n.talking, ageMs: n.ageMs })),
-      stats: { ...(node?.stats ?? { rx: 0, tx: 0, rejected: 0, stale: 0, late: 0, relayed: 0 }), synthesized: tts?.stats?.synthesized ?? 0, cached: tts?.stats?.cached ?? 0 },
+      stats: { ...(node?.stats ?? { rx: 0, tx: 0, rejected: 0, stale: 0, late: 0, relayed: 0, held: 0, yielded: 0 }), synthesized: tts?.stats?.synthesized ?? 0, cached: tts?.stats?.cached ?? 0 },
       limits: { maxText: MAX_TEXT, perMinute: RATE_PER_MINUTE, queue: queue?.max ?? null, urgent: queue?.maxUrgent ?? null },
       uptimeSec: running ? Math.round((Date.now() - startedAt) / 1000) : 0,
     };
@@ -466,6 +486,8 @@ const OFFLINE = Object.freeze({ offline: true, send: () => false, on() {}, off()
 
 /** How long an announcement made while the LAN is down waits for it before going out on Reticulum alone. */
 const LAN_GRACE_MS = 10_000;
+/** How long an announcement that gave way to a talker waits for the next gap in talk before it is dropped. */
+const RETRY_WAIT_MS = 60_000;
 
 /**
  * The settings with defaults, validated: a value out of range falls back to the default and is
@@ -628,7 +650,7 @@ function schema(app) {
       voice: { type: "string", title: "Voice", enum: VOICES, default: "slt", description: "Flite voices, English: slt (female), kal16, rms and awb (male)." },
       rate: { type: "number", title: "Speaking rate", default: 1, minimum: 0.7, maximum: 1.3, description: "1 is the voice's own pace; 0.8 slower for a noisy deck." },
       chime: { type: "boolean", title: "Chime before each announcement", default: true, description: "Two notes; three quick ones before an urgent announcement." },
-      waitForSilenceMs: { type: "integer", title: "Wait for a gap in talk (ms)", default: 2000, minimum: 0, maximum: 30000, description: "An announcement waits this long at most for the crew to stop talking before it cuts in." },
+      waitForSilenceMs: { type: "integer", title: "Wait for a gap in talk (ms)", default: 2000, minimum: 0, maximum: 30000, description: "An announcement never talks over the crew: it waits this long at most for a gap in talk, and stops if someone keys while it is said. Either way it is said again, whole, at the next gap (waiting up to a minute for it), once; then it is dropped." },
       group: { type: "string", title: "Multicast group", default: "239.255.42.1", description: "Must match the phones' WLAN setting (Settings › WLAN group and port)." },
       port: { type: "integer", title: "UDP port", default: 47474, minimum: 1024, maximum: 65535 },
       iface: { type: "string", title: "Network interface", default: "auto", description: "The server's interface on the boat network: wired LAN (eth0) or WLAN (wlan0), as long as it is the same network the phones' WLAN is on. auto: a wlan interface, else eth/en, else the first with an IPv4 address (container, bridge and VPN interfaces last); looked at again every 5 s." },

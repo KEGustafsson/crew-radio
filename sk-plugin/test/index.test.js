@@ -167,7 +167,7 @@ test("on start it derives the key off the main thread, joins the channel, sends 
   assert.equal(h.ttl, 3);
   assert.ok(Math.abs(h.time - Date.now() / 1000) < 5);
   const hello = P.decodeHello(crypto.open(P.aadOf(link.sent[0]), link.sent[0].subarray(P.HEADER)));
-  assert.deepEqual(hello, { name: "Sirius", transports: 1, ttl: 3, versionCode: 0 });
+  assert.deepEqual(hello, { name: "Sirius", transports: P.Transports.LAN | P.Transports.FWD_PREFER, ttl: 3, versionCode: 0 }, "no RNS_UP without Reticulum; FWD_PREFER always");
   assert.equal(lastValue(app, "communication.crewradio.online"), 0);
   assert.match(app.status.at(-1), /0 online/);
   assert.match(app.status.at(-1), /voice slt/);
@@ -548,6 +548,72 @@ test("an announcement waiting for a gap in talk survives the link dropping meanw
   p.stop();
 });
 
+test("an announcement a crew member keys over stops, is said again whole after the gap, and is dropped the second time", async () => {
+  /** One second of speech: long enough to be keyed over. */
+  class SecondTts extends FakeTts {
+    synthesize(text) { this.texts.push(text); return Promise.resolve(Buffer.alloc(16000 * 2, 1)); }
+  }
+  FakeLink.last = undefined;
+  const app = fakeApp();
+  const p = plugin(app, { ...deps, Tts: SecondTts });
+  p.start({ channelKey: KEY, waitForSilenceMs: 0, chime: false, bridge: { enabled: false } });
+  await until(() => FakeLink.last && FakeLink.last.sent.length > 0);
+  const link = FakeLink.last;
+  const pcm = () => link.sent.filter((b) => P.parseHeader(b).codec === P.Codec.PCM).length;
+  const whole = 50 + 8;                                              // 1 s of speech and the 150 ms tail
+  let seq = 0;
+  const key = () => link.emit("packet", phonePacket(77, seq++, Buffer.alloc(640), P.Codec.PCM), { address: "10.0.0.5" });
+  link.emit("packet", phonePacket(77, 1000, P.encodeHello({ name: "Anna", transports: 1, ttl: 4 })), { address: "10.0.0.5" });
+  try {
+    await app.props["signalk-crewradio.api"].say({ text: "Depth 2.5 m" });
+    await until(() => pcm() >= 3);
+    key();                                                           // Anna keys over the first attempt
+    await until(() => app.log.some((l) => /announcement: stopped for Anna; said again once the channel is quiet/.test(l)));
+    const first = pcm();
+    assert.ok(first < 15, `the first attempt stopped (${first} frames)`);
+    await until(() => lastValue(app, "communication.crewradio.speaking") === false && pcm() >= first + whole, 5000);
+    assert.equal(pcm(), first + whole, "said again, whole, after the gap");
+    assert.ok(!app.log.some((l) => /dropped/.test(l)));
+
+    // Keyed over twice: the second time it is dropped, with a line in the log.
+    await app.props["signalk-crewradio.api"].say({ text: "Wind 25 knots" });
+    const base = pcm();
+    await until(() => pcm() >= base + 3);
+    key();
+    await until(() => app.log.filter((l) => /said again once/.test(l)).length === 2 && pcm() >= base + 8, 5000);
+    const again = pcm();
+    await until(() => pcm() >= again + 3);
+    key();
+    await until(() => app.log.some((l) => /announcement failed: dropped: stopped for Anna again/.test(l)), 5000);
+    const atDrop = pcm();
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(pcm(), atDrop, "and not said a third time");
+  } finally {
+    p.stop();
+  }
+});
+
+test("an announcement waiting for a gap that never comes is never keyed over the crew: it gives way once, then is dropped", async () => {
+  FakeLink.last = undefined;
+  const app = fakeApp();
+  const p = plugin(app, { ...deps, retryWaitMs: 300 });
+  p.start({ channelKey: KEY, waitForSilenceMs: 100, chime: false, bridge: { enabled: false } });
+  await until(() => FakeLink.last && FakeLink.last.sent.length > 0);
+  const link = FakeLink.last;
+  let seq = 0;
+  const talk = setInterval(() => link.emit("packet", phonePacket(78, seq++, Buffer.alloc(640), P.Codec.PCM), { address: "10.0.0.6" }), 20);
+  try {
+    await until(() => seq > 3);
+    await app.props["signalk-crewradio.api"].say({ text: "Depth 2.5 m" });
+    await until(() => app.log.some((l) => /announcement: the channel is busy \(#4e talking\); said again once the channel is quiet/.test(l)), 2000);
+    await until(() => app.log.some((l) => /announcement failed: dropped: the channel is busy \(#4e talking\) again/.test(l)), 2000);
+    assert.equal(link.sent.filter((b) => P.parseHeader(b).codec === P.Codec.PCM).length, 0, "not one frame over the talker");
+  } finally {
+    clearInterval(talk);
+    p.stop();
+  }
+});
+
 test("POST /say: a body cut short by the client going away is not said", async () => {
   FakeLink.last = undefined;
   const app = fakeApp();
@@ -626,7 +692,7 @@ test("Reticulum: off by default; when enabled it starts with the channel's tag a
     const res = fakeRes();
     router.routes["GET /status"]({}, res);
     assert.deepEqual(res.body.reticulum, {
-      host: "hub.example", port: 4965, connected: true, links: 2, status: "Reticulum: 2 links",
+      host: "hub.example", port: 4965, connected: true, links: 2, status: "Reticulum: 2 links", forwarder: true, boat: [],
       answerQuestions: false, questions: { reads: 0, says: 0, refused: 0 }, detail: { peers: [] },
     });
     p.stop();
@@ -782,7 +848,7 @@ test("Reticulum: past the grace it goes to the shore alone, and if the LAN comes
     const r = FakeRns.last;
     r.linkCount = 1;
     const hello = r.accepted.map((b) => P.decodeHello(crypto.open(P.aadOf(b), b.subarray(P.HEADER)))).find(Boolean);
-    assert.equal(hello.transports, P.Transports.RETICULUM, "while the LAN is down the hello does not claim it");
+    assert.equal(hello.transports, P.Transports.RETICULUM | P.Transports.RNS_UP | P.Transports.FWD_PREFER, "while the LAN is down the hello does not claim it");
     const said = app.props["signalk-crewradio.api"].say({ text: "Anchor dragging" });
     await until(() => pcm(r.accepted) > 0, 3000);
     FakeLink.failOpen = false;                                         // the LAN comes back mid-announcement

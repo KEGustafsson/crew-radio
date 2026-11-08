@@ -85,12 +85,37 @@ sudo -u rns nano /var/lib/rns/.reticulum/config
 
 [interfaces]
   [[Crew Radio hub]]
-    type = TCPServerInterface
+    type = BackboneInterface
     enabled = yes
-    listen_ip = 0.0.0.0
-    listen_port = 4242
+    listen_on = 0.0.0.0
+    port = 4242
 ```
 
+- **`BackboneInterface`, not `TCPServerInterface`**, for the listener. It is the same TCP and
+  the same framing on the same port, so the phones and the plugin connect to it unchanged; the
+  difference is what the hub does when one client stops reading (a phone whose mobile data
+  stalled, a boat on a congested uplink). A `TCPServerInterface` client writes with a blocking
+  `socket.sendall` from the one thread that forwards every packet through the hub
+  (`Transport.inbound`, the inbound queue), so a single client that has stopped reading holds up
+  forwarding for everybody: the crew's voice stops for all of them, and their links time out.
+  A `BackboneInterface` keeps a send buffer per client, drops only that client's frames while it
+  is stalled, and closes it after about 12 s without progress (`DP_EC_DEAD_TIME`); everybody
+  else carries on. On a `TCPServerInterface` hub this was one of the reasons every client
+  dropped off when two crew members talked at once (2026-11-08). Read from rnsd 1.6.0's
+  source, and running on a Crew Radio hub (rnsd 1.5.4) since 2026-11-08, where the clients
+  reconnected to it unchanged within seconds of the switch; the per-client buffer and its drop
+  rule came with `rns` 1.5.1, so any version this guide installs has them. To move an existing
+  hub over, see section 9.
+- **Linux only.** `BackboneInterface` uses Linux's `epoll`, and `rnsd` refuses to start it on
+  anything else. On another system keep a `TCPServerInterface`, which takes the same clients:
+
+  ```text
+    [[Crew Radio hub]]
+      type = TCPServerInterface
+      enabled = yes
+      listen_ip = 0.0.0.0
+      listen_port = 4242
+  ```
 - **No network name or passphrase** on this interface (`network_name`, `passphrase`). Those are
   Reticulum's interface access codes, and Crew Radio does not support them. The channel key is
   what keeps strangers out of the channel.
@@ -103,8 +128,8 @@ sudo -u rns nano /var/lib/rns/.reticulum/config
       type = AutoInterface
       enabled = yes
   ```
-- `listen_ip = 0.0.0.0` listens on every IPv4 address. The manual covers IPv6 (`prefer_ipv6`)
-  and binding to one interface (`device = eth0`).
+- `listen_on = 0.0.0.0` listens on every IPv4 address (`listen_ip` on a `TCPServerInterface`).
+  The manual covers IPv6 (`prefer_ipv6`) and binding to one interface (`device = eth0`).
 
 ### Open the port
 
@@ -174,7 +199,8 @@ To see the hub at work:
 sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
 
-It lists the `TCPServerInterface[Crew Radio hub/0.0.0.0:4242]` with its `Clients` count, and near
+It lists the hub's interface (`BackboneInterface[Crew Radio hub/…]`, or
+`TCPServerInterface[Crew Radio hub/0.0.0.0:4242]`) with its clients, and near
 the end says `Transport Instance <…> running` (followed by the uptime). If it says nothing about a
 transport instance, `enable_transport` is not on.
 
@@ -256,3 +282,78 @@ hub → phone ashore, which was checked end to end with two `rnsd` 1.5.4 instanc
   that usually means the boat only.
 - Keep the machine patched (`sudo apt install unattended-upgrades` on Debian, Ubuntu and
   Raspberry Pi OS), and update `rns` now and then (section 3).
+
+## 9. Commands
+
+Everything here runs on the hub, as a user with `sudo`. The paths are this guide's: the service
+`rnsd`, the user `rns`, its home `/var/lib/rns`.
+
+| To | Run |
+|---|---|
+| See whether it runs | `systemctl status rnsd` (or just `systemctl is-active rnsd`) |
+| See the hub at work | `sudo -u rns /var/lib/rns/venv/bin/rnstatus` |
+| Start it | `sudo systemctl start rnsd` |
+| Stop it (every client drops until it starts again) | `sudo systemctl stop rnsd` |
+| Restart it, e.g. after a config change (the clients reconnect within seconds) | `sudo systemctl restart rnsd` |
+| Start it at every boot | `sudo systemctl enable rnsd` (`enable --now` also starts it now) |
+| No longer start it at boot | `sudo systemctl disable rnsd` (`disable --now` also stops it now) |
+| Whether it starts at boot | `systemctl is-enabled rnsd` |
+| Follow its log | `sudo tail -f /var/lib/rns/.reticulum/logfile` |
+| The service's own messages (start, stop, crashes) | `sudo journalctl -u rnsd -e` |
+| Its version | `sudo -u rns /var/lib/rns/venv/bin/rnsd --version` |
+| The newest version available | `sudo -u rns /var/lib/rns/venv/bin/pip index versions rns` |
+| Update it | `sudo -u rns /var/lib/rns/venv/bin/pip install --upgrade rns`, then restart |
+| Go back to a version | `sudo -u rns /var/lib/rns/venv/bin/pip install rns==1.5.4`, then restart |
+| After editing `rnsd.service` | `sudo systemctl daemon-reload`, then restart |
+
+The log file is the daemon's own (`--service` sends it there, not to the journal); the journal
+has only what systemd saw. Times in both are the server's, usually UTC.
+
+### Changing the config
+
+Keep a copy first, edit, restart, and check that the interface came back:
+
+```sh
+C=/var/lib/rns/.reticulum/config
+sudo cp -p $C $C.$(date +%F)
+sudo nano $C
+sudo systemctl restart rnsd
+systemctl is-active rnsd
+sudo -u rns /var/lib/rns/venv/bin/rnstatus
+```
+
+If it does not come back up, the log file says why (a misspelt option, a port in use); put the
+copy back (`sudo cp -p $C.<date> $C`) and restart.
+
+### From `TCPServerInterface` to `BackboneInterface`
+
+A hub set up before 2026-11-08 has a `TCPServerInterface` listener. On Linux, change it (section
+4 says why); the clients need nothing. The option names change with the type:
+
+```sh
+C=/var/lib/rns/.reticulum/config
+sudo cp -p $C $C.tcpserver
+sudo sed -i 's/type = TCPServerInterface/type = BackboneInterface/; s/listen_ip = /listen_on = /; s/listen_port = /port = /' $C
+sudo sed -n '/\[interfaces\]/,$p' $C
+sudo systemctl restart rnsd
+sudo -u rns /var/lib/rns/venv/bin/rnstatus
+```
+
+Check the `sed -n` output before restarting: only the hub's own listener should have changed. A
+config with other TCP interfaces (a `TCPClientInterface` out to another hub, or the boat's
+`127.0.0.1` listener from section 6) needs the edit by hand instead. `rnstatus` should then list
+`BackboneInterface[Crew Radio hub/0.0.0.0:4242]` and, within a few seconds, the same `Clients`
+count as before. To go back: `sudo cp -p $C.tcpserver $C` and restart.
+
+### Removing it
+
+```sh
+sudo systemctl disable --now rnsd
+sudo rm /etc/systemd/system/rnsd.service
+sudo systemctl daemon-reload
+sudo userdel --remove rns    # deletes /var/lib/rns: the venv, the config, the identity
+```
+
+The hub's identity (`/var/lib/rns/.reticulum/storage`) goes with the last line. The crew does
+not need it: a new hub at the same address works at once, since Crew Radio dials the address and
+finds its peers by their own announces.

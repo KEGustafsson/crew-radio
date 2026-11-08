@@ -179,7 +179,8 @@ the two to the same bytes, and its values were checked against the reference imp
   confirmed link and the plugin's answer, parts in any order, completes it; a phone answers
   nobody's questions.
 - Reticulum does the multi-hop part and every node links to every other, so `relayWithin` is
-  false; a phone with Reticulum and WLAN, or the plugin, bridges the two. It is the fourth
+  false; a phone with Reticulum and WLAN, or the plugin, bridges the two, under the rules of
+  *One copy through the hub* below. It is the fourth
   main-screen tile (`use_reticulum`); the first tap with no transport node set asks for one in a
   dialog, and Settings keeps only the node (`reticulum_node`). The identity is new for every session.
 - The connection goes over "whatever the phone has" by a rule (`NetworkChoice`, pure and tested):
@@ -194,6 +195,48 @@ the two to the same bytes, and its values were checked against the reference imp
   only a connection that held 30 s resets the backoff. So a boat Wi‑Fi without
   internet does not swallow the connection, and WLAN aboard and Reticulum over mobile data run at
   once.
+
+#### One copy through the hub
+
+Two crew talking at once once dropped every client off Reticulum (2026-11-08): every node with
+WLAN and Reticulum bridged what it heard to all its links, each 20 ms frame was one TCP write per
+link, rnsd forwards from one thread with a blocking send, and a full send queue closed the whole
+connection. The app, the Signal K plugin and the ESP32 gauges now follow one rule set; nothing on
+the wire changed but three spare bits of the hello's transports byte.
+
+- Hello bits: `RNS_UP` 0x10 (the Reticulum socket is up right now, cleared the moment it is not),
+  `FWD_PREFER` 0x20 (the plugin) and `FWD_AVOID` 0x40 (an ESP32); a phone sets neither preference.
+  0x80 stays reserved, and a decoder carries bits it does not know.
+- Local peers (`LocalPeers`, pure and tested): a sender is local while a hello of its own reached
+  us over WLAN, Bluetooth or Aware unrelayed (`hops == ttl`) within the last 15 s. The boat's
+  forwarder is elected from what each node hears, without a message: us if our `RNS_UP` is set
+  and every local sender whose last local hello had it; highest rank (prefer 2, neither 1, avoid
+  0), ties to the lowest sender id compared as unsigned 32-bit.
+- Audio forwarding (`Forwarding`, a pure table): our own voice goes to the local transports and to
+  every Reticulum link except those whose far end is a local sender (split horizon; a link whose
+  far end is not known yet gets it). A frame heard locally goes to Reticulum only from the
+  forwarder and only when its talker is not on Reticulum itself; a frame heard over Reticulum goes
+  to the local transports only from the forwarder; Reticulum to Reticulum never. Relays between
+  the local transports, and hellos everywhere, are as before. Views of the forwarder can disagree
+  for a moment: that makes a duplicate, which the seen-cache drops, never a gap. A link learns its
+  far end's sender id from the first authentic packet the far end sent itself (`hops == ttl`)
+  that arrives on it (`Transport.learnSender`, `ReticulumNode.learnFarEnd`): Reticulum's own hops
+  leave the channel's ttl alone, so only the far end's own packets arrive on its link unrelayed.
+- The send queue (`ReticulumSendQueue`, pure and tested): one send's packets for every link are
+  one item, and the writer puts everything waiting out in one write and flush; voice older than
+  200 ms when its turn comes is dropped and counted (hellos, proofs and link control never are);
+  a backlog never closes the connection, only a socket that has accepted none of what waits for
+  10 s.
+- The floor (`Floor`, pure and tested; half duplex only, since full duplex mixes talkers on
+  purpose): another talker is heard while an authentic first-copy audio frame from someone else
+  arrived within the last 400 ms. A key pressed then does not key: the busy cue
+  (`Tones.busy`, two low notes), BUSY and "Channel busy: <name>" on the disc, the key held but
+  silent; still held after 1000 ms it keys anyway, as an override burst. While talking (not an
+  override), a frame from a talker with a lower unsigned id makes us yield at once, locked out
+  until the key is released; both ends compare the same two ids, so exactly one survives. The
+  receive path keeps running while we talk (only playback is silent), which is how the collision
+  is seen. `PttEngine.isKeyed` is the key's state, `isTalking` the mic's, and a toggling key
+  reads the first.
 
 Reconnect lives inside each transport, never in the engine: Bluetooth re-dials its chosen peer
 from the reader's `finally`, and waits for the adapter to come back on when it is switched off;
@@ -257,6 +300,7 @@ rejoin. The channel key is generated at random on first use
 | `SettingsActivity`, `Prefs`, `SettingsRules` | Settings screen, validated reads, pure validation rules |
 | `PttService` | Foreground service: engine owner, locks, notification, `MediaSession`, ear screen-off lock |
 | `PttEngine` | Transports, roster, relay, sequence tracking, concealment, talk state, voice gate |
+| `LocalPeers`, `Forwarding`, `Floor` | Who is on the boat and the elected forwarder to Reticulum, where an audio frame goes, who has the channel |
 | `CallService`, `CallBridge` | Opt-in self-managed Telecom call for hang-up-style headset buttons |
 | `Packet`, `Hello`, `SeqTracker` | Wire header, roster heartbeat payload, per-sender sequence admission |
 | `LinkQuality` | A sender's link level from its missing hellos and audio frames, the roster's bars |
@@ -271,11 +315,12 @@ rejoin. The channel key is generated at random on first use
 | `audio/VolumeMemory` | The crew's chosen call volume, in each stream's own steps, and what to put back when the stream changes device |
 | `audio/MicGate` | Voice-operated keying |
 | `audio/AudioRoute` | Headset, earpiece or loudspeaker, following the hardware and the ear |
-| `transport/Transport` | The interface: `start`, `send` (returns whether anything went out), `stop`, `relayWithin` |
+| `transport/Transport` | The interface: `start`, `send` (returns whether anything went out), `stop`, `relayWithin`, `learnSender` |
 | `transport/LanTransport`, `BluetoothTransport`, `WifiAwareTransport`, `ReticulumTransport` | The four carriers |
 | `transport/NetworkChoice` | Which network the Reticulum connection goes over, pure and tested |
 | `rns/Curve25519`, `RnsCrypto`, `RnsPacket`, `RnsIdentity`, `RnsLink` (+ `Carry`), `AskCarry`, `ReticulumNode` | Reticulum written from its manual: X25519/Ed25519, the token, packets and HDLC framing, announces, links and the key proof, questions to the boat's plugin, and the node without the socket |
 | `transport/StreamLink`, `SendQueue`, `Backoff`, `Threads` | Length-prefixed framing, per-link outbound queue, retry schedule, guarded threads |
+| `transport/ReticulumSendQueue` | The Reticulum connection's outbound queue: one write per batch, late voice dropped, no close on backlog |
 | `transport/AwareSsi`, `BluetoothTieBreak`, `LanAddressing`, `PeerTable` | Discovery tag, one link per pair, broadcast address, peers heard from directly |
 
 ## Asking the boat

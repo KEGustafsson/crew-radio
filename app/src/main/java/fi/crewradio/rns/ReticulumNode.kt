@@ -40,6 +40,11 @@ internal class ReticulumNode(
     private val confirmKey: ByteArray,
     private val write: (ByteArray) -> Unit,
     private val onLinks: (Int) -> Unit = {},
+    /**
+     * Every link's packets for one channel packet ([send]), handed over at once so they leave in
+     * one socket write; [voice] when they carry audio, which the queue may drop as too late.
+     */
+    private val writeBatch: (packets: List<ByteArray>, voice: Boolean) -> Unit = { packets, _ -> for (p in packets) write(p) },
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     val identity: RnsIdentity = RnsIdentity.generate()
 ) {
@@ -53,6 +58,13 @@ internal class ReticulumNode(
         val joiner = Carry.Joiner()
         val answers = AskCarry.Assembler(AskCarry.ANSWER)
         var cutId = 0
+        /**
+         * The sender id at the link's far end, from the first authentic packet the far end sent
+         * itself (unrelayed: hops == ttl) that came in on it ([learnFarEnd]); null until then.
+         * Under the node's lock.
+         */
+        var farEnd: Int? = null
+            internal set
         private var tokens = BURST.toDouble()
         private var refilled = clock()
 
@@ -201,16 +213,35 @@ internal class ReticulumNode(
         for (e in links.values) write(e.link.closePacket())
     }
 
-    /** Sends a sealed channel packet on every confirmed link but [except]. True when it went anywhere. */
-    @Synchronized fun send(packet: ByteArray, except: Any?): Boolean {
+    /**
+     * Sends a sealed channel packet on every confirmed link but [except] and those whose far end
+     * [skip] names (split horizon: a sender that hears us on the boat already; a link whose far end
+     * is not known yet is never skipped). Every link's packets go out as one batch. True when it
+     * went anywhere.
+     */
+    @Synchronized fun send(packet: ByteArray, except: Any?, skip: ((Int) -> Boolean)? = null): Boolean {
         if (!connected) return false
+        val out = ArrayList<ByteArray>()
         var sent = false
         for (e in links.values) {
             if (e === except || !e.link.active || !e.confirmed) continue
-            for (part in Carry.cut(packet, e.cutId++)) write(e.link.dataPacket(part))
+            val far = e.farEnd
+            if (skip != null && far != null && skip(far)) continue
+            for (part in Carry.cut(packet, e.cutId++)) out.add(e.link.dataPacket(part))
             sent = true
         }
+        if (out.isNotEmpty()) writeBatch(out, isAudio(packet))
         return sent
+    }
+
+    /**
+     * An authentic packet that [senderId] sent itself (hops == ttl) arrived on [link]: that is who
+     * is at the link's far end. The first such packet decides; Reticulum's own hops do not touch
+     * the channel's ttl, so only the far end's own packets arrive unrelayed on its link.
+     */
+    @Synchronized fun learnFarEnd(link: Any?, senderId: Int) {
+        val e = link as? Entry ?: return
+        if (links[e.key] === e && e.farEnd == null) e.farEnd = senderId
     }
 
     /**
@@ -550,6 +581,10 @@ internal class ReticulumNode(
 }
 
 private const val HEX = "0123456789abcdef"
+
+/** True for a channel packet that carries audio (any codec but the roster's hello); its codec byte is the fourth. */
+private fun isAudio(packet: ByteArray): Boolean =
+    packet.size > 3 && (packet[3].toInt() and 0xFF) != fi.crewradio.Packet.Codec.HELLO.id
 
 internal fun ByteArray.toHex(): String {
     val out = CharArray(size * 2)

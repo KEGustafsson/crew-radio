@@ -12,6 +12,7 @@ import fi.crewradio.audio.MicGate
 import fi.crewradio.audio.Mixer
 import fi.crewradio.audio.OpusDecoder
 import fi.crewradio.audio.OpusEncoder
+import fi.crewradio.audio.Tones
 import fi.crewradio.transport.ReticulumTransport
 import fi.crewradio.transport.Transport
 import java.util.concurrent.ConcurrentHashMap
@@ -83,7 +84,14 @@ class Stats(
  * ttl allows, forwarded on every transport (excluding the link it came from) with the ttl
  * decremented. Duplicates are dropped by the seen-cache, so a flood across a multi-hop
  * Aware/BT topology terminates. Running several transports at once makes this phone a bridge
- * (e.g. boat Wi-Fi <-> Aware).
+ * (e.g. boat Wi-Fi <-> Aware). Audio between the local transports and Reticulum follows
+ * [Forwarding] instead: only the boat's elected forwarder ([LocalPeers]) bridges, and no
+ * Reticulum link gets a frame its far end hears on the boat already (split horizon).
+ *
+ * Floor (half duplex): a key pressed while somebody else is heard is refused with the busy cue
+ * and keys anyway if held through [Floor.OVERRIDE_MS]; of two talkers who collide, the higher id
+ * yields and stays off air until the key is released ([Floor]). The receive path runs while
+ * talking (only playback is silenced), so the collision is seen.
  *
  * Roster: while connected a heartbeat thread sends a [Hello] every second, and every
  * hello or audio packet heard refreshes that sender's entry. A sender silent for
@@ -125,11 +133,25 @@ class PttEngine(
     @Volatile var maxHops: Int = AudioConfig.DEFAULT_TTL
 
     val senderId: Int = Random.nextInt()
+    /** Who has the channel: the key's state under the floor rules. Under [talkLock]. */
+    private val floor = Floor(senderId)
+    /** Senders heard directly on the boat's own transports, and the boat's forwarder to Reticulum. */
+    private val localPeers = LocalPeers()
+    /** Split horizon for [ReticulumTransport.sendAudio]: a sender that hears us on the boat already. */
+    private val isLocalSender: (Int) -> Boolean = { localPeers.isLocal(it, SystemClock.elapsedRealtime()) }
     /** The Android device name, falling back to the model: what [displayName] is unless settings say otherwise. */
     val defaultName: String = deviceName(context)
     /** What the crew sees this phone as. Read at every heartbeat, so a change shows up within a second. */
     @Volatile var displayName: String = defaultName
     val isTalking: Boolean get() = talking
+    /**
+     * True while a talk key is down, on air or not: refused by a busy channel and waiting for the
+     * override, or yielded to another talker and locked out until released. A toggling key reads
+     * this, not [isTalking], so its next press releases a key the channel refused.
+     */
+    val isKeyed: Boolean get() = synchronized(talkLock) { talking || floor.keyed }
+    /** Who has the channel while our key is down but silent (refused, or yielded); null otherwise. For the talk disc. */
+    val busyWith: String? get() = synchronized(talkLock) { if (talking || !floor.keyed) null else floor.lastTalker }?.let { nameOf(it) }
     val isConnected: Boolean get() = transports.isNotEmpty()
 
     /**
@@ -326,12 +348,13 @@ class PttEngine(
             return
         }
         when (gate.feed(rms)) {
-            MicGate.Change.OPEN -> if (!talking) {
+            MicGate.Change.OPEN -> if (!isKeyed) {
                 gateTalking = true
                 voxFrames = 0
                 startTalking()
                 if (talking) for (f in preroll) sendFrame(f)      // the syllable that opened the gate
-                else gateTalking = false                          // the mic did not open; the gate owns nothing
+                else if (!isKeyed) gateTalking = false            // the mic did not open; the gate owns nothing
+                // (refused by a busy channel: the gate holds the key, and its CLOSE releases it)
                 preroll.clear()                                   // sent, or stale by the next opening
             }
             MicGate.Change.CLOSE -> if (gateTalking) { gateTalking = false; stopTalking() }
@@ -675,15 +698,84 @@ class PttEngine(
      * again and reported. Returns without blocking.
      */
     fun startTalking() {
-        val gen: Int
+        var gen = 0
+        var busyBy: Int? = null
         synchronized(talkLock) {
-            if (talking || transports.isEmpty() || held || asking) return
-            talking = true
-            armed = false
-            pending.clear()
-            gen = ++talkGen
+            if (talking || floor.keyed || transports.isEmpty() || held || asking) return
+            // Full duplex mixes talkers on purpose: the floor rules are for half duplex.
+            when (val k = floor.key(SystemClock.elapsedRealtime(), listen = mode == Mode.HALF_DUPLEX)) {
+                Floor.Key.OnAir -> gen = goOnAirLocked()
+                is Floor.Key.Refused -> busyBy = k.by
+                Floor.Key.Held -> return
+            }
+        }
+        val by = busyBy
+        if (by != null) {
+            // Listen before talk: somebody has the channel. The key stays down, silent; held
+            // through OVERRIDE_MS it keys anyway.
+            channelBusy(by)
+            scheduleOverride(Floor.OVERRIDE_MS)
+            return
         }
         audioCtl.execute { openTalk(gen) }
+    }
+
+    /** Under [talkLock]: the mic goes live; the generation is what [openTalk] belongs to. */
+    private fun goOnAirLocked(): Int {
+        talking = true
+        armed = false
+        pending.clear()
+        return ++talkGen
+    }
+
+    private fun scheduleOverride(inMs: Long) {
+        try {
+            recovery.schedule({ overrideDue() }, inMs, TimeUnit.MILLISECONDS)
+        } catch (_: RejectedExecutionException) {
+        }
+    }
+
+    /** A refused key still held after [Floor.OVERRIDE_MS] keys anyway, as an override burst. */
+    private fun overrideDue() {
+        val gen: Int
+        synchronized(talkLock) {
+            val at = floor.overrideAt() ?: return              // released, or keyed already
+            if (transports.isEmpty()) return
+            val now = SystemClock.elapsedRealtime()
+            if (!floor.due(now)) { scheduleOverride(maxOf(1L, at - now)); return }
+            gen = goOnAirLocked()
+        }
+        audioCtl.execute { openTalk(gen) }
+    }
+
+    /** The busy cue, and "Channel busy: <name>" unless the caller says it later: the key did not key, or this phone yielded to [by]. */
+    private fun channelBusy(by: Int, alsoStatus: Boolean = true) {
+        mixer.cue(Tones.busy())
+        if (alsoStatus) onStatus(busyText(by))
+    }
+
+    private fun busyText(by: Int): String = str(R.string.status_channel_busy, nameOf(by))
+
+    /** A sender as the roster names it: its hello's name, else its id in hex. */
+    private fun nameOf(id: Int): String = nodes[id]?.name ?: id.toUInt().toString(16)
+
+    /**
+     * An accepted audio frame from another sender: the floor hears it, and a talk of ours that must
+     * yield to it (its id is lower) goes off air at once and stays off until the key is released.
+     */
+    private fun floorHeard(sender: Int, now: Long) {
+        val yielded = synchronized(talkLock) {
+            if (!floor.heard(sender, now) || !talking) false
+            else {
+                talking = false
+                pending.clear()
+                true
+            }
+        }
+        if (!yielded) return
+        val busy = busyText(sender)
+        audioCtl.execute { closeTalk(busy) }                 // the status line says who has the channel
+        channelBusy(sender, alsoStatus = false)
     }
 
     /** Audio-control thread: opens the encoder and, unless the monitor feeds us, the mic; then lets the waiting frames go. */
@@ -711,7 +803,7 @@ class PttEngine(
                 cap.stop()                 // frees an AudioRecord that was created but never started
                 enc?.release()
                 synchronized(talkLock) {
-                    if (talkGen == gen && talking) { talking = false; gateTalking = false; pending.clear() }
+                    if (talkGen == gen && talking) { talking = false; gateTalking = false; pending.clear(); floor.release() }
                 }
                 onStatus(str(R.string.status_mic_error, e.message))
                 return
@@ -728,7 +820,12 @@ class PttEngine(
             }
             for (f in drain) encodeAndSend(f)
         }
-        if (talking) onStatus(str(if (mode == Mode.FULL_DUPLEX) R.string.status_duplex_mic_on else R.string.status_transmitting))
+        val override = synchronized(talkLock) { floor.state == Floor.State.OVERRIDE }
+        if (talking) onStatus(str(when {
+            mode == Mode.FULL_DUPLEX -> R.string.status_duplex_mic_on
+            override -> R.string.status_channel_override
+            else -> R.string.status_transmitting
+        }))
     }
 
     /**
@@ -766,19 +863,30 @@ class PttEngine(
         }
     }
 
-    /** Un-keys the mic at once; the capture and encoder are released on the audio-control thread. Returns without blocking. */
+    /**
+     * Releases the talk key and un-keys the mic at once (a key the busy channel refused, or one
+     * that yielded, is released too); the capture and encoder are released on the audio-control
+     * thread. Returns without blocking.
+     */
     fun stopTalking() {
+        val wasTalking: Boolean
         synchronized(talkLock) {
-            if (!talking) return
+            if (!talking && !floor.keyed) return
+            floor.release()
+            wasTalking = talking
             talking = false
             gateTalking = false
             pending.clear()
         }
-        audioCtl.execute { closeTalk() }
+        if (wasTalking) audioCtl.execute { closeTalk() }
+        else onStatus(str(if (mode == Mode.FULL_DUPLEX) R.string.status_duplex_mic_off else R.string.status_listening))
     }
 
-    /** Audio-control thread: the capture first, outside sendLock (its worker may be waiting for that), then the encoder. */
-    private fun closeTalk() {
+    /**
+     * Audio-control thread: the capture first, outside sendLock (its worker may be waiting for that),
+     * then the encoder; then [status], or the usual line.
+     */
+    private fun closeTalk(status: String? = null) {
         capture?.stop()
         capture = null
         synchronized(sendLock) {
@@ -786,7 +894,7 @@ class PttEngine(
             encoder?.release()
             encoder = null
         }
-        onStatus(str(if (mode == Mode.FULL_DUPLEX) R.string.status_duplex_mic_off else R.string.status_listening))
+        onStatus(status ?: str(if (mode == Mode.FULL_DUPLEX) R.string.status_duplex_mic_off else R.string.status_listening))
     }
 
     /** Runs [work] on the audio-control thread and waits for it, bounded; a report if it did not finish in time. */
@@ -798,8 +906,8 @@ class PttEngine(
         }
     }
 
-    /** Full-duplex mic toggle. */
-    fun toggleTalking() = if (talking) stopTalking() else startTalking()
+    /** Full-duplex mic toggle, and the half-duplex latch: a key the channel refused is released by it too. */
+    fun toggleTalking() = if (isKeyed) stopTalking() else startTalking()
 
     /** Plays a short cue (see [fi.crewradio.audio.Tones]) in the ear, or the speaker; nothing when not on channel. */
     fun cue(frames: List<ByteArray>) = mixer.cue(frames)
@@ -813,7 +921,12 @@ class PttEngine(
         val c = counters
         c.txPackets.incrementAndGet()
         c.txBytes.addAndGet(packet.size.toLong())
-        for (t in transports) t.send(packet)
+        // Own voice: every local transport, and every Reticulum link but those to senders that
+        // hear us on the boat already ([Forwarding] rule 1). Hellos go everywhere.
+        val audio = codec != Packet.Codec.HELLO
+        for (t in transports) {
+            if (audio && t is ReticulumTransport) t.sendAudio(packet, isLocalSender) else t.send(packet)
+        }
     }
 
     /**
@@ -828,17 +941,30 @@ class PttEngine(
         val now = SystemClock.elapsedRealtime()
         val plain: ByteArray
         val relayTtl: Int
-        when (val r = ingress.admit(
+        val r = ingress.admit(
             h, now, System.currentTimeMillis() / 1000, maxHops,
             { cr.open(Packet.aadOf(p), p, Packet.HEADER, p.size - Packet.HEADER) },
             selfId = senderId
-        )) {
+        )
+        // A packet its sender sent itself (nobody relayed it), authentic, first copy or not: it
+        // says who is at the far end of the link it came on, and, a hello over a local transport,
+        // that the sender is on the boat with us. A copy claiming our own id proves nothing.
+        val authentic = r is Ingress.Result.Accept || r is Ingress.Result.RelayOnly ||
+            (r === Ingress.Result.Duplicate && h.senderId != senderId)
+        if (authentic && h.hops == h.ttl) {
+            from.learnSender(link, h.senderId)
+            // A duplicate hello is the same packet as the copy accepted before it: its transports byte is the roster's.
+            if (h.codec == Packet.Codec.HELLO && r !is Ingress.Result.Accept) {
+                nodes[h.senderId]?.let { localPeers.heardHello(h.senderId, it.transports, h.hops, h.ttl, isLocal(from), now) }
+            }
+        }
+        when (r) {
             is Ingress.Result.Accept -> { plain = r.plain; relayTtl = r.relayTtl }
             // Heard already, but this copy reaches further than the one we forwarded: relay it and
             // nothing else. Whoever sent the shorter copy first does not get to cut the mesh in two.
             is Ingress.Result.RelayOnly -> {
                 c.duplicates.incrementAndGet()
-                relayPacket(p, r.relayTtl, from, link, c)
+                relayPacket(p, h, r.relayTtl, from, link, c)
                 return
             }
             Ingress.Result.Duplicate -> { c.duplicates.incrementAndGet(); return }
@@ -860,12 +986,12 @@ class PttEngine(
         c.rxBytes.addAndGet(p.size.toLong())
         from.confirmPeer(link)                            // the key opened it, so the address is a crew member's
 
-        relayPacket(p, relayTtl, from, link, c)
+        relayPacket(p, h, relayTtl, from, link, c)
 
         if (h.codec == Packet.Codec.HELLO) {
             c.hellos.incrementAndGet()
             val gap = ingress.helloGap(h.senderId, h.seq)
-            Hello.decode(plain, 0, plain.size)?.let { heardHello(h.senderId, it, from, h.ttl, gap) }
+            Hello.decode(plain, 0, plain.size)?.let { heardHello(h.senderId, it, from, h.ttl, h.hops, gap) }
             return
         }
         if ((packetCount.incrementAndGet() and 0xFF) == 0) pruneDecoders()
@@ -881,6 +1007,8 @@ class PttEngine(
             // its slot was concealed already.
             val gap = ingress.admitAudio(h.senderId, h.seq)
             if (gap < 0) return
+            // Another talker is heard, half duplex or not: the floor's busy rule and its collision rule.
+            floorHeard(h.senderId, now)
             if (gap > 0 && playing && gap <= Conceal.MAX_FRAMES) mixer.conceal(h.senderId, gap)
             // Only an admitted frame is proof of life: one refused as late or replayed lights nobody.
             val node = heardAudio(h.senderId, from)
@@ -907,17 +1035,57 @@ class PttEngine(
     /**
      * Forwards an authenticated packet with the ttl [Ingress] worked out, to every other transport
      * and, where forwarding within one makes sense, to its other links. A ttl of 0 or a relay
-     * switched off means it stops here.
+     * switched off means it stops here. Audio between the local transports and Reticulum goes only
+     * as [Forwarding] says: through the boat's forwarder, and to no link whose far end is local.
      */
-    private fun relayPacket(p: ByteArray, relayTtl: Int, from: Transport, link: Any?, c: Counters) {
+    private fun relayPacket(p: ByteArray, h: Packet.Header, relayTtl: Int, from: Transport, link: Any?, c: Counters) {
         if (!relay || relayTtl <= 0) return
         Packet.setTtl(p, relayTtl)
         var forwarded = false
-        for (t in transports) {
-            if (t === from) { if (t.relayWithin && t.send(p, except = link)) forwarded = true }
-            else if (t.send(p)) forwarded = true
+        if (h.codec == Packet.Codec.HELLO) {
+            for (t in transports) {
+                if (t === from) { if (t.relayWithin && t.send(p, except = link)) forwarded = true }
+                else if (t.send(p)) forwarded = true
+            }
+        } else {
+            val now = SystemClock.elapsedRealtime()
+            val route = Forwarding.route(
+                if (isLocal(from)) Forwarding.Origin.LOCAL else Forwarding.Origin.RETICULUM,
+                h.senderId, senderId,
+                forwarder = localPeers.isForwarder(senderId, ownFlags(), now),
+                senderRnsUp = localPeers.rnsUp(h.senderId, now)
+            )
+            for (t in transports) {
+                val sent = when {
+                    t is ReticulumTransport -> route.reticulum && t !== from && t.sendAudio(p, isLocalSender)
+                    !route.local -> false
+                    t === from -> t.relayWithin && t.send(p, except = link)
+                    else -> t.send(p)
+                }
+                if (sent) forwarded = true
+            }
         }
         if (forwarded) c.relayed.incrementAndGet()
+    }
+
+    /** WLAN, Bluetooth and Wi-Fi Aware are the boat's own transports; Reticulum is the way off it. */
+    private fun isLocal(t: Transport): Boolean = t !is ReticulumTransport
+
+    /**
+     * The transports flags of our hello: what can carry a packet right now, and [Hello.RNS_UP] while
+     * the Reticulum socket is up. A phone sets neither forwarder preference.
+     */
+    private fun ownFlags(): Int {
+        var flags = 0
+        // Only what can actually carry a packet: a Bluetooth transport whose adapter is off is
+        // started but not ready, and claiming BT on the roster then sends the crew looking for a
+        // link that cannot exist.
+        for (t in transports) {
+            if (!t.ready) continue
+            flags = flags or Hello.bitFor(t.name)
+            if (t is ReticulumTransport) flags = flags or Hello.RNS_UP
+        }
+        return flags
     }
 
     /** A status line for a condition that recurs on every packet: at most once per [REPORT_INTERVAL_MS], whichever thread sees it. */
@@ -958,20 +1126,17 @@ class PttEngine(
     }
 
     private fun sendHello() {
-        var flags = 0
-        // Only what can actually carry a packet: a Bluetooth transport whose adapter is off is
-        // started but not ready, and claiming BT on the roster then sends the crew looking for a
-        // link that cannot exist. The flag has always been there; nothing read it.
-        for (t in transports) if (t.ready) flags = flags or Hello.bitFor(t.name)
-        broadcast(Packet.Codec.HELLO, Hello(displayName, flags, maxHops, BuildConfig.VERSION_CODE).encode())
+        broadcast(Packet.Codec.HELLO, Hello(displayName, ownFlags(), maxHops, BuildConfig.VERSION_CODE).encode())
     }
 
     /**
      * [ttlLeft] is what arrived on the header; every relay decrements from what it received, so the
      * difference is the hops travelled. [gap] is how many of the sender's hellos went missing before
-     * this one ([Ingress.helloGap]), for the link meter.
+     * this one ([Ingress.helloGap]), for the link meter. [hops] is the header's signed budget: equal
+     * to [ttlLeft] on a hello nobody relayed, which over a local transport makes the sender local.
      */
-    private fun heardHello(id: Int, hello: Hello, from: Transport, ttlLeft: Int, gap: Int) {
+    private fun heardHello(id: Int, hello: Hello, from: Transport, ttlLeft: Int, hops: Int, gap: Int) {
+        localPeers.heardHello(id, hello.transports, hops, ttlLeft, isLocal(from), SystemClock.elapsedRealtime())
         val n = nodeFor(id) ?: return
         n.name = hello.name.ifBlank { null }
         n.transports = hello.transports

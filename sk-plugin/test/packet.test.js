@@ -103,3 +103,13 @@ test("a name is never cut inside a surrogate pair: no U+FFFD where an emoji did 
   assert.equal(P.decodeHello(h).name, "a".repeat(29));
   assert.equal(P.decodeHello(P.encodeHello({ name: "a".repeat(28) + emoji, transports: 1, ttl: 1 })).name, "a".repeat(28) + emoji, "and kept when it fits");
 });
+
+test("hello: the forwarder bits round-trip, an old hello with them clear still decodes, and unknown bits are kept, not refused", () => {
+  assert.deepEqual([P.Transports.RNS_UP, P.Transports.FWD_PREFER, P.Transports.FWD_AVOID], [0x10, 0x20, 0x40]);
+  for (const transports of [P.Transports.LAN | P.Transports.RETICULUM | P.Transports.RNS_UP | P.Transports.FWD_PREFER, P.Transports.BT | P.Transports.FWD_AVOID]) {
+    assert.equal(P.decodeHello(P.encodeHello({ name: "x", transports, ttl: 4 })).transports, transports);
+  }
+  const old = P.decodeHello(Buffer.from([2, P.Transports.LAN | P.Transports.RETICULUM, 4, 0, 134, 1, 0x78]));
+  assert.deepEqual(old, { name: "x", transports: 9, ttl: 4, versionCode: 134 }, "a hello from before the bits");
+  assert.equal(P.decodeHello(Buffer.from([2, 0xff, 4, 0, 0, 1, 0x78])).transports, 0xff, "0x80 (reserved) too");
+});

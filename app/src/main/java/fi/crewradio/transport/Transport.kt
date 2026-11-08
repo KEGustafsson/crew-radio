@@ -28,6 +28,13 @@ interface Transport {
      */
     fun confirmPeer(link: Any?) {}
 
+    /**
+     * Called for every authentic packet that [senderId] sent itself (`hops == ttl`: nobody relayed
+     * it) and that arrived on [link], duplicates included, so a transport with links learns who is
+     * at each link's far end (Reticulum's split horizon). Default: nothing to learn.
+     */
+    fun learnSender(link: Any?, senderId: Int) {}
+
     fun start(onPacket: (packet: ByteArray, transport: Transport, link: Any?) -> Unit, onStatus: (String) -> Unit)
     /** Queues for every link but [except] and returns at once; true if the packet went to at least one. Send failures are transient and count as sent. */
     fun send(packet: ByteArray, except: Any? = null): Boolean

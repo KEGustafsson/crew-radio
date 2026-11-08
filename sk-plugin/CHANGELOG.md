@@ -5,17 +5,45 @@ All notable changes to signalk-crewradio. The format follows
 
 ## Unreleased
 
+Radio under load: two crew members talking at once dropped every client off Reticulum
+(2026-11-08). The same rules go into the app and the ESP32 gauges; the packet and hello formats
+are unchanged, and older clients keep working beside these (they only save nothing).
+
+### Added
+
+- Hello bits in the spare part of the transports byte: `RNS_UP` (0x10) while the Reticulum socket
+  is up, `FWD_PREFER` (0x20, always set by the plugin) and `FWD_AVOID` (0x40, the ESP32's). Unknown
+  bits are kept by the decoder, never a reason to drop a hello.
+- One forwarder per boat (`lib/forwarding.js`, pure and tested): the nodes heard on the LAN
+  unrelayed in the last 15 s that are on the hub elect one by rank (prefer, neither, avoid), ties
+  to the lowest senderId compared unsigned. Only the forwarder carries audio between the LAN and
+  Reticulum, a talker that is on Reticulum itself is never repeated there, and audio goes to no
+  Reticulum link whose far end is on the boat's LAN or is the talker (each link learns its far
+  end's senderId from the first packet that came straight from it). Hellos are relayed as
+  before. `GET /status` shows `reticulum.forwarder`, `reticulum.boat` and each link's `farEnd`.
+
+### Changed
+
+- Announcements never talk over the crew: one starts only after 400 ms with nobody talking,
+  stops at the first frame of another talker, and is said again, whole, at the next gap (waited
+  for up to a minute), once; then it is dropped with a log line. Before, an announcement cut in
+  after the setting's wait. The setting is now the first wait for a gap.
+
 ### Fixed
 
-- Reticulum: a connection whose socket holds more than 64 KiB unsent is closed and dialled
-  again (checked on each write and once a second), as the app does when its 128-frame send queue
-  is stuck full; a packet is counted as sent only when every part of it went out. Node buffers every write,
-  so an uplink that took bytes but never got them out grew the plugin's memory and the voice's
-  delay without bound, and neither dead-connection rule saw it while the hub's frames still came
-  in.
+- Reticulum send queue: one write in the socket at a time, all of a frame's packets (one per
+  link) in one write, voice that has waited 200 ms dropped instead of written (counted as
+  `voiceDropped`), hellos and link control never dropped. A backlog no longer redials the
+  connection (the 64 KiB rule, never released, did, and rebuilt every link of the node for one
+  busy moment); bytes waiting 10 s with the socket taking none do.
 
 ### Tests
 
+- `test/forwarding.test.js`: ranks, the unsigned tie-break (0x80000000 against 1), expiry after
+  15 s, RNS_UP required, the forwarding rules as a pure function, the split horizon. The node's,
+  transport's and plugin's tests cover relayed hellos ignored, a far end learnt once, the queue's
+  age drop, no redial on a backlog, a redial on no progress, an announcement that yields, is said
+  again, and is dropped the second time, and the new hello bits round-tripping beside an old hello.
 - `test/vector.json` has a relayed copy of its packet (the ttl rewritten to 2, hops still 4),
   checked here and by the app's `CrossLanguageVectorTest`: with ttl equal to hops, a parser that
   swapped the two bytes would have passed, and the copy opens as a relay forwards it.

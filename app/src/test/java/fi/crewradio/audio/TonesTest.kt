@@ -18,6 +18,29 @@ class TonesTest {
     }
 
     @Test
+    fun theBusyCueIsTwoLowNotesUnlikeTheKeyBeeps() {
+        val busy = Tones.busy()
+        assertEquals(12, busy.size)                         // 80 + 80 + 80 ms
+        for (f in busy) assertEquals(AudioConfig.FRAME_BYTES, f.size)
+        assertTrue(busy.size != Tones.micOn().size && busy.size != Tones.micOff().size)
+        // The gap between the notes is silent: frames 4 to 7.
+        for (n in 4..7) for (i in 0 until AudioConfig.FRAME_SAMPLES) assertEquals(0, sample(busy[n], i))
+        // Lower than both key beeps: count zero crossings over the first note.
+        fun crossings(frames: List<ByteArray>): Int {
+            var c = 0
+            var prev = 0
+            for (f in frames.take(3)) for (i in 0 until AudioConfig.FRAME_SAMPLES) {
+                val s = sample(f, i)
+                if (prev < 0 && s >= 0) c++
+                if (s != 0) prev = s
+            }
+            return c
+        }
+        assertTrue(crossings(busy) < crossings(Tones.micOff()))
+        assertTrue(crossings(busy) < crossings(Tones.micOn()))
+    }
+
+    @Test
     fun beepIsRampedAndWellUnderFullScale() {
         val b = Tones.beep(880.0, 80)
         assertEquals(0, b[0].toInt())

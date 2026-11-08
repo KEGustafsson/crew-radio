@@ -19,6 +19,13 @@ object Tones {
     /** Two short low notes: the mic is off. */
     fun micOff(): List<ByteArray> = frames(beep(587.0, 60) + silence(40) + beep(587.0, 60))
 
+    /**
+     * Two short notes, lower and slower than [micOff]: the channel is busy, the key did not key
+     * (or this phone yielded to another talker). Played whatever the cue-tone setting, since it is
+     * the only sign in the ear that nothing is going out.
+     */
+    fun busy(): List<ByteArray> = frames(beep(330.0, 80) + silence(80) + beep(330.0, 80))
+
     /** A sine [hz] for [ms], ramped at both ends. */
     fun beep(hz: Double, ms: Int): ShortArray {
         val n = AudioConfig.SAMPLE_RATE * ms / 1000

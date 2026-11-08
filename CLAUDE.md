@@ -263,9 +263,10 @@ MainActivity -(bind)-> PttService -> PttEngine -> Transport (LanTransport | Blue
   `TCP_USER_TIMEOUT`, and TCP retransmits for ~15 min), and so is, with no link at all, an announce
   the budget says will pass followed by 12 s without a frame on a connection that has echoed one
   before (rnsd sends each announce it passes on back to its sender within a second; only after a
-  first echo, so a node that never echoes costs at most one reconnect); and, as the app closes a
-  connection whose 128-frame send queue is stuck full, a plugin socket holding over 64 KiB unsent
-  (`MAX_BACKLOG_BYTES`) is closed and redialled, since Node buffers every write without limit. The plugin's `GET /status`
+  first echo, so a node that never echoes costs at most one reconnect); and a socket that has had
+  bytes waiting for 10 s with none taken is closed and redialled. A voice backlog never redials
+  (2026-11-08, the "radio under load" rules): voice older than 200 ms when its turn comes is
+  dropped and counted instead, and every copy of one frame goes out in one socket write. The plugin's `GET /status`
   carries `reticulum.detail` (peers heard, who dials, takeovers, links, budget, echoes, announces
   ignored as older) and its debug log a line per peer heard, dial, link up/down and reconnect. A link
   carries NOTHING until the far end's key proof checks out: `Carry.keyProof` = `0x80 | HMAC-SHA256(

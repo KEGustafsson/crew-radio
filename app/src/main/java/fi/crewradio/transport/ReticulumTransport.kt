@@ -40,9 +40,15 @@ import java.net.UnknownHostException
  * there then.
  *
  * Threads: `ptt-rns-rx` owns the socket, reads frames and ticks the node once a second (a read
- * timeout); `ptt-rns-tx` writes from a [SendQueue], so a stalled connection never blocks the
- * engine. A connection that fails or drops is re-opened after [Backoff]; the node keeps its peers
- * across it and re-announces.
+ * timeout); `ptt-rns-tx` writes from a [ReticulumSendQueue], so a stalled connection never blocks
+ * the engine: everything waiting goes out in one write, voice too late to matter is dropped, and a
+ * backlog alone never closes the connection, only a socket that has accepted nothing for
+ * [ReticulumSendQueue.NO_PROGRESS_MS]. A connection that fails or drops is re-opened after
+ * [Backoff]; the node keeps its peers across it and re-announces.
+ *
+ * Split horizon: the engine tells [learnSender] who sent an authentic, unrelayed packet on which
+ * link, so each link knows its far end's sender id, and [sendAudio] leaves out the links to
+ * senders that hear us on the boat already.
  */
 class ReticulumTransport(
     context: Context,
@@ -63,7 +69,9 @@ class ReticulumTransport(
     @Volatile private var running = false
     @Volatile private var connected = false
     @Volatile private var socket: Socket? = null
-    @Volatile private var queue: SendQueue? = null
+    @Volatile private var queue: ReticulumSendQueue? = null
+    /** Voice frames dropped as too late, or for room, on connections that have ended; [voiceDropped] adds the current one's. */
+    private val droppedBefore = java.util.concurrent.atomic.AtomicLong()
     @Volatile private var bound: Network? = null
     private val connectivity = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     /** Every network that says it offers the internet, with what it says about itself, kept by [networkCallback]. */
@@ -82,8 +90,9 @@ class ReticulumTransport(
     private val node = ReticulumNode(
         tag,
         confirmKey,
-        write = { raw -> enqueue(raw) },
-        onLinks = { n -> if (running) onStatus(appContext.resources.getQuantityString(R.plurals.status_rns_links, n, n)) }
+        write = { raw -> enqueue(listOf(raw), false) },
+        onLinks = { n -> if (running) onStatus(appContext.resources.getQuantityString(R.plurals.status_rns_links, n, n)) },
+        writeBatch = { packets, voice -> enqueue(packets, voice) }
     )
 
     private fun str(id: Int, vararg args: Any?): String = appContext.getString(id, *args)
@@ -103,6 +112,14 @@ class ReticulumTransport(
     }
 
     override fun send(packet: ByteArray, except: Any?): Boolean = node.send(packet, except)
+
+    /** An audio frame on every confirmed link except those whose far end [isLocal] names (split horizon). */
+    fun sendAudio(packet: ByteArray, isLocal: (Int) -> Boolean): Boolean = node.send(packet, null, isLocal)
+
+    override fun learnSender(link: Any?, senderId: Int) = node.learnFarEnd(link, senderId)
+
+    /** Voice dropped by the send queue this session (too late to be worth writing, or for room). */
+    val voiceDropped: Long get() = droppedBefore.get() + (queue?.let { it.aged + it.dropped } ?: 0L)
 
     /** True while at least one link has proved the key: somebody a question could reach. */
     val canAsk: Boolean get() = running && connected && node.linkCount > 0
@@ -143,10 +160,10 @@ class ReticulumTransport(
         if (!connected) closeSocket()
     }
 
-    /** One Reticulum packet to the tx thread; a queue stuck full means the connection is dead, so it is closed and re-opened. */
-    private fun enqueue(raw: ByteArray) {
+    /** One send's Reticulum packets to the tx thread, framed. A backlog never closes the connection ([ReticulumSendQueue]). */
+    private fun enqueue(packets: List<ByteArray>, voice: Boolean) {
         val q = queue ?: return
-        if (!q.offer(RnsPacket.frame(raw))) closeSocket()
+        q.offer(packets.map { RnsPacket.frame(it) }, voice)
     }
 
     private fun closeSocket() {
@@ -220,14 +237,15 @@ class ReticulumTransport(
                 waiter.await(wait)
                 continue
             }
-            val q = SendQueue(capacity = QUEUE_FRAMES)
+            val q = ReticulumSendQueue()
             queue = q
             transportThread("ptt-rns-tx", {}) {
                 try {
                     while (true) {
-                        val frame = q.take() ?: break
-                        out.write(frame)
+                        val batch = q.take() ?: break   // everything waiting: one write, one flush
+                        out.write(batch)
                         out.flush()
+                        q.written()
                     }
                 } catch (_: IOException) {
                     try { s.close() } catch (_: IOException) {}   // its own socket, never a newer one: the reader sees it and reconnects
@@ -239,7 +257,7 @@ class ReticulumTransport(
             node.connected()
             var why: String? = null
             try {
-                readLoop(s, onPacket)
+                readLoop(s, q, onPacket)
             } catch (e: IOException) {
                 why = e.message
             } finally {
@@ -248,6 +266,7 @@ class ReticulumTransport(
                 if (!running) sleepQuietly(FLUSH_MS)   // the closes queued by stop() get their moment
                 queue = null
                 bound = null
+                droppedBefore.addAndGet(q.aged + q.dropped)
                 q.close()
                 try { s.close() } catch (_: IOException) {}
                 socket = null
@@ -262,8 +281,12 @@ class ReticulumTransport(
         }
     }
 
-    /** Reads frames until the connection breaks or the transport stops; the read timeout is the node's clock tick. */
-    private fun readLoop(s: Socket, onPacket: (ByteArray, Transport, Any?) -> Unit) {
+    /**
+     * Reads frames until the connection breaks or the transport stops; the read timeout is the
+     * node's clock tick, and the moment to see whether the writer has been stuck for
+     * [ReticulumSendQueue.NO_PROGRESS_MS], the one backlog that ends the connection.
+     */
+    private fun readLoop(s: Socket, q: ReticulumSendQueue, onPacket: (ByteArray, Transport, Any?) -> Unit) {
         val input = s.getInputStream()
         val buf = ByteArray(4096)
         var lastTick = System.nanoTime() / 1_000_000
@@ -286,6 +309,7 @@ class ReticulumTransport(
             val now = System.nanoTime() / 1_000_000       // monotonic: a clock stepped back must not stop the ticks
             if (now - lastTick >= TICK_MS) {
                 lastTick = now
+                if (q.stalled()) throw IOException(str(R.string.status_rns_no_progress, ReticulumSendQueue.NO_PROGRESS_MS / 1000))
                 node.tick()
             }
         }
@@ -317,7 +341,5 @@ class ReticulumTransport(
         const val FIRST_NETWORK_MS = 1_000L
         /** A question's whole wait: a hub round trip is a second or two, and it is asked twice. */
         const val ASK_TIMEOUT_MS = 8_000L
-        /** Whole Reticulum packets: several links' worth of frames, a PCM frame being two of them. */
-        const val QUEUE_FRAMES = 128
     }
 }
