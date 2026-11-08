@@ -306,6 +306,8 @@ function fakeRns(ready = true) {
   const r = new EventEmitter();
   r.ready = ready;
   r.linkCount = ready ? 1 : 0;
+  r.farEnds = [];                      // the far ends of the links, when known; the rest count as remote
+  r.remoteLinkCount = (isLocal) => r.linkCount - r.farEnds.filter((id) => isLocal(id)).length;
   r.sent = [];
   r.send = (buf, except) => { r.sent.push({ buf: Buffer.from(buf), except }); return true; };
   return r;
@@ -537,4 +539,89 @@ test("silence and busy run on the monotonic clock: a wall clock stepped back kee
   node.tick();
   assert.equal(P.parseHeader(sent[0]).time, Math.floor(wall / 1000));
   node.stop();
+});
+
+test("never heard is not heard at time 0: a clock that starts at 0 makes nobody talking, busy or just heard", async () => {
+  let t = 0;
+  const link = new EventEmitter();
+  link.send = () => true;
+  const node = new ChannelNode({ name: "Sirius", crypto, link, heartbeatMs: 100000, now: () => Date.now(), clock: () => t });
+  const talking = [];
+  node.on("talking", (on, id) => talking.push([on, id]));
+  node.start();
+  // A hello and no audio, at 0: on the roster, not talking, the channel quiet.
+  link.emit("packet", packet({ senderId: 41, seq: 1 }), { address: "10.0.0.4" });
+  assert.equal(node.roster()[0].talking, false);
+  assert.equal(node.someoneTalking, false);
+  assert.equal(node.busy, false);
+  assert.equal(await node.waitForSilence(BUSY_MS, 0), true);
+  // Its first frame, still before 400 ms: talking starts, and says so.
+  t = 100;
+  link.emit("packet", packet({ senderId: 41, seq: 2, codec: P.Codec.OPUS, payload: Buffer.alloc(60) }), { address: "10.0.0.4" });
+  assert.deepEqual(talking, [[true, 41]], "a first frame inside the first 400 ms is a new talker");
+  assert.equal(node.busy, true);
+  t = 100 + BUSY_MS;
+  assert.equal(node.busy, false);
+  // Audio heard at time 0 itself is heard.
+  let t2 = 0;
+  const other = new ChannelNode({ name: "Vega", crypto, link: Object.assign(new EventEmitter(), { send: () => true }), heartbeatMs: 100000, now: () => Date.now(), clock: () => t2 });
+  other.start();
+  other.link.emit("packet", packet({ senderId: 42, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60) }), { address: "10.0.0.5" });
+  assert.equal(other.busy, true, "a frame at 0 is a frame");
+  assert.equal(other.roster()[0].talking, true);
+  assert.equal(await other.waitForSilence(BUSY_MS, 0), false);
+  t2 = BUSY_MS;
+  assert.equal(other.busy, false);
+  node.stop();
+  other.stop();
+});
+
+test("RNS_UP needs a confirmed link off the boat: one whose only link is to a crewmate on the same LAN does not claim it", () => {
+  const lan = new EventEmitter();
+  lan.send = () => true;
+  const rns = fakeRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, heartbeatMs: 100000 });
+  n.start();
+  assert.ok(n.transports() & P.Transports.RNS_UP, "one link, far end not known yet: off the boat");
+  rns.farEnds = [10];                                                          // its far end is the phone 10 ...
+  assert.ok(n.transports() & P.Transports.RNS_UP, "... which is not local yet");
+  lan.emit("packet", packet({ senderId: 10, seq: 1 }), { address: "10.0.0.10" });   // ... and now is
+  assert.equal(n.transports() & P.Transports.RNS_UP, 0, "its only link goes to the boat itself");
+  assert.equal(n.transports() & P.Transports.RETICULUM, P.Transports.RETICULUM, "still connected");
+  assert.equal(n.isForwarder(), false);
+  rns.linkCount = 2;                                                           // a phone ashore links in
+  assert.ok(n.transports() & P.Transports.RNS_UP);
+  assert.equal(n.isForwarder(), true);
+  n.stop();
+});
+
+test("with relaying off the hello never says RNS_UP: a node that does not bridge is never elected the forwarder", () => {
+  const lan = new EventEmitter();
+  const sent = [];
+  lan.send = (buf) => { sent.push(Buffer.from(buf)); return true; };
+  const rns = fakeRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, relay: false, heartbeatMs: 100000 });
+  n.start();
+  const hello = P.decodeHello(crypto.open(P.aadOf(sent[0]), sent[0].subarray(P.HEADER)));
+  assert.equal(hello.transports, P.Transports.LAN | P.Transports.RETICULUM | P.Transports.FWD_PREFER, "connected and linked, but not bridging");
+  assert.equal(n.isForwarder(), false);
+  n.relay = true;
+  assert.ok(n.transports() & P.Transports.RNS_UP);
+  assert.equal(n.isForwarder(), true);
+  n.stop();
+});
+
+test("a hop limit of 1 or the LAN down leaves nothing to bridge: no RNS_UP, as the app's Forwarding.bridges", () => {
+  const lan = new EventEmitter();
+  lan.send = () => true;
+  const rns = fakeRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 1, heartbeatMs: 100000 });
+  n.start();
+  assert.equal(n.transports() & P.Transports.RNS_UP, 0, "ttl 1: relayTtl gives 0, nothing goes one hop further");
+  n.ttl = 2;
+  assert.ok(n.transports() & P.Transports.RNS_UP);
+  lan.offline = true;                                                          // the LAN gone: Reticulum alone
+  assert.equal(n.transports() & P.Transports.RNS_UP, 0, "no LAN to bridge to");
+  assert.equal(n.transports() & P.Transports.RETICULUM, P.Transports.RETICULUM, "still on Reticulum");
+  n.stop();
 });

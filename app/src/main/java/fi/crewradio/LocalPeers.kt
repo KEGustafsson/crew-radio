@@ -23,7 +23,8 @@ package fi.crewradio
  */
 class LocalPeers(private val localMs: Long = LOCAL_MS, private val capacity: Int = MAX_SENDERS) {
     private class Seen(var at: Long, var transports: Int)
-    private val seen = HashMap<Int, Seen>()
+    /** In hearing order, the sender heard longest ago first: every hello re-inserts its sender. */
+    private val seen = LinkedHashMap<Int, Seen>()
 
     /**
      * A hello from [sender] carrying [transports], with its header's [hops] and [ttl], heard over a
@@ -33,15 +34,15 @@ class LocalPeers(private val localMs: Long = LOCAL_MS, private val capacity: Int
     fun heardHello(sender: Int, transports: Int, hops: Int, ttl: Int, viaLocal: Boolean, now: Long) {
         if (!viaLocal || hops != ttl) return
         sweep(now)
-        val s = seen[sender]
-        if (s != null) {
-            s.at = now
-            s.transports = transports
-            return
+        // To the end of the hearing order, whether it was known or not.
+        if (seen.remove(sender) == null && seen.size >= capacity) {
+            // Full: the entry heard longest ago (the first in hearing order, also when two share a
+            // timestamp) makes room, the ESP32's rule. A newcomer is never refused, so a sender
+            // that really is on the boat cannot be shut out by a full table.
+            val it = seen.entries.iterator()
+            it.next()
+            it.remove()
         }
-        // Full: the entry heard longest ago makes room (the ESP32's rule). A newcomer is never
-        // refused, so a sender that really is on the boat cannot be shut out by a full table.
-        if (seen.size >= capacity) seen.entries.minByOrNull { it.value.at }?.let { seen.remove(it.key) }
         seen[sender] = Seen(now, transports)
     }
 

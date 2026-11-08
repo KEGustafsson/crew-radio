@@ -337,7 +337,12 @@ sudo systemctl restart rnsd
 ### From `TCPServerInterface` to `BackboneInterface`
 
 A hub set up before 2026-11-08 has a `TCPServerInterface` listener. On Linux, change it (section
-4 says why); the clients need nothing. The option names change with the type:
+4 says why); the clients need nothing. The option names change with the type.
+
+If the config is a symbolic link kept by a configuration tool (NixOS, a dotfiles manager, or the
+like; `ls -l /var/lib/rns/.reticulum/config` shows `->`), do not run the commands below: `sed -i` replaces the link with a
+regular file of its own, and the tool would put the old listener back on its next run (or lose
+track of the file). Make the same three changes in that tool's copy of the config instead.
 
 ```sh
 C=/var/lib/rns/.reticulum/config

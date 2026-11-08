@@ -177,8 +177,8 @@ dependency), not taken from the reference implementation, and checked against it
 - **A slow uplink.** The plugin keeps one write in the socket at a time, of 16 KiB at most, and
   queues the rest; all of a frame's packets, one per link, go in one write. Voice that has waited
   200 ms when its turn comes is dropped (late voice is no use, and writing it would make the next
-  frame later still); hellos and link control always go, link control ahead of everything else
-  waiting, so no backlog keeps a link from its keep-alives. Answers to the crew's questions may
+  frame later still); hellos and link control always go, ahead of everything else waiting, so no
+  backlog keeps a link from its keep-alives or the far end from our hellos. Answers to the crew's questions may
   hold 64 KiB of the queue at most: one that does not fit is refused whole, and the phone's repeat
   of the question is answered once there is room. A backlog is never a reason to reconnect: that
   turned one busy moment into every link of the node being rebuilt. `reticulum.detail` counts the
@@ -192,7 +192,8 @@ dependency), not taken from the reference implementation, and checked against it
   and with all of them forwarding, one talker put about ten copies of each frame through the hub.
   So the nodes on a boat elect one forwarder from their hellos, without any message of their own:
   among the nodes heard on the LAN directly (not relayed) in the last 15 s that are on the hub
-  right now with at least one link that has proved the key, the one that prefers to forward wins (the plugin always does, being on the boat's
+  right now with at least one link that has proved the key going off the boat (not to a crewmate
+  on the same LAN), the one that prefers to forward wins (the plugin always does, being on the boat's
   wire), else the lowest id. Only the forwarder carries LAN voice to Reticulum, and Reticulum
   voice to the LAN; a talker that is on the hub itself is never repeated, since it sends its own
   voice there; and no Reticulum link gets a frame whose far end hears the boat on the LAN anyway

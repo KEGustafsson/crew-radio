@@ -93,6 +93,21 @@ class LocalPeersTest {
     }
 
     @Test
+    fun aTieOnTheClockIsBrokenByHearingOrder() {
+        // Hellos in the same millisecond: the first heard is the one to go, whatever the ids hash to.
+        for (order in listOf(listOf(1, 2, 3), listOf(3, 2, 1), listOf(64, 0x8000_0000.toInt(), 7))) {
+            val p = LocalPeers(capacity = 3)
+            for (id in order) p.direct(id, Hello.LAN, 500)
+            p.direct(order[0], Hello.LAN, 500)              // the first heard again: now the second is eldest
+            p.direct(99, Hello.LAN, 500)
+            assertFalse("$order", p.isLocal(order[1], 500))
+            assertTrue(p.isLocal(order[0], 500))
+            assertTrue(p.isLocal(order[2], 500))
+            assertTrue(p.isLocal(99, 500))
+        }
+    }
+
+    @Test
     fun aFullTableMakesRoomByForgettingTheSenderHeardLongestAgo() {
         val p = LocalPeers(capacity = 2)
         p.direct(1, Hello.LAN, 0); p.direct(2, Hello.LAN, 100)

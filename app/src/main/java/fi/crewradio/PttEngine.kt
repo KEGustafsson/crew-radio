@@ -13,6 +13,7 @@ import fi.crewradio.audio.Mixer
 import fi.crewradio.audio.OpusDecoder
 import fi.crewradio.audio.OpusEncoder
 import fi.crewradio.audio.Tones
+import fi.crewradio.transport.LanTransport
 import fi.crewradio.transport.ReticulumTransport
 import fi.crewradio.transport.Transport
 import java.util.concurrent.ConcurrentHashMap
@@ -1059,7 +1060,7 @@ class PttEngine(
             for (t in transports) {
                 val sent = when {
                     t is ReticulumTransport -> route.reticulum && t !== from && t.sendAudio(p, isLocalSender)
-                    !route.local -> false
+                    !(if (t is LanTransport) route.lan else route.mesh) -> false
                     t === from -> t.relayWithin && t.send(p, except = link)
                     else -> t.send(p)
                 }
@@ -1074,20 +1075,27 @@ class PttEngine(
 
     /**
      * The transports flags of our hello: what can carry a packet right now, and [Hello.RNS_UP] while
-     * the Reticulum socket is up AND at least one link has proved the key: a socket alone delivers
-     * to nobody, and the boat's forwarder must keep carrying a talker until it does. A phone sets
-     * neither forwarder preference.
+     * the Reticulum socket is up AND at least one link that has proved the key goes off the boat
+     * (its far end is not a local sender, or not known yet): a socket alone, or links only to
+     * crewmates aboard, deliver to nobody ashore, and the boat's forwarder must keep carrying a
+     * talker until it does. And only while this phone bridges at all ([Forwarding.bridges]). A phone
+     * sets neither forwarder preference.
      */
     private fun ownFlags(): Int {
         var flags = 0
         // Only what can actually carry a packet: a Bluetooth transport whose adapter is off is
         // started but not ready, and claiming BT on the roster then sends the crew looking for a
         // link that cannot exist.
+        var offBoat = false
+        var localUp = false
         for (t in transports) {
             if (!t.ready) continue
             flags = flags or Hello.bitFor(t.name)
-            if (t is ReticulumTransport && t.linked) flags = flags or Hello.RNS_UP
+            if (t is ReticulumTransport) offBoat = t.linkedOffBoat(isLocalSender) else localUp = true
         }
+        // RNS_UP also says we would forward: a node elected forwarder that relays nothing (relay
+        // off, a hop limit of 1, no local transport up) would leave the boat unheard ashore.
+        if (offBoat && Forwarding.bridges(relay, maxHops, localUp)) flags = flags or Hello.RNS_UP
         return flags
     }
 

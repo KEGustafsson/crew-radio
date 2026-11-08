@@ -675,6 +675,7 @@ class FakeRns extends EventEmitter {
     return this.ready;
   }
   confirm() {}
+  remoteLinkCount() { return this.linkCount; }
   diagnostics() { return { peers: [] }; }
   answer(via, id, message) { (this.answers ??= []).push({ via, id, message }); return true; }
 }

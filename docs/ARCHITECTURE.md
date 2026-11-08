@@ -204,8 +204,11 @@ link, rnsd forwards from one thread with a blocking send, and a full send queue 
 connection. The app, the Signal K plugin and the ESP32 gauges now follow one rule set; nothing on
 the wire changed but three spare bits of the hello's transports byte.
 
-- Hello bits: `RNS_UP` 0x10 (connected to the hub with at least one confirmed link right now,
-  cleared the moment either goes: a socket alone delivers to nobody),
+- Hello bits: `RNS_UP` 0x10 (connected to the hub with at least one confirmed link whose far end
+  is not a local sender, a far end not known yet counting as remote; cleared the moment that is
+  no longer so: a socket alone, or links only to crewmates aboard, reach nobody ashore; and only
+  while the node bridges at all: relay on, a hop limit of 2 or more, a local transport up, or
+  it could be elected and forward nothing),
   `FWD_PREFER` 0x20 (the plugin) and `FWD_AVOID` 0x40 (an ESP32); a phone sets neither preference.
   0x80 stays reserved, and a decoder carries bits it does not know.
 - Local peers (`LocalPeers`, pure and tested): a sender is local while a hello of its own reached
@@ -218,7 +221,9 @@ the wire changed but three spare bits of the hello's transports byte.
   every Reticulum link except those whose far end is a local sender (split horizon; a link whose
   far end is not known yet gets it). A frame heard locally goes to Reticulum only from the
   forwarder and only when its talker is not on Reticulum itself; a frame heard over Reticulum goes
-  to the local transports only from the forwarder; Reticulum to Reticulum never. Relays between
+  onto the WLAN only from the forwarder, and to Bluetooth and Aware from whoever heard it, as
+  before (a peer reached only that way would otherwise miss a frame whose WLAN copy reached its
+  relay after the Reticulum one); Reticulum to Reticulum never. Relays between
   the local transports, and hellos everywhere, are as before. Views of the forwarder can disagree
   for a moment: that makes a duplicate, which the seen-cache drops, never a gap. A link learns its
   far end's sender id from the first authentic packet the far end sent itself (`hops == ttl`)

@@ -124,8 +124,11 @@ class ReticulumTransport(
     /** True while at least one link has proved the key: somebody a question could reach. */
     val canAsk: Boolean get() = running && connected && node.linkCount > 0
 
-    /** Connected to the hub with at least one confirmed link: what the hello's RNS_UP says. */
-    val linked: Boolean get() = connected && node.linkCount > 0
+    /**
+     * Connected to the hub with at least one confirmed link whose far end is not on the boat
+     * ([isLocal]; a far end not known yet counts as remote): what the hello's RNS_UP says.
+     */
+    fun linkedOffBoat(isLocal: (Int) -> Boolean): Boolean = connected && node.hasRemoteLink(isLocal)
 
     /**
      * Asks the boat's Crew Radio plugin a question over the links ([AskCarry] request message) and

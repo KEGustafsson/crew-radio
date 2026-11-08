@@ -91,8 +91,9 @@ const STABLE_MS = 30_000;              // a connection that lasted this long res
 // socket taking none of them do.
 //
 // What waits is of four kinds. Link control (requests, proofs, RTTs, keep-alives, closes, key
-// proofs, announces) goes first in every write, so nothing queued can hold it past a link's
-// timeout. Channel data that is not voice (hellos) keeps its place and is never dropped. Answers to
+// proofs, announces) and hellos (the channel's one packet that is not voice, and what keeps a
+// link from its silence timeout at the far end) go first in every write, so no backlog of answers
+// can hold them past a link's timeout; neither is ever dropped. Answers to
 // the crew's questions (bulk) are bounded: an answer that would take the queued answers past
 // BULK_MAX_BYTES is refused whole, and the asker's repeat is answered from memory once there is room.
 // Each write carries at most WRITE_MAX_BYTES (and always one whole item), so the socket's callback
@@ -104,7 +105,9 @@ const NO_PROGRESS_MS = 10_000;
 const QUEUE_PRUNE = 32;                // past this many waiting, late voice is dropped as more comes in
 const WRITE_MAX_BYTES = 16 * 1024;     // one socket write at most (one item may be larger: a frame for many links)
 const BULK_MAX_BYTES = 64 * 1024;      // answers to questions waiting at most
-const Kind = Object.freeze({ CONTROL: "control", DATA: "data", BULK: "bulk", VOICE: "voice" });
+const Kind = Object.freeze({ CONTROL: "control", HELLO: "hello", BULK: "bulk", VOICE: "voice" });
+/** What goes ahead of everything else waiting: link control, and the hellos that keep each link from its silence timeout. */
+const first = (q) => q.kind === Kind.CONTROL || q.kind === Kind.HELLO;
 const GATE_PER_S = 10;                 // announce checks and link requests we spend a signature on, a second
 const GATE_BURST = 20;
 const VERIFIED_MAX = 256;              // announces remembered as checked
@@ -234,6 +237,16 @@ class ReticulumTransport extends EventEmitter {
   }
 
   /** Links that carry channel traffic now: up, and their far end has proved the key. */
+  /**
+   * Confirmed links whose far end `isLocal(senderId)` does not name: the links that carry our voice
+   * off the boat. A far end not learnt yet counts, as it gets our voice (send's split horizon).
+   */
+  remoteLinkCount(isLocal) {
+    let n = 0;
+    for (const e of this.links.values()) if (e.link.active && e.confirmed && (e.farEnd === null || !isLocal(e.farEnd))) n++;
+    return n;
+  }
+
   get linkCount() {
     let n = 0;
     for (const e of this.links.values()) if (e.link.active && e.confirmed) n++;
@@ -256,7 +269,7 @@ class ReticulumTransport extends EventEmitter {
       for (const part of Carry.cut(buf, e.cutId++ & 0xff)) frames.push(P.frame(e.link.dataPacket(part)));
     }
     if (frames.length === 0) return false;
-    if (!this.enqueue(frames.length === 1 ? frames[0] : Buffer.concat(frames), opts.voice ? Kind.VOICE : Kind.DATA)) return false;
+    if (!this.enqueue(frames.length === 1 ? frames[0] : Buffer.concat(frames), opts.voice ? Kind.VOICE : Kind.HELLO)) return false;
     this.stats.tx++;
     return true;
   }
@@ -398,28 +411,27 @@ class ReticulumTransport extends EventEmitter {
   }
 
   /**
-   * The next write, when the socket has taken the last one: the voice past its age dropped, every
-   * link-control packet waiting, then the rest in order up to WRITE_MAX_BYTES (one item at least).
+   * The next write, when the socket has taken the last one: the voice past its age dropped, then
+   * link control and hellos ahead of the rest, up to WRITE_MAX_BYTES (one item at least).
    * `force` (on stop): everything, at once.
    */
   flush(force = false) {
     if (this.outq.length === 0 || !this.sock || !this.connected || (this.inFlight > 0 && !force)) return;
     this.prune(this.now());
+    // Link control and hellos first, each kind in the order it came, then the rest; as many as fit
+    // in WRITE_MAX_BYTES (always one whole item), the others stay for the next write.
+    const ordered = [...this.outq.filter(first), ...this.outq.filter((q) => !first(q))];
     const out = [];
-    const rest = [];
     let size = 0;
-    for (const q of this.outq) {
-      if (q.kind === Kind.CONTROL) { out.push(q.bytes); size += q.bytes.length; } else rest.push(q);
-    }
     let taken = 0;
-    for (const q of rest) {
+    for (const q of ordered) {
       if (!force && size > 0 && size + q.bytes.length > WRITE_MAX_BYTES) break;
       out.push(q.bytes);
       size += q.bytes.length;
       if (q.kind === Kind.BULK) this.bulkBytes -= q.bytes.length;
       taken++;
     }
-    this.outq = rest.slice(taken);
+    this.outq = ordered.slice(taken);
     if (out.length) this.put(out.length === 1 ? out[0] : Buffer.concat(out));
   }
 

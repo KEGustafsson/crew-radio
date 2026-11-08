@@ -514,6 +514,19 @@ class ReticulumNodeTest {
     }
 
     @Test
+    fun onlyALinkOffTheBoatCountsForRnsUp() {
+        val (a, b) = linked()
+        val e = a.entries().single()
+        assertTrue("a far end not known yet counts as remote", a.hasRemoteLink { true })
+        a.learnFarEnd(e, 0x0B)
+        assertTrue("its far end is not local", a.hasRemoteLink { it == 0x0C })
+        assertFalse("its only link goes to a crewmate aboard: nobody ashore hears it", a.hasRemoteLink { it == 0x0B })
+        a.disconnected()
+        assertFalse("no connection, no link", a.hasRemoteLink { false })
+        assertEquals(1, b.linkCount)
+    }
+
+    @Test
     fun aFarEndIsLearnedOnlyForALinkTheNodeHolds() {
         val (a, b) = linked()
         val e = a.entries().single()

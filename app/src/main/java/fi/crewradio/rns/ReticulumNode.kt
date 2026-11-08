@@ -177,6 +177,14 @@ internal class ReticulumNode(
 
     /** Links that carry channel traffic: up, and their far end has proved the key. */
     @get:Synchronized val linkCount: Int get() = links.values.count { it.link.active && it.confirmed }
+
+    /**
+     * True while a link carrying channel traffic goes off the boat: confirmed, and its far end not
+     * one [isLocal] names (a far end not known yet counts as remote). A node whose only links go
+     * to crewmates on its own boat reaches nobody ashore, so it is not on Reticulum for RNS_UP.
+     */
+    @Synchronized fun hasRemoteLink(isLocal: (Int) -> Boolean): Boolean =
+        connected && links.values.any { e -> e.link.active && e.confirmed && e.farEnd.let { it == null || !isLocal(it) } }
     @get:Synchronized val peerCount: Int get() = peers.size
 
     /** For tests: whether a peer is known, the links held (confirmed or not), our requests waiting. */

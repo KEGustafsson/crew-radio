@@ -972,6 +972,43 @@ test("transport: with two confirmed links, a frame reaches both far ends in one 
   for (const n of nodes) n.stop();
 });
 
+test("transport: hellos go ahead of answers waiting; link control too, but never more than WRITE_MAX_BYTES a write", async () => {
+  let t = 1_000_000;
+  const medium = new Medium();
+  const { a, b } = await linked(medium, () => t);
+  const [e] = a.links.values();
+  medium.stuck = a.sock;
+  assert.equal(a.send(Buffer.alloc(40)), true);                            // in flight
+  const answer = Array.from({ length: 40 }, (_, i) => Buffer.alloc(400, i));
+  for (let i = 0; i < 3; i++) assert.equal(a.writeBulk(e, answer), true);  // ~58 KB of answers
+  assert.equal(a.send(Buffer.alloc(40)), true);                            // a hello, queued behind them
+  medium.releaseBytes(medium.held[0].buf.length);                          // the write in flight is taken
+  assert.equal(a.outq.filter((q) => q.kind === "hello").length, 0, "the hello went in the next write, ahead of the answers");
+  assert.ok(a.diagnostics().waiting.answerBytes > 0, "answers still waiting");
+  // Link control over WRITE_MAX_BYTES waits for the next write too: no write is larger.
+  for (let i = 0; i < 60; i++) a.write(Buffer.alloc(500, i));
+  const from = medium.sent.length;
+  medium.releaseBytes(1 << 20);
+  const writes = medium.sent.slice(from).filter((w) => w.s === a.sock).map((w) => w.buf);
+  assert.ok(writes.length >= 2, `${writes.length} writes`);
+  assert.ok(writes.every((w) => w.length <= WRITE_MAX_BYTES), writes.map((w) => w.length).join(" "));
+  assert.equal(a.outq.length, 0, "everything went in the end");
+  a.stop();
+  b.stop();
+});
+
+test("transport: the links off the boat are the confirmed ones whose far end is not local, an unknown one included", async () => {
+  const medium = new Medium();
+  const { a, b } = await linked(medium);
+  const [eb] = b.links.values();
+  assert.equal(b.remoteLinkCount(() => true), 1, "a far end not learnt yet counts as off the boat");
+  b.learnFarEnd(eb, 5);
+  assert.equal(b.remoteLinkCount((id) => id === 5), 0, "its only link is to a crewmate on the boat");
+  assert.equal(b.remoteLinkCount(() => false), 1);
+  a.stop();
+  b.stop();
+});
+
 test("transport: link control goes first, answers waiting are bounded, and no write is larger than it has to be", async () => {
   let t = 1_000_000;
   const medium = new Medium();

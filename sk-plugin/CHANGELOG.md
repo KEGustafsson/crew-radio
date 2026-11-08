@@ -12,7 +12,10 @@ are unchanged, and older clients keep working beside these (they only save nothi
 ### Added
 
 - Hello bits in the spare part of the transports byte: `RNS_UP` (0x10) while the Reticulum socket
-  is up and at least one link has proved the key (a socket alone delivers nothing), `FWD_PREFER` (0x20, always set by the plugin) and `FWD_AVOID` (0x40, the ESP32's). Unknown
+  is up and at least one link that has proved the key goes off the boat (its far end not a local
+  sender, or not known yet): a socket alone, or a link only to a crewmate aboard, carries our
+  voice to nobody ashore; and only while relaying is on, so a node that does not bridge is never
+  elected. `FWD_PREFER` (0x20, always set by the plugin) and `FWD_AVOID` (0x40, the ESP32's). Unknown
   bits are kept by the decoder, never a reason to drop a hello.
 - One forwarder per boat (`lib/forwarding.js`, pure and tested): the nodes heard on the LAN
   unrelayed less than 15 s ago (a full table forgets the one heard longest ago) that are on the
@@ -34,14 +37,16 @@ are unchanged, and older clients keep working beside these (they only save nothi
   after the setting's wait. The setting is now the first wait for a gap.
 - The node's elapsed times (a gap in talk, the channel busy, talking on the roster, frame pacing,
   local peers) run on a monotonic clock; only the packets' timestamps are wall time, so a server
-  clock stepped back by GPS or NTP no longer keeps a quiet channel busy.
+  clock stepped back by GPS or NTP no longer keeps a quiet channel busy. "Never heard" is its own
+  value, not 0, so no clock reading makes a member never heard look just heard.
 
 ### Fixed
 
 - Reticulum send queue: one write in the socket at a time, all of a frame's packets (one per
   link) in one write, voice that has waited 200 ms dropped instead of written (counted as
-  `voiceDropped`), hellos and link control never dropped, link control first in every write.
-  Writes of 16 KiB at most, so a slow uplink that still moves shows its progress within the
+  `voiceDropped`), hellos and link control never dropped and first in every write, ahead of
+  answers to questions, so no backlog holds them past a link's 12 s silence timeout.
+  Writes of 16 KiB at most, link control included (what does not fit waits for the next), so a slow uplink that still moves shows its progress within the
   no-progress time. Answers to questions waiting are bounded at 64 KiB, one that does not fit
   refused whole (`answersRefused`). A backlog no longer redials the connection (the 64 KiB rule,
   never released, did, and rebuilt every link of the node for one busy moment); bytes waiting

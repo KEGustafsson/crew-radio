@@ -39,6 +39,10 @@ const MAX_NODES = 64;      // far more than a crew; a ceiling, not a target (the
 const TALK_HOLD_MS = 400;  // how long after the last frame a node still shows as talking (the app's TALK_HOLD_MS)
 const BUSY_MS = 400;       // another talker's accepted frame within this long: the channel is busy (the burst gap)
 const STALE_REPORT_MS = 30_000;
+// "Never heard": a last-heard time no clock reading can be, so a clock that starts at 0 (a test's, or
+// any) cannot make a member never heard look just heard. Never leaves the node: the roster and the
+// status page carry booleans and ages, not these times.
+const NEVER = -Infinity;
 
 class ChannelNode extends EventEmitter {
   /**
@@ -52,7 +56,7 @@ class ChannelNode extends EventEmitter {
    * @param {number} [opts.talkingMs=400]   audio within this long ago means "talking"
    * @param {ReplayGuard} [opts.guard]      the replay state; pass one guard across link reopens
    * @param {object} [opts.rns]              a second transport (send(buf, except, {voice, skip}), learnFarEnd(via, id), ready, 'packet')
-   * @param {boolean} [opts.relay=true]      forward between the link and `rns` (off only in tests: the hello still offers us as the forwarder)
+   * @param {boolean} [opts.relay=true]      forward between the link and `rns`; off, the hello never says RNS_UP, so we are never the forwarder
    * @param {() => number} [opts.now]       wall clock, milliseconds: the packets' `time` is stamped and checked with it
    * @param {() => number} [opts.clock]     monotonic milliseconds for every elapsed time (silence, busy, roster, pacing,
    *                                        local peers); lib/clock.js's mono() by default, the test's `now` when only that is given
@@ -85,7 +89,7 @@ class ChannelNode extends EventEmitter {
     this.chain = Promise.resolve(); // announcements go out one after another, in call order
     this.lastRosterKey = "";
     this.local = new F.LocalPeers({ now: () => this.clock() });   // senders heard on the LAN unrelayed: the boat
-    this.heardAt = 0;      // the last accepted audio frame from anybody else, and whose
+    this.heardAt = NEVER;  // the last accepted audio frame from anybody else, and whose
     this.heardFrom = 0;
     this.stats = { rx: 0, rejected: 0, stale: 0, late: 0, tx: 0, relayed: 0, held: 0, yielded: 0 };
     this.staleReportedAt = -Infinity;
@@ -130,19 +134,32 @@ class ChannelNode extends EventEmitter {
   /**
    * Our hello's transports byte. The LAN only while there is one: the node that keeps the channel
    * while it is down says Reticulum alone. RETICULUM while the socket to the transport node is up;
-   * RNS_UP only while it is up and at least one link has proved the key, since a socket alone
-   * delivers nothing, and a boat that took us for its bridge then would hear nobody ashore.
+   * RNS_UP only while it is up and at least one link that has proved the key goes off the boat
+   * (its far end is not a local sender; one not known yet counts as off the boat). A socket alone
+   * delivers nothing, and a link to a crewmate on the same boat is one our voice never takes
+   * (split horizon): a boat that took us for its bridge, or for a talker that reaches the shore
+   * itself, would then be heard by nobody ashore. Nor with relaying off: a node that does not bridge
+   * must not be elected the boat's forwarder and then forward nothing.
    * FWD_PREFER always: a server on the boat's wire is the forwarder the boat wants.
    */
   transports() {
     const up = !!this.rns?.ready;
     return (this.link.offline ? 0 : P.Transports.LAN)
       | (up ? P.Transports.RETICULUM : 0)
-      | (up && this.rns.linkCount > 0 ? P.Transports.RNS_UP : 0)
+      | (up && this.bridges() && (this.rns.remoteLinkCount?.((id) => this.local.isLocal(id)) ?? 0) > 0 ? P.Transports.RNS_UP : 0)
       | P.Transports.FWD_PREFER;
   }
 
-  /** True while we are the boat's forwarder, as we see it (lib/forwarding.js): never without RNS_UP (a confirmed link). */
+  /**
+   * True when this node bridges the LAN and Reticulum at all, the app's Forwarding.bridges: relaying
+   * on, a hop limit that lets a packet go one hop further (relayTtl gives 0 below 2), and the LAN up.
+   * A node that bridges nothing must not claim RNS_UP, or it could be elected the boat's forwarder.
+   */
+  bridges() {
+    return this.relay && this.ttl >= 2 && !this.link.offline;
+  }
+
+  /** True while we are the boat's forwarder, as we see it (lib/forwarding.js): never without RNS_UP (a confirmed link off the boat). */
   isForwarder() {
     if (!this.rns?.ready) return false;
     return this.local.forwarder({ senderId: this.senderId, transports: this.transports() }) === this.senderId;
@@ -150,7 +167,7 @@ class ChannelNode extends EventEmitter {
 
   /** True while another talker is heard: an accepted audio frame from somebody else within BUSY_MS. */
   get busy() {
-    return this.heardAt > 0 && this.clock() - this.heardAt < BUSY_MS;
+    return this.heardAt !== NEVER && this.clock() - this.heardAt < BUSY_MS;
   }
 
   /** The roster as the phones would list it. */
@@ -163,7 +180,7 @@ class ChannelNode extends EventEmitter {
         transports: n.transports,
         hops: n.hops,
         versionCode: n.versionCode,
-        talking: now - n.lastAudio < this.talkingMs,
+        talking: n.lastAudio !== NEVER && now - n.lastAudio < this.talkingMs,
         ageMs: now - n.lastSeen,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -172,7 +189,7 @@ class ChannelNode extends EventEmitter {
   /** True while any other node is sending audio. */
   get someoneTalking() {
     const now = this.clock();
-    for (const n of this.nodes.values()) if (now - n.lastAudio < this.talkingMs) return true;
+    for (const n of this.nodes.values()) if (n.lastAudio !== NEVER && now - n.lastAudio < this.talkingMs) return true;
     return false;
   }
 
@@ -187,7 +204,7 @@ class ChannelNode extends EventEmitter {
         const now = this.clock();
         let last = this.heardAt;
         for (const n of this.nodes.values()) last = Math.max(last, n.lastAudio);
-        if (last === 0 || now - last >= gapMs) resolve(true);      // nobody has talked, or not lately
+        if (last === NEVER || now - last >= gapMs) resolve(true);  // nobody has talked, or not lately
         else if (now >= deadline || stop()) resolve(false);
         else setTimeout(check, 50);
       };
@@ -345,7 +362,7 @@ class ChannelNode extends EventEmitter {
     const fresh = !n;
     if (fresh) {
       if (this.nodes.size >= MAX_NODES) return;
-      n = { name: null, transports: 0, hops: 0, versionCode: 0, lastSeen: now, lastAudio: 0, address: null };
+      n = { name: null, transports: 0, hops: 0, versionCode: 0, lastSeen: now, lastAudio: NEVER, address: null };
       this.nodes.set(h.senderId, n);
     }
     this.stats.rx++;
@@ -371,7 +388,7 @@ class ChannelNode extends EventEmitter {
         }
       }
     } else {
-      const was = now - n.lastAudio < this.talkingMs;
+      const was = n.lastAudio !== NEVER && now - n.lastAudio < this.talkingMs;
       n.lastAudio = now;
       if (!was) {
         this.emit("talking", true, h.senderId);
