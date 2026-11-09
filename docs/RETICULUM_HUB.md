@@ -315,8 +315,8 @@ has only what systemd saw. Times in both are the server's, usually UTC.
 If a configuration tool manages the config (NixOS, Ansible, a dotfiles manager or the like),
 change it in the tool's source and apply it the tool's way instead: a change made here would be
 overwritten on the tool's next run. Otherwise keep a copy first, edit, restart, and check that the
-interface came back (if the config is a symbolic link, `ls -l $C` shows `->`: copy and edit the
-file it points to):
+interface came back (if the config is a symbolic link, `ls -l /var/lib/rns/.reticulum/config`
+shows `->`: copy and edit the file it points to):
 
 ```sh
 C=/var/lib/rns/.reticulum/config
