@@ -56,7 +56,23 @@ test("a copy that would be forwarded further than the first is 'relay', once per
   assert.equal(g.admit(1, 0, "audio", 2), "relay", "the sender's own copy, ttl to spare");
   assert.equal(g.admit(1, 0, "audio", 2), "seen", "its broadcast twin");
   assert.equal(g.admit(1, 0, "audio", 1), "seen", "a worse copy after it");
+  assert.equal(g.admit(1, 0, "audio", 2), "seen", "which did not lower the ttl kept");
   assert.equal(g.admit(1, 0, "audio", 3), "relay", "a better one still");
   assert.equal(g.admit(1, 0, "hello", 0), "new", "hellos keep their own");
   assert.equal(g.admit(1, 0, "audio"), "seen", "no ttl given: never relay");
+});
+
+// The app's Ingress asks the sender's budget between the look and the write: a packet over it
+// leaves nothing behind, so a later copy is judged afresh (and charged), never relayed free.
+test("a packet the sender's budget refuses is 'rejected' and not remembered", () => {
+  const g = new ReplayGuard();
+  let asked = 0;
+  const no = () => { asked++; return false; };
+  const yes = () => { asked++; return true; };
+  assert.equal(g.admit(1, 0, "audio", 0, no), "rejected");
+  assert.equal(g.admit(1, 0, "audio", 2, yes), "new", "the later copy is judged afresh, not relayed");
+  assert.equal(g.admit(1, 0, "audio", 3, no), "relay", "a copy of an admitted packet is not charged");
+  assert.equal(asked, 2);
+  assert.equal(g.admit(1, 0, "hello", 0, no), "rejected");
+  assert.equal(g.admit(1, 0, "hello", 0, yes), "new", "a refused hello does not block the next copy's roster update");
 });

@@ -42,11 +42,14 @@ class ReplayGuard {
    * `relayTtl` (0: not forwarded): "new" when it advances the sender's sequence (and is now
    * remembered), "seen" for a copy of a packet already admitted, "relay" for such a copy that
    * would be forwarded further than any before it (forward it, nothing more), "late" for a
-   * number the sender has moved past. Each "relay" must beat the last, and the ttl is capped at
-   * the sender's signed budget (packet.relayTtl), so a packet is forwarded at most that many
-   * extra times.
+   * number the sender has moved past. Each "relay" must beat the last, and packet.relayTtl
+   * caps the ttl at the sender's signed budget and at our own hop limit, so a packet is
+   * forwarded at most that limit of extra times. `allow`, when given, is the sender's budget,
+   * asked only for a new packet, between the look and the write, as in the app's Ingress: a
+   * packet it refuses is "rejected" and leaves nothing behind (neither the cache nor the
+   * mark), so a later copy is judged afresh rather than relayed uncharged.
    */
-  admit(senderId, seq, kind, relayTtl = 0) {
+  admit(senderId, seq, kind, relayTtl = 0, allow = null) {
     const cache = kind === "hello" ? this.hello : this.audio;
     const capacity = kind === "hello" ? this.helloCapacity : this.audioCapacity;
     const key = `${senderId}:${seq}`;
@@ -66,6 +69,7 @@ class ReplayGuard {
     this.marks.set(senderId, m);
     const prev = m[kind];
     if (prev !== null && ((seq - prev) | 0) <= 0) return "late";   // signed 32-bit distance: wraps with the counter
+    if (allow && !allow()) return "rejected";
     m[kind] = seq | 0;
     cache.set(key, relayTtl);
     if (cache.size > capacity) cache.delete(cache.keys().next().value);

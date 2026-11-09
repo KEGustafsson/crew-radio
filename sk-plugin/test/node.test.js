@@ -694,3 +694,32 @@ test("forwarder: a frame first heard with its ttl spent still reaches the LAN by
   assert.equal(lan.sent.length, lanBefore + 1, "a third copy is only a duplicate");
   n.stop();
 });
+
+// CodeRabbit on #69: a copy over the sender's budget must leave nothing behind, or a later copy
+// with hops to spare would be relayed uncharged and never heard.
+test("a copy over the sender's budget is not remembered: a later copy is charged and heard", () => {
+  const lan = new EventEmitter();
+  lan.sent = [];
+  lan.send = (buf) => { lan.sent.push(Buffer.from(buf)); return true; };
+  const rns = recordingRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 4, heartbeatMs: 100000 });
+  n.senderId = 1000;
+  n.start();
+  const at = Math.floor(Date.now() / 1000);
+  const full = packet({ senderId: 31, seq: 0, codec: P.Codec.OPUS, time: at, ttl: 2, hops: 2, payload: Buffer.alloc(60, 1) });
+  const spent = Buffer.from(full);
+  spent[4] = 1;
+  const allow = n.limiter.allowSender.bind(n.limiter);
+  let open = false;
+  n.limiter.allowSender = (id) => open && allow(id);
+  const rx = n.stats.rx;
+  const rejected = n.stats.rejected;
+  const lanBefore = lan.sent.length;
+  rns.emit("packet", spent, { key: "link-a" });
+  assert.equal(n.stats.rejected, rejected + 1, "over budget");
+  open = true;
+  rns.emit("packet", full, { key: "link-b" });
+  assert.equal(n.stats.rx, rx + 1, "the later copy is heard, charged as a first copy");
+  assert.equal(lan.sent.length, lanBefore + 1, "and forwarded");
+  n.stop();
+});

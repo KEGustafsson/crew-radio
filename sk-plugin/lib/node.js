@@ -354,7 +354,12 @@ class ChannelNode extends EventEmitter {
     if (!P.isFresh(h.time, Math.floor(this.now() / 1000))) { this.stale(this.clock()); return; }
     const now = this.clock();
     const kind = h.codec === P.Codec.HELLO ? "hello" : "audio";
-    const verdict = this.guard.admit(h.senderId, h.seq, kind, this.rns && this.relay ? P.relayTtl(h, this.ttl) : 0);
+    // The sender is charged inside admit, after the AEAD and after the duplicate look, so only
+    // authenticated first copies cost a sender anything: the two WLAN copies of every frame
+    // would otherwise spend a talker's budget in seconds, which is what the app measured in the
+    // field. A copy over budget is not remembered either, as in the app.
+    const verdict = this.guard.admit(h.senderId, h.seq, kind, this.rns && this.relay ? P.relayTtl(h, this.ttl) : 0,
+      () => this.limiter.allowSender(h.senderId));
     // Who is where, from any authentic copy that came straight from its sender (hops == ttl), the
     // duplicates included: a phone's hello reaches us by the LAN and by Reticulum, and whichever
     // copy came first, the LAN one still says the phone is on the boat. Not from a replay of an
@@ -366,10 +371,7 @@ class ChannelNode extends EventEmitter {
     // and charging it would spend the sender's budget on copies.
     if (verdict === "relay") { this.relayOn(buf, h, via); return; }
     if (verdict === "late") { this.stats.late++; return; }
-    // Charged after the AEAD and after the duplicate look, so only authenticated first copies
-    // cost a sender anything: the two WLAN copies of every frame would otherwise spend a
-    // talker's budget in seconds, which is what the app measured in the field.
-    if (!this.limiter.allowSender(h.senderId)) { this.stats.rejected++; return; }
+    if (verdict === "rejected") { this.stats.rejected++; return; }
     if (h.codec !== P.Codec.HELLO) { this.heardAt = now; this.heardFrom = h.senderId; }   // another talker: the channel is busy
     this.relayOn(buf, h, via);
     let n = this.nodes.get(h.senderId);
