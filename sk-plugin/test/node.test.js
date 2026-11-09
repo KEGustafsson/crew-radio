@@ -665,3 +665,32 @@ test("a hop limit of 1 or the LAN down leaves nothing to bridge: no RNS_UP, as t
   assert.equal(n.transports() & P.Transports.RETICULUM, P.Transports.RETICULUM, "still on Reticulum");
   n.stop();
 });
+
+// CodeRabbit on #69: a copy that comes with its ttl spent (a bridge's, or one with the byte
+// lowered) and arrives first must not keep the full copy behind it from the boat's LAN.
+test("forwarder: a frame first heard with its ttl spent still reaches the LAN by its later full copy", () => {
+  const lan = new EventEmitter();
+  lan.sent = [];
+  lan.send = (buf) => { lan.sent.push(Buffer.from(buf)); return true; };
+  const rns = recordingRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 4, heartbeatMs: 100000 });
+  n.senderId = 1000;
+  n.start();
+  assert.equal(n.isForwarder(), true);
+  const at = Math.floor(Date.now() / 1000);
+  const full = packet({ senderId: 30, seq: 0, codec: P.Codec.OPUS, time: at, ttl: 2, hops: 2, payload: Buffer.alloc(60, 1) });
+  const spent = Buffer.from(full);
+  spent[4] = 1;                                   // the relay-rewritten ttl byte: nothing left to forward
+  const lanBefore = lan.sent.length;
+  const rx = n.stats.rx;
+  rns.emit("packet", spent, { key: "link-a" });
+  assert.equal(lan.sent.length, lanBefore, "ttl spent: not forwarded");
+  assert.equal(n.stats.rx, rx + 1, "but heard");
+  rns.emit("packet", full, { key: "link-b" });
+  assert.equal(lan.sent.length, lanBefore + 1, "the full copy goes on to the LAN");
+  assert.equal(lan.sent.at(-1)[4], 1, "with its ttl less one");
+  assert.equal(n.stats.rx, rx + 1, "and is not heard twice");
+  rns.emit("packet", full, { key: "link-c" });
+  assert.equal(lan.sent.length, lanBefore + 1, "a third copy is only a duplicate");
+  n.stop();
+});

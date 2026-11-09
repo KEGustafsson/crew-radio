@@ -46,3 +46,17 @@ test("the seen-caches are bounded and the marks keep the last 256 senders", () =
   assert.equal(HELLO_CAPACITY, 2048);
   assert.equal(SENDERS, 256);
 });
+
+// The app's Ingress.RelayOnly: the ttl is outside the AAD, so a copy with it lowered can come
+// first; a later copy that goes further is forwarded too, each one only if it beats the last.
+test("a copy that would be forwarded further than the first is 'relay', once per better ttl", () => {
+  const g = new ReplayGuard();
+  assert.equal(g.admit(1, 0, "audio", 0), "new", "first heard with its ttl spent");
+  assert.equal(g.admit(1, 0, "audio", 0), "seen");
+  assert.equal(g.admit(1, 0, "audio", 2), "relay", "the sender's own copy, ttl to spare");
+  assert.equal(g.admit(1, 0, "audio", 2), "seen", "its broadcast twin");
+  assert.equal(g.admit(1, 0, "audio", 1), "seen", "a worse copy after it");
+  assert.equal(g.admit(1, 0, "audio", 3), "relay", "a better one still");
+  assert.equal(g.admit(1, 0, "hello", 0), "new", "hellos keep their own");
+  assert.equal(g.admit(1, 0, "audio"), "seen", "no ttl given: never relay");
+});

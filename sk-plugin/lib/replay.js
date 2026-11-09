@@ -7,7 +7,11 @@
  * hellos number themselves independently):
  *
  *  - a seen-cache of (sender, seq): the second WLAN copy of every packet (multicast and
- *    broadcast) and relay echoes are "seen" and dropped;
+ *    broadcast) and relay echoes are "seen" and dropped. The cache keeps the ttl each packet
+ *    was forwarded with, and a later copy that would be forwarded further is "relay": relayed,
+ *    not played or counted again (the app's Ingress.RelayOnly). The ttl is the one header byte
+ *    a relay rewrites, outside the AAD, so a copy with a lowered ttl that arrives first - a
+ *    bridge's copy with its hops spent, or a replay - must not silence the far side;
  *  - a wrap-aware high-water mark: a sequence number at or below the last one admitted is
  *    "late" and dropped, so a recorded packet cannot come back once the sender moved on, and
  *    a node's address can only be learnt from a packet that advances its sequence.
@@ -25,7 +29,7 @@ const SENDERS = 256;
 class ReplayGuard {
   /** @param {{audioCapacity?: number, helloCapacity?: number, senders?: number}} [opts] */
   constructor(opts = {}) {
-    this.audio = new Map();                       // "sender:seq" -> true, insertion ordered
+    this.audio = new Map();                       // "sender:seq" -> the ttl it was forwarded with, insertion ordered
     this.hello = new Map();
     this.audioCapacity = opts.audioCapacity ?? AUDIO_CAPACITY;
     this.helloCapacity = opts.helloCapacity ?? HELLO_CAPACITY;
@@ -34,15 +38,24 @@ class ReplayGuard {
   }
 
   /**
-   * Admits `seq` of `kind` ("audio" or "hello") from `senderId`: "new" when it advances the
-   * sender's sequence (and is now remembered), "seen" for a copy of a packet already admitted,
-   * "late" for a number the sender has moved past.
+   * Admits `seq` of `kind` ("audio" or "hello") from `senderId`, a copy to be forwarded with
+   * `relayTtl` (0: not forwarded): "new" when it advances the sender's sequence (and is now
+   * remembered), "seen" for a copy of a packet already admitted, "relay" for such a copy that
+   * would be forwarded further than any before it (forward it, nothing more), "late" for a
+   * number the sender has moved past. Each "relay" must beat the last, and the ttl is capped at
+   * the sender's signed budget (packet.relayTtl), so a packet is forwarded at most that many
+   * extra times.
    */
-  admit(senderId, seq, kind) {
+  admit(senderId, seq, kind, relayTtl = 0) {
     const cache = kind === "hello" ? this.hello : this.audio;
     const capacity = kind === "hello" ? this.helloCapacity : this.audioCapacity;
     const key = `${senderId}:${seq}`;
-    if (cache.has(key)) return "seen";
+    const forwarded = cache.get(key);
+    if (forwarded !== undefined) {
+      if (relayTtl <= forwarded) return "seen";
+      cache.set(key, relayTtl);
+      return "relay";
+    }
     let m = this.marks.get(senderId);
     if (m) {
       this.marks.delete(senderId);                // most recently used last
@@ -54,7 +67,7 @@ class ReplayGuard {
     const prev = m[kind];
     if (prev !== null && ((seq - prev) | 0) <= 0) return "late";   // signed 32-bit distance: wraps with the counter
     m[kind] = seq | 0;
-    cache.set(key, true);
+    cache.set(key, relayTtl);
     if (cache.size > capacity) cache.delete(cache.keys().next().value);
     return "new";
   }

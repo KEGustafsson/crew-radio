@@ -353,13 +353,18 @@ class ChannelNode extends EventEmitter {
     if (!plain) { this.stats.rejected++; this.limiter.allowJunk(); return; }
     if (!P.isFresh(h.time, Math.floor(this.now() / 1000))) { this.stale(this.clock()); return; }
     const now = this.clock();
-    const verdict = this.guard.admit(h.senderId, h.seq, h.codec === P.Codec.HELLO ? "hello" : "audio");
+    const kind = h.codec === P.Codec.HELLO ? "hello" : "audio";
+    const verdict = this.guard.admit(h.senderId, h.seq, kind, this.rns && this.relay ? P.relayTtl(h, this.ttl) : 0);
     // Who is where, from any authentic copy that came straight from its sender (hops == ttl), the
     // duplicates included: a phone's hello reaches us by the LAN and by Reticulum, and whichever
     // copy came first, the LAN one still says the phone is on the boat. Not from a replay of an
     // old one ("late").
     if (verdict !== "late" && h.hops === h.ttl) this.learn(h, plain, via);
     if (verdict === "seen") return;                  // the broadcast twin, or a relay echo
+    // Heard already, but this copy goes further than the one forwarded (that one came with its
+    // ttl spent): forward it, as the app does, and nothing more - it was played the first time,
+    // and charging it would spend the sender's budget on copies.
+    if (verdict === "relay") { this.relayOn(buf, h, via); return; }
     if (verdict === "late") { this.stats.late++; return; }
     // Charged after the AEAD and after the duplicate look, so only authenticated first copies
     // cost a sender anything: the two WLAN copies of every frame would otherwise spend a

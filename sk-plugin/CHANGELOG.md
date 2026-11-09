@@ -45,6 +45,10 @@ are unchanged, and older clients keep working beside these (they only save nothi
 
 ### Fixed
 
+- A packet first heard with its ttl spent (a bridge's copy, or one with that byte lowered: it is
+  the one header byte outside the AAD) no longer keeps a later copy with hops to spare from being
+  forwarded: the replay guard keeps the ttl each packet was forwarded with, and a copy that goes
+  further is relayed (not played or counted again), as the app's `Ingress` and the ESP32's do.
 - Reticulum send queue: one write in the socket at a time, all of a frame's packets (one per
   link) in one write, voice that has waited 200 ms dropped instead of written (counted as
   `voiceDropped`), hellos and link control never dropped and first in every write, ahead of
