@@ -92,6 +92,7 @@ class LocalPeersTest {
         assertEquals(2, p.forwarder(me, rns or Hello.FWD_AVOID, 0))
     }
 
+    /** With hellos in the same millisecond, a full table evicts the sender heard first, whatever the ids. */
     @Test
     fun aTieOnTheClockIsBrokenByHearingOrder() {
         // Hellos in the same millisecond: the first heard is the one to go, whatever the ids hash to.

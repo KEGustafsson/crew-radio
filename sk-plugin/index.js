@@ -85,6 +85,11 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
   let linkInfo = null;                             // {iface, address, broadcast} while the link is up
   let startedAt = 0;
 
+  /**
+   * Starts the plugin with the server's settings: validates them, makes the speech engine and the
+   * announcement queue, opens the three doors to say(), starts the notification bridge, and, once
+   * the channel key is derived, Reticulum (when enabled) and the LAN link with its channel node.
+   */
   plugin.start = function (options) {
     running = true;
     const gen = ++generation;
@@ -366,6 +371,11 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
   /** How long an announcement waits for the network link to come back before it is dropped. */
   const LINK_WAIT_MS = 60_000;
 
+  /**
+   * Plays one announcement from the queue on the channel: waits for the link (and the LAN's grace
+   * with Reticulum on), then for a gap in talk, and keys; a normal one gives way to a talker once
+   * and is dropped the second time, an urgent one keys over the crew after its wait.
+   */
   async function playOnChannel(pcm, cancelled, priority = "normal") {
     // The link reconnects on its own (1 s doubling to 15 s); an announcement made while it is
     // down waits for it at the head of the queue instead of being thrown away. With Reticulum on,
@@ -377,6 +387,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     // clock stepped back must not hold an announcement or keep a quiet channel busy.
     const t0 = performance.now();
     const onLan = () => node && node.link !== OFFLINE;
+    // With the LAN down: Reticulum alone may carry it once a link is confirmed and the LAN's grace is over.
     const ashoreOnly = () => node && node.link === OFFLINE && rns?.linkCount > 0 && performance.now() - t0 >= lanGraceMs;
     //
     // The plugin never talks over the crew (the channel's floor rule for announcements): it starts
@@ -390,6 +401,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
     // talker. An emergency must get through a crew that keeps talking.
     const urgent = priority === "urgent";
     let yielded = 0;
+    // Gives way to a talker: the first time logged and retried after the next gap, the second time dropped (thrown).
     const giveWay = (why) => {
       if (++yielded > 1) throw new Error(`dropped: ${why} again`);
       app.debug(`announcement: ${why}; said again once the channel is quiet`);

@@ -96,6 +96,7 @@ test("a decoded name is sanitised: controls and format characters dropped, white
   assert.equal(tricky.name, "eve x");
 });
 
+// Names cut to 32 bytes on a code point boundary, as the app's Hello.
 test("a name is never cut inside a surrogate pair: no U+FFFD where an emoji did not fit", () => {
   const emoji = "\u{1F600}";                     // four UTF-8 bytes, two UTF-16 units
   const h = P.encodeHello({ name: "a".repeat(29) + emoji, transports: 1, ttl: 1 });
@@ -104,6 +105,7 @@ test("a name is never cut inside a surrogate pair: no U+FFFD where an emoji did 
   assert.equal(P.decodeHello(P.encodeHello({ name: "a".repeat(28) + emoji, transports: 1, ttl: 1 })).name, "a".repeat(28) + emoji, "and kept when it fits");
 });
 
+// The hello's new transports bits beside an old hello and unknown bits.
 test("hello: the forwarder bits round-trip, an old hello with them clear still decodes, and unknown bits are kept, not refused", () => {
   assert.deepEqual([P.Transports.RNS_UP, P.Transports.FWD_PREFER, P.Transports.FWD_AVOID], [0x10, 0x20, 0x40]);
   for (const transports of [P.Transports.LAN | P.Transports.RETICULUM | P.Transports.RNS_UP | P.Transports.FWD_PREFER, P.Transports.BT | P.Transports.FWD_AVOID]) {

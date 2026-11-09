@@ -45,6 +45,7 @@ class ReticulumSendQueueTest {
         assertEquals(1L, q.aged)
     }
 
+    /** Half an hour of unwritten frames never refuses an offer and is never taken for a stall. */
     @Test
     fun aBacklogNeverRefusesAnOfferOrCountsAsStalled() {
         val q = queue()
@@ -109,6 +110,7 @@ class ReticulumSendQueueTest {
         assertFalse(q.stalled())
     }
 
+    /** Closing the queue wakes a writer blocked in take(), which returns null within the timeout. */
     @Test(timeout = 5_000)
     fun closeWakesAWriterWaitingInTake() {
         val q = queue()

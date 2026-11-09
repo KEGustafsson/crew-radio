@@ -59,6 +59,7 @@ class LocalPeers(private val localMs: Long = LOCAL_MS, private val capacity: Int
     fun forwarder(me: Int, myTransports: Int, now: Long): Int? {
         var best: Int? = null
         var bestRank = -1
+        /** Takes [id] as the best candidate so far if it is on Reticulum and outranks the best, or ties it with a lower unsigned id. */
         fun consider(id: Int, transports: Int) {
             if ((transports and Hello.RNS_UP) == 0) return
             val r = rank(transports)

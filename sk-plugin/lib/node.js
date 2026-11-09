@@ -200,6 +200,7 @@ class ChannelNode extends EventEmitter {
   waitForSilence(gapMs = BUSY_MS, maxWaitMs = 3000, stop = () => false) {
     const deadline = this.clock() + maxWaitMs;
     return new Promise((resolve) => {
+      // One look at the channel: resolved when quiet for gapMs, false at the deadline or on stop(), else again in 50 ms.
       const check = () => {
         const now = this.clock();
         let last = this.heardAt;
@@ -230,6 +231,10 @@ class ChannelNode extends EventEmitter {
     return turn;
   }
 
+  /**
+   * The frames of one announcement, paced LEAD_MS ahead of real time; stops at a cancel, or (not
+   * for an override) at another talker's first frame, and says which in the result.
+   */
   async sendFrames(pcmBytes, isCancelled = () => false, { override = false } = {}) {
     const result = { yielded: false, by: 0 };
     if (isCancelled()) return result;
@@ -329,6 +334,10 @@ class ChannelNode extends EventEmitter {
     }
   }
 
+  /**
+   * The receive path proper (receive() catches what it throws): parse, budgets, AEAD, clock, the
+   * replay guard, what an unrelayed packet tells about where its sender is, then relay and roster.
+   */
   receiveOrThrow(buf, rinfo, via = null) {
     const h = P.parseHeader(buf);
     if (!h) { this.stats.rejected++; return; }

@@ -313,6 +313,7 @@ function fakeRns(ready = true) {
   return r;
 }
 
+// The node's relay between the LAN and Reticulum, with the hello's bits and the ttl rule.
 test("with Reticulum: our packets go both ways, the hello says so, and the node relays between the LAN and Reticulum", async () => {
   const lan = new EventEmitter();
   lan.sent = [];
@@ -369,6 +370,7 @@ test("with Reticulum: our packets go both ways, the hello says so, and the node 
   assert.equal(rns.listenerCount("packet"), 0);
 });
 
+// Reticulum down: no RETICULUM or RNS_UP in the hello; with relaying off nothing is bridged.
 test("with Reticulum down the hello does not claim it, and relaying can be turned off", () => {
   const lan = new EventEmitter();
   lan.sent = [];
@@ -401,6 +403,7 @@ function recordingRns() {
   return r;
 }
 
+// The forwarder rules end to end in the node: election, D1-D4, split horizon, far ends learnt, expiry.
 test("forwarder rules: one bridge per boat, never a talker that is on Reticulum itself, no copy to a link that hears the boat", () => {
   let clock = Date.now();
   const now = () => clock;
@@ -488,6 +491,7 @@ test("forwarder rules: one bridge per boat, never a talker that is on Reticulum 
   n.stop();
 });
 
+// speak() yields at another talker's first frame and not before a gap.
 test("an announcement never talks over the crew: it stops at another talker's first frame and says who", async () => {
   const link = new EventEmitter();
   const sent = [];
@@ -518,6 +522,7 @@ test("an announcement never talks over the crew: it stops at another talker's fi
   node.stop();
 });
 
+// Elapsed times on the monotonic clock, packet stamps on the wall clock.
 test("silence and busy run on the monotonic clock: a wall clock stepped back keeps no quiet channel busy", async () => {
   let wall = Date.now();
   let mono = 50_000;
@@ -541,6 +546,7 @@ test("silence and busy run on the monotonic clock: a wall clock stepped back kee
   node.stop();
 });
 
+// The never-heard sentinel: a clock starting at 0 marks nobody as talking or busy.
 test("never heard is not heard at time 0: a clock that starts at 0 makes nobody talking, busy or just heard", async () => {
   let t = 0;
   const link = new EventEmitter();
@@ -576,6 +582,7 @@ test("never heard is not heard at time 0: a clock that starts at 0 makes nobody 
   other.stop();
 });
 
+// RNS_UP needs a confirmed link whose far end is off the boat.
 test("RNS_UP needs a confirmed link off the boat: one whose only link is to a crewmate on the same LAN does not claim it", () => {
   const lan = new EventEmitter();
   lan.send = () => true;
@@ -595,6 +602,7 @@ test("RNS_UP needs a confirmed link off the boat: one whose only link is to a cr
   n.stop();
 });
 
+// RNS_UP needs relaying on: a node that does not bridge is never the forwarder.
 test("with relaying off the hello never says RNS_UP: a node that does not bridge is never elected the forwarder", () => {
   const lan = new EventEmitter();
   const sent = [];
@@ -611,6 +619,7 @@ test("with relaying off the hello never says RNS_UP: a node that does not bridge
   n.stop();
 });
 
+// RNS_UP needs something to bridge: a hop limit above 1 and the LAN up.
 test("a hop limit of 1 or the LAN down leaves nothing to bridge: no RNS_UP, as the app's Forwarding.bridges", () => {
   const lan = new EventEmitter();
   lan.send = () => true;

@@ -20,9 +20,11 @@ class ForwardingTest {
         return r.lan to (r.reticulum && Forwarding.linkGets(farEndLocal))
     }
 
+    /** Whether a frame from [origin] goes to Bluetooth and Wi-Fi Aware. */
     private fun mesh(origin: Origin, forwarder: Boolean, senderRnsUp: Boolean) =
         Forwarding.route(origin, if (origin == Origin.OWN) me else talker, me, forwarder, senderRnsUp).mesh
 
+    /** Our own voice goes to every local transport and every Reticulum link but one whose far end is local, forwarder or not. */
     @Test
     fun ownVoiceGoesEverywhereButToLinksWhoseFarEndIsLocal() {
         for (forwarder in listOf(false, true)) {
@@ -43,6 +45,7 @@ class ForwardingTest {
         assertEquals(true to false, goes(Origin.LOCAL, forwarder = false, senderRnsUp = true, farEndLocal = false))
     }
 
+    /** A frame heard on a local transport is relayed to the WLAN, Bluetooth and Aware whatever the election says. */
     @Test
     fun localToLocalRelaysAsAlways() {
         for (forwarder in listOf(false, true)) for (up in listOf(false, true)) {
@@ -52,6 +55,7 @@ class ForwardingTest {
         }
     }
 
+    /** A frame heard over Reticulum goes onto the WLAN only from the forwarder, and never back to Reticulum. */
     @Test
     fun reticulumToTheWlanOnlyFromTheForwarderAndNeverBackToReticulum() {
         for (up in listOf(false, true)) for (far in listOf(null, false, true)) {
@@ -60,6 +64,7 @@ class ForwardingTest {
         }
     }
 
+    /** A frame heard over Reticulum (or our own) goes to Bluetooth and Aware from every node, forwarder or not. */
     @Test
     fun reticulumToBluetoothAndAwareFromEveryoneAsBefore() {
         // A peer reached only over Bluetooth or Aware hears a frame from whoever had it first: if
@@ -71,6 +76,7 @@ class ForwardingTest {
         }
     }
 
+    /** RNS_UP needs relay on, a hop limit that relays (matching Ingress.relayTtl) and a local transport up. */
     @Test
     fun onlyANodeThatBridgesMayClaimRnsUp() {
         assertTrue(Forwarding.bridges(relay = true, maxHops = 4, localUp = true))
@@ -89,6 +95,7 @@ class ForwardingTest {
         assertFalse(Forwarding.route(Origin.LOCAL, me, me, forwarder = true, senderRnsUp = false).reticulum)
     }
 
+    /** On a boat with three bridges and one LAN-only talker, exactly one node forwards the talker's frame to Reticulum. */
     @Test
     fun theElectionAndTheRulesTogetherPutAFrameThroughTheHubOnce() {
         // A boat: three bridges (two phones and the plugin) on the LAN and Reticulum, and a phone

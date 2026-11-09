@@ -8,6 +8,7 @@ const { Transports: T } = require("../lib/packet");
 
 const UP = T.LAN | T.RETICULUM | T.RNS_UP;
 
+// rank(): FWD_PREFER outranks neither, which outranks FWD_AVOID.
 test("forwarder rank: FWD_PREFER 2, neither 1, FWD_AVOID 0", () => {
   assert.equal(F.rank(UP | T.FWD_PREFER), 2);
   assert.equal(F.rank(UP), 1);
@@ -15,6 +16,7 @@ test("forwarder rank: FWD_PREFER 2, neither 1, FWD_AVOID 0", () => {
   assert.equal(F.LOCAL_MS, 15_000);
 });
 
+// elect(): rank first, then the unsigned lowest id, in any order of candidates.
 test("election: the highest rank wins, ties to the lowest senderId as unsigned 32-bit", () => {
   assert.equal(F.elect([]), null);
   assert.equal(F.elect([{ senderId: 5, transports: UP }]), 5);
@@ -29,6 +31,7 @@ test("election: the highest rank wins, ties to the lowest senderId as unsigned 3
   assert.equal(F.elect([{ senderId: -1, transports: UP }, { senderId: 0x7fffffff, transports: UP }]), 0x7fffffff, "0xffffffff is the highest");
 });
 
+// LocalPeers: candidacy needs RNS_UP, entries expire at LOCAL_MS, a full table forgets the one heard longest ago.
 test("local peers: RNS_UP required to be a candidate, expiry after LOCAL_MS, me only while my own RNS_UP is set", () => {
   let t = 1_000_000;
   const local = new F.LocalPeers({ now: () => t });
@@ -68,6 +71,7 @@ test("local peers: RNS_UP required to be a candidate, expiry after LOCAL_MS, me 
   assert.equal(small.isLocal(2), false);
 });
 
+// route(): rules D1-D4 for own, locally heard and Reticulum-heard audio.
 test("forwarding rules D1-D4: where an audio frame goes", () => {
   // D1: our own voice goes to the local transports and to Reticulum, forwarder or not.
   for (const forwarder of [true, false]) assert.deepEqual(F.route({ origin: "own", forwarder, senderRnsUp: false }), { local: true, rns: true });
@@ -81,6 +85,7 @@ test("forwarding rules D1-D4: where an audio frame goes", () => {
   assert.deepEqual(F.route({ origin: "elsewhere" }), { local: false, rns: false });
 });
 
+// linkTakes(): split horizon by the link's far end.
 test("split horizon: a link to a local sender or to the talker gets nothing; an unknown far end gets it", () => {
   const isLocal = (id) => id === 10;
   const me = 50;

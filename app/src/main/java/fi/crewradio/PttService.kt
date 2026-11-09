@@ -468,6 +468,7 @@ class PttService : Service() {
         }
     }
 
+    /** Headset or media button released: after a hold of at least [HOLD_MS] on a key this press keyed, the mic is un-keyed (push-to-talk); a short click leaves it keyed (a toggle). */
     private fun headsetRelease() {
         val now = SystemClock.elapsedRealtime()
         synchronized(hardwareLock) {

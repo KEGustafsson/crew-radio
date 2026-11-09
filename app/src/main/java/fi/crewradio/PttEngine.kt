@@ -730,6 +730,7 @@ class PttEngine(
         audioCtl.execute { openTalk(gen) }
     }
 
+    /** Checks the waiting key for its override in [inMs] on the recovery thread; nothing once the engine is shut down. */
     private fun scheduleOverride(inMs: Long) {
         try {
             recovery.schedule({ overrideDue() }, inMs, TimeUnit.MILLISECONDS)

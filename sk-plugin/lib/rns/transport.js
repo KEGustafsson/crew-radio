@@ -219,6 +219,7 @@ class ReticulumTransport extends EventEmitter {
     this.dial();
   }
 
+  /** Leaves the transport node: closes every link, sends what waits, ends the socket and forgets the links. */
   stop() {
     this.running = false;
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
@@ -742,6 +743,7 @@ class ReticulumTransport extends EventEmitter {
    */
   diagnostics() {
     const now = this.now();
+    // Seconds since a monotonic time `t`, or null for never.
     const ago = (t) => (t ? Math.round((now - t) / 1000) : null);
     const wall = Math.floor(Date.now() / 1000);
     return {

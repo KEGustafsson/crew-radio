@@ -114,6 +114,7 @@ class AnnouncementQueue extends EventEmitter {
     this.clear();
   }
 
+  /** Plays what is queued, one item at a time, until the queue is empty or stopped; one runs at a time. */
   async pump() {
     if (this.pumping) return;
     this.pumping = true;

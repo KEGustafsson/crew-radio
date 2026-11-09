@@ -211,6 +211,7 @@ class ReticulumTransport(
         return Route(network, address)
     }
 
+    /** The `ptt-rns-rx` thread: connects over the chosen network, starts the writer for that connection, reads until it breaks, and redials after the backoff until the transport stops. */
     private fun rxLoop(onPacket: (ByteArray, Transport, Any?) -> Unit) {
         if (networks.isEmpty()) waiter.await(FIRST_NETWORK_MS)   // the callback reports the networks a moment after it is registered
         while (running) {

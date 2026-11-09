@@ -153,6 +153,7 @@ test("settings are validated: out-of-range values fall back to the defaults and 
   p.stop();
 });
 
+// The plugin's start and stop over a fake LAN: key derivation, hellos, the roster in Signal K, status lines.
 test("on start it derives the key off the main thread, joins the channel, sends hellos, publishes the roster and reports status; stop tears down", async () => {
   FakeLink.last = undefined;
   const app = fakeApp();
@@ -548,6 +549,7 @@ test("an announcement waiting for a gap in talk survives the link dropping meanw
   p.stop();
 });
 
+// Floor rule 4: a normal announcement yields to a talker, is said again whole once, then dropped.
 test("an announcement a crew member keys over stops, is said again whole after the gap, and is dropped the second time", async () => {
   /** One second of speech: long enough to be keyed over. */
   class SecondTts extends FakeTts {
@@ -593,6 +595,7 @@ test("an announcement a crew member keys over stops, is said again whole after t
   }
 });
 
+// Floor rule 4: no gap at all is giving way too; the announcement never keys over the talker.
 test("an announcement waiting for a gap that never comes is never keyed over the crew: it gives way once, then is dropped", async () => {
   FakeLink.last = undefined;
   const app = fakeApp();
@@ -614,6 +617,7 @@ test("an announcement waiting for a gap that never comes is never keyed over the
   }
 });
 
+// An urgent announcement is the override: it keys over a talker after its wait, every frame.
 test("an urgent announcement is the override: after the wait for a gap it keys over a talker, to the last frame", async () => {
   FakeLink.last = undefined;
   const app = fakeApp();
@@ -680,6 +684,7 @@ class FakeRns extends EventEmitter {
   answer(via, id, message) { (this.answers ??= []).push({ via, id, message }); return true; }
 }
 
+// Reticulum on and off: the transport's start, what it carries, the status page and the stop.
 test("Reticulum: off by default; when enabled it starts with the channel's tag and key proof key, carries our packets, shows in the status and stops with the plugin", async () => {
   FakeRns.last = undefined;
   FakeLink.last = undefined;
@@ -853,6 +858,7 @@ test("Reticulum: an announcement made while the LAN is down waits for it, and th
   }
 });
 
+// With the LAN down past the grace: to the shore alone, then said again whole on the LAN when it returns.
 test("Reticulum: past the grace it goes to the shore alone, and if the LAN comes back mid-way it is said again, whole, on the LAN", async () => {
   /** Two seconds of speech, so the LAN's next retry lands in the middle of it. */
   class LongTts extends FakeTts {
@@ -864,6 +870,7 @@ test("Reticulum: past the grace it goes to the shore alone, and if the LAN comes
   FakeLink.failOpen = true;
   const app = fakeApp();
   const p = plugin(app, { ...deps, Tts: LongTts, Reticulum: FakeRns, lanGraceMs: 200 });
+  // How many of the packets in `list` are PCM audio frames.
   const pcm = (list) => list.filter((b) => P.parseHeader(b).codec === P.Codec.PCM).length;
   try {
     p.start({ channelKey: KEY, waitForSilenceMs: 0, reticulum: { enabled: true } });

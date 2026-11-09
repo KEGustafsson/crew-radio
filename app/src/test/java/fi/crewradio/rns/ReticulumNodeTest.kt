@@ -18,6 +18,7 @@ class ReticulumNodeTest {
     private val crewKey by lazy { TestKeys.crypto.reticulumConfirmKey }
     private val strangerKey = ByteArray(32) { 9 }
 
+    /** A node on the fake medium; its writes are queued for [settle], and its batches recorded in [batches] when given. */
     private fun node(
         tag: String = "a2ddc18dee75e2bd",
         confirmKey: ByteArray = crewKey,
@@ -476,6 +477,7 @@ class ReticulumNodeTest {
         assertEquals("redialled without waiting for b's next announce", 1, a.linkCount)
     }
 
+    /** A link keeps the first far end learned; audio skips links to local far ends but not unknown ones, and each send is one batch. */
     @Test
     fun aLinkLearnsItsFarEndAndSplitHorizonLeavesItOutOfAudioSentAsOneBatch() {
         val batches = ArrayList<Pair<Int, Boolean>>()

@@ -304,11 +304,13 @@ class Medium {
       if (h.left === 0) { this.held.shift(); this.deliver(h.s, h.buf); h.cb?.(); }
     }
   }
+  /** A write leaves `s`: recorded, and unless the medium is black, handed to every other socket (to its writer too with echo). */
   deliver(s, buf) {
     this.sent.push({ s, buf: Buffer.from(buf) });
     if (this.black) return;
     for (const o of this.socks) if ((o !== s || this.echo) && !o.destroyed) o.emit("data", Buffer.from(buf));
   }
+  /** A new socket on the medium, connected on the next turn; throws when `refuse` is set. */
   connect() {
     if (this.refuse) throw new Error("refused");
     const medium = this;
@@ -867,6 +869,7 @@ async function linked(medium, t) {
   return { a, b };
 }
 
+// The send queue: one write per frame, late voice dropped, no redial on a backlog.
 test("transport: a frame's packets go in one write; voice that waited past 200 ms is dropped, the rest never; a backlog alone never redials", async () => {
   let t = 1_000_000;
   const medium = new Medium();
@@ -921,6 +924,7 @@ test("transport: a frame's packets go in one write; voice that waited past 200 m
   b.stop();
 });
 
+// The no-progress rule: NO_PROGRESS_MS with nothing taken closes and redials.
 test("transport: bytes that wait NO_PROGRESS_MS with the socket taking none close the connection, which is dialled again", async () => {
   let t = 1_000_000;
   const medium = new Medium();
@@ -951,6 +955,7 @@ test("transport: bytes that wait NO_PROGRESS_MS with the socket taking none clos
   b.stop();
 });
 
+// Several links: one write carries a frame's packets to every far end.
 test("transport: with two confirmed links, a frame reaches both far ends in one socket write", async () => {
   const medium = new Medium();
   const mk = () => new ReticulumTransport({ host: "hub", port: 4242, tag: "a2ddc18dee75e2bd", confirmKey: CK, connect: () => medium.connect() });
@@ -972,6 +977,7 @@ test("transport: with two confirmed links, a frame reaches both far ends in one 
   for (const n of nodes) n.stop();
 });
 
+// Write order and size: hellos and link control first, no write over WRITE_MAX_BYTES.
 test("transport: hellos go ahead of answers waiting; link control too, but never more than WRITE_MAX_BYTES a write", async () => {
   let t = 1_000_000;
   const medium = new Medium();
@@ -997,6 +1003,7 @@ test("transport: hellos go ahead of answers waiting; link control too, but never
   b.stop();
 });
 
+// remoteLinkCount(): the confirmed links whose far end is not local.
 test("transport: the links off the boat are the confirmed ones whose far end is not local, an unknown one included", async () => {
   const medium = new Medium();
   const { a, b } = await linked(medium);
@@ -1009,6 +1016,7 @@ test("transport: the links off the boat are the confirmed ones whose far end is 
   b.stop();
 });
 
+// Link control first and the answers' bound: one that does not fit is refused whole.
 test("transport: link control goes first, answers waiting are bounded, and no write is larger than it has to be", async () => {
   let t = 1_000_000;
   const medium = new Medium();
@@ -1038,6 +1046,7 @@ test("transport: link control goes first, answers waiting are bounded, and no wr
   b.stop();
 });
 
+// A slow uplink that keeps taking bytes in writes of WRITE_MAX_BYTES is not stuck.
 test("transport: a slow uplink that keeps taking bytes is never closed, however long its backlog waits", async () => {
   let t = 1_000_000;
   const medium = new Medium();
@@ -1068,6 +1077,7 @@ test("transport: a slow uplink that keeps taking bytes is never closed, however 
   b.stop();
 });
 
+// learnFarEnd() once per link, and send()'s skip by far end.
 test("transport: a link learns its far end once, and a send can leave out the links whose far end it names", async () => {
   const medium = new Medium();
   const { a, b } = await linked(medium);

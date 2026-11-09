@@ -17,6 +17,7 @@ class TonesTest {
         for (f in Tones.micOn() + Tones.micOff()) assertEquals(AudioConfig.FRAME_BYTES, f.size)
     }
 
+    /** The busy cue is twelve whole frames: two sounding notes around a silent gap, lower than both key beeps. */
     @Test
     fun theBusyCueIsTwoLowNotesUnlikeTheKeyBeeps() {
         val busy = Tones.busy()
