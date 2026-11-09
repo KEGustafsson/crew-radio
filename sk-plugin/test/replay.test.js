@@ -76,3 +76,14 @@ test("a packet the sender's budget refuses is 'rejected' and not remembered", ()
   assert.equal(g.admit(1, 0, "hello", 0, no), "rejected");
   assert.equal(g.admit(1, 0, "hello", 0, yes), "new", "a refused hello does not block the next copy's roster update");
 });
+
+// CodeRabbit on #69: with the mark table full, a refused newcomer must not evict another
+// sender's mark, or that sender's old numbers (out of the cache by then) would pass again.
+test("a refused packet from a new sender leaves the mark table as it was", () => {
+  const g = new ReplayGuard({ audioCapacity: 2, senders: 2 });
+  g.admit(1, 5, "audio"); g.admit(2, 5, "audio");
+  g.admit(1, 6, "audio"); g.admit(2, 6, "audio");          // 1:5 and 2:5 out of the cache
+  assert.equal(g.admit(3, 0, "audio", 0, () => false), "rejected");
+  assert.equal(g.admit(1, 5, "audio"), "late", "sender 1's mark is still there");
+  assert.equal(g.admit(2, 5, "audio"), "late", "and sender 2's");
+});

@@ -60,20 +60,29 @@ class ReplayGuard {
       return "relay";
     }
     let m = this.marks.get(senderId);
-    if (m) {
-      this.marks.delete(senderId);                // most recently used last
-    } else {
+    const prev = m ? m[kind] : null;
+    if (prev !== null && ((seq - prev) | 0) <= 0) {   // signed 32-bit distance: wraps with the counter
+      this.touch(senderId, m);
+      return "late";
+    }
+    // Asked before the mark table changes: a refused packet from a new sender must not make room
+    // for itself by evicting another sender's mark, which would reopen that sender's old numbers.
+    if (allow && !allow()) return "rejected";
+    if (!m) {
       m = { audio: null, hello: null };
       if (this.marks.size >= this.senders) this.marks.delete(this.marks.keys().next().value);
     }
-    this.marks.set(senderId, m);
-    const prev = m[kind];
-    if (prev !== null && ((seq - prev) | 0) <= 0) return "late";   // signed 32-bit distance: wraps with the counter
-    if (allow && !allow()) return "rejected";
+    this.touch(senderId, m);
     m[kind] = seq | 0;
     cache.set(key, relayTtl);
     if (cache.size > capacity) cache.delete(cache.keys().next().value);
     return "new";
+  }
+
+  /** Makes `senderId`'s mark the most recently used (last in the map's order). */
+  touch(senderId, m) {
+    this.marks.delete(senderId);
+    this.marks.set(senderId, m);
   }
 }
 

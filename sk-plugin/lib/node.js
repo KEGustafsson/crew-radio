@@ -360,6 +360,10 @@ class ChannelNode extends EventEmitter {
     // field. A copy over budget is not remembered either, as in the app.
     const verdict = this.guard.admit(h.senderId, h.seq, kind, this.rns && this.relay ? P.relayTtl(h, this.ttl) : 0,
       () => this.limiter.allowSender(h.senderId));
+    // Over the sender's budget: dropped before it can tell anything either, so a burst of a
+    // node's packets cannot make it local (and elect it the forwarder) through the copies it
+    // was refused.
+    if (verdict === "rejected") { this.stats.rejected++; return; }
     // Who is where, from any authentic copy that came straight from its sender (hops == ttl), the
     // duplicates included: a phone's hello reaches us by the LAN and by Reticulum, and whichever
     // copy came first, the LAN one still says the phone is on the boat. Not from a replay of an
@@ -371,7 +375,6 @@ class ChannelNode extends EventEmitter {
     // and charging it would spend the sender's budget on copies.
     if (verdict === "relay") { this.relayOn(buf, h, via); return; }
     if (verdict === "late") { this.stats.late++; return; }
-    if (verdict === "rejected") { this.stats.rejected++; return; }
     if (h.codec !== P.Codec.HELLO) { this.heardAt = now; this.heardFrom = h.senderId; }   // another talker: the channel is busy
     this.relayOn(buf, h, via);
     let n = this.nodes.get(h.senderId);

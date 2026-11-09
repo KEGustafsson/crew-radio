@@ -723,3 +723,23 @@ test("a copy over the sender's budget is not remembered: a later copy is charged
   assert.equal(lan.sent.length, lanBefore + 1, "and forwarded");
   n.stop();
 });
+
+// CodeRabbit on #69: a hello refused by the sender's budget tells nothing, so it cannot make its
+// sender local, nor elect it the forwarder.
+test("a hello over the sender's budget does not make its sender local or the forwarder", () => {
+  const lan = new EventEmitter();
+  lan.send = () => true;
+  const rns = recordingRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 4, heartbeatMs: 100000 });
+  n.senderId = 1000;
+  n.start();
+  assert.equal(n.isForwarder(), true);
+  const allow = n.limiter.allowSender.bind(n.limiter);
+  n.limiter.allowSender = (id) => id !== 5 && allow(id);
+  const at = Math.floor(Date.now() / 1000);
+  const bridge = P.Transports.LAN | P.Transports.RETICULUM | P.Transports.RNS_UP | P.Transports.FWD_PREFER;
+  lan.emit("packet", packet({ senderId: 5, seq: 0, time: at, payload: P.encodeHello({ name: "n5", transports: bridge, ttl: 4 }) }), { address: "10.0.0.5" });
+  assert.equal(n.local.isLocal(5), false, "refused: not local");
+  assert.equal(n.isForwarder(), true, "and not elected over us");
+  n.stop();
+});
