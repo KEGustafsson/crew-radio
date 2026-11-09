@@ -318,72 +318,79 @@ overwritten on the tool's next run. Restart `rnsd` if the tool does not (`sudo s
 rnsd`: the daemon reads its config only when it starts, so until then it keeps the old listener),
 and check the listener with `rnstatus`.
 
-Otherwise change it in three steps. The edit is made on a copy, in a directory only root can
-enter, while the hub keeps running; nothing is restarted until you have seen what changed and said
-yes; and the copy goes into place only while `rnsd` is stopped. The config's directory belongs to
-the `rns` account, so whatever runs as `rns` could swap the config, or a directory on its path,
-for a link while root works there. Once `rnsd` has stopped nothing runs as `rns` (`pgrep -u rns`
-says so), and the checks made then hold until the copy is in place: the path has no link anywhere
-on it (`realpath` gives it back unchanged), and the config is still what was copied (`cmp`).
+Otherwise change it in three steps. The config and its directory belong to the `rns` account, so
+whatever runs as `rns` could swap either for a link, or hard-link the file elsewhere, while root
+works there. So root never writes there: the copies are made and edited in a directory of their
+own for each edit, which only root can enter, and the edited config is put in place by `rns`
+itself (`sudo -u rns`), which can do no more harm through a link than `rns` already could. It is
+written to a new file next to the config, checked against what you reviewed (its SHA-256), and
+renamed over the config only then: the config is the old file or the new one, never half of
+either, and a hard link to the old file keeps the old contents. `rnsd` keeps running throughout,
+and is restarted, once, only after you have seen the change and said yes.
 
-1. Copy it (the hub keeps running). Note the name it prints: the steps below use it.
+1. Copy it. Note the directory it prints: the steps below use it.
 
    ```sh
    C=/var/lib/rns/.reticulum/config
-   D=/var/backups/rnsd
-   sudo install -d -m 700 -o root -g root "$D" &&
-     [ "$(sudo stat -c '%U %a' "$D")" = "root 700" ] &&
-     [ "$(sudo realpath "$C")" = "$C" ] && sudo test -f "$C" &&
-     B=$D/config.$(date +%F-%H%M%S) &&
-     sudo cp -p "$C" "$B" && sudo cp -p "$B" "$B.new" &&
-     echo "this edit: $B" || echo "stopped: nothing copied"
+   sudo install -d -m 700 -o root -g root /var/backups/rnsd &&
+     [ "$(sudo stat -c '%U %a' /var/backups/rnsd)" = "root 700" ] &&
+     ! sudo test -L "$C" && [ "$(sudo realpath "$C")" = "$C" ] &&
+     W=$(sudo mktemp -d "/var/backups/rnsd/edit.$(date +%F-%H%M%S).XXXXXX") &&
+     sudo sh -c 'sudo -u rns cat -- "$1" > "$2/config"' sh "$C" "$W" &&
+     sudo cp "$W/config" "$W/config.new" &&
+     echo "this edit: $W" || echo "stopped: nothing copied"
    ```
 
-2. Edit the copy and look at what changed. Nothing has been restarted; if the difference is not
-   what you meant, edit again, or stop here and the hub runs on as it was.
+2. Edit the copy and look at what changed; `H` records exactly what you looked at. Nothing has
+   been restarted: if the difference is not what you meant, edit again (and look again), or stop
+   here and the hub runs on as it was.
 
    ```sh
-   sudo nano "$B.new"
-   sudo diff "$B" "$B.new"
+   sudo nano "$W/config.new"
+   H=$(sudo sha256sum "$W/config.new" | cut -d' ' -f1)
+   sudo diff "$W/config" "$W/config.new"
    ```
 
-3. Put it in place and restart (the clients drop for a few seconds and come back by themselves).
-   Anything but `y` leaves the hub as it was; a failed check leaves the config as it was, and the
-   last lines start `rnsd` again either way. `cp` without `-p` writes into the config file,
-   which keeps its owner and mode.
+3. Put it in place and restart. Anything but `y` changes nothing. The config must still be what
+   step 1 copied (`cmp`: nobody else has changed it meanwhile), and `put` writes the edit in as
+   `rns` and renames it over the config only if it is the one you reviewed; if anything fails,
+   the config and `rnsd` are as they were. The clients drop for a few seconds at the restart and
+   come back by themselves.
 
    ```sh
-   read -r -p "Put $B.new in place and restart rnsd? [y/N] " a && [ "$a" = y ] &&
-     sudo systemctl stop rnsd &&
-     ! pgrep -u rns > /dev/null &&
-     [ "$(sudo realpath "$C")" = "$C" ] && sudo test -f "$C" &&
-     sudo cmp -s "$C" "$B" &&
-     sudo cp "$B.new" "$C" && echo "in place"
-   sudo systemctl start rnsd
-   systemctl is-active rnsd
-   sudo -u rns /var/lib/rns/venv/bin/rnstatus
+   # put FILE SHA256: FILE (root's) in place of the config, written by rns, whole or not at all.
+   put() {
+     sudo cat "$1" | sudo -u rns sh -c '
+       t=$(mktemp "$1.XXXXXX") || exit 1
+       if cat > "$t" && [ "$(sha256sum < "$t" | cut -d" " -f1)" = "$2" ] &&
+          chmod --reference="$1" "$t" && mv -f "$t" "$1"; then exit 0; fi
+       rm -f "$t"; echo "not put in place: the config is as it was"; exit 1' sh "$C" "$2"
+   }
+   read -r -p "Put $W/config.new in place and restart rnsd? [y/N] " a && [ "$a" = y ] &&
+     sudo -u rns cat "$C" | sudo cmp -s - "$W/config" &&
+     put "$W/config.new" "$H" &&
+     sudo systemctl restart rnsd &&
+     systemctl is-active rnsd &&
+     sudo -u rns /var/lib/rns/venv/bin/rnstatus
    ```
 
-If step 1 stops at the `realpath` check, the config, or a directory on its path, is a symbolic
-link (`ls -l` shows `->`). Someone put it there, a configuration tool (above) or a person: change
-the file it points to where that is kept, the way it is kept, not through the link.
+If step 1 stops at the link check, the config, or a directory on its path, is a symbolic link
+(`ls -l` shows `->`). Someone put it there, a configuration tool (above) or a person: change the
+file it points to where that is kept, the way it is kept, not through the link.
 
 If `rnsd` does not come back up after step 3, the log file says why (a misspelt option, a port in
-use). Put the copy from before the edit back, the same way as step 3:
+use). Put the copy from before the edit back the same way (with `put` defined as in step 3):
 
 ```sh
-sudo systemctl stop rnsd &&
-  ! pgrep -u rns > /dev/null &&
-  [ "$(sudo realpath "$C")" = "$C" ] && sudo test -f "$C" &&
-  sudo cp "$B" "$C" && echo "restored"
-sudo systemctl start rnsd
-sudo -u rns /var/lib/rns/venv/bin/rnstatus
+put "$W/config" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)" &&
+  sudo systemctl restart rnsd &&
+  sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
 
-`$B` is the name step 1 printed. In a new shell, set `C` as in step 1 and `B` to that name again:
-each copy is named after the time it was made, not the file's own time (`cp -p` keeps that), so
-`sudo ls /var/backups/rnsd` shows which copy belongs to which edit (`config.2026-11-08-201500`,
-its edit `config.2026-11-08-201500.new`).
+`$W` is the directory step 1 printed; in a new shell, set `C` as in step 1 and `W` to it again.
+Each edit has a directory of its own, named after the time it was made (`sudo ls
+/var/backups/rnsd`: `edit.2026-11-08-201500.k3Xq9a`), with the config as it was (`config`) and
+as edited (`config.new`).
 
 ### From `TCPServerInterface` to `BackboneInterface`
 
@@ -395,17 +402,18 @@ switch`, or a playbook run), restart `rnsd` if the tool does not, and check with
 the listener is now a `BackboneInterface`: a change made on the hub would be undone on the
 tool's next run.
 
-Otherwise follow the three steps of "Changing the config" above, with this `sed` on the copy in
-place of the `nano` of step 2 (still followed by the `diff`):
+Otherwise follow the three steps of "Changing the config" above, with this in place of step 2:
+the `sed` makes the change on the copy, then `H` and the `diff` as there:
 
 ```sh
-sudo sed -i '/^ *\[\[Crew Radio hub\]\]/,/^ *\[\[/{s/type = TCPServerInterface/type = BackboneInterface/; s/listen_ip = /listen_on = /; s/listen_port = /port = /}' "$B.new"
-sudo diff "$B" "$B.new"
+sudo sed -i '/^ *\[\[Crew Radio hub\]\]/,/^ *\[\[/{s/type = TCPServerInterface/type = BackboneInterface/; s/listen_ip = /listen_on = /; s/listen_port = /port = /}' "$W/config.new"
+H=$(sudo sha256sum "$W/config.new" | cut -d' ' -f1)
+sudo diff "$W/config" "$W/config.new"
 ```
 
 The `sed` changes only the block that starts at `[[Crew Radio hub]]` and ends at the next `[[`:
 the name section 4 gives the hub's listener. If yours is named otherwise, put its name in the
-command, or make the three changes in that block by hand with `sudo nano "$B.new"` (`type`,
+command, or make the three changes in that block by hand with `sudo nano "$W/config.new"` (`type`,
 `listen_ip` to `listen_on`, `listen_port` to `port`); other interfaces (a `TCPClientInterface` out
 to another hub, a UDP interface, the boat's `127.0.0.1` listener from section 6) keep theirs. The
 `diff` should show those three lines and nothing else.
