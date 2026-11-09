@@ -327,7 +327,9 @@ written to a new file next to the config, checked against what you reviewed (its
 renamed over the config only then: the config is the old file or the new one, never half of
 either, and a hard link to the old file keeps the old contents. The check catches a copy that
 went wrong; it is no guard against `rns` itself, which can change its config at any time anyway.
-`rnsd` keeps running throughout, and is restarted, once, only after you have seen the change and
+Nor is the lock a guard against an edit made some other way (`nano` on the config itself, a
+script): while you change the config with these steps, nobody else changes it. `rnsd` keeps
+running throughout, and is restarted, once, only after you have seen the change and
 said yes.
 
 1. Copy it. Note the directory it prints: the steps below use it.
@@ -353,20 +355,22 @@ said yes.
    sudo diff "$W/config" "$W/config.new"
    ```
 
-3. Put it in place and restart. Anything but `y` changes nothing. `put` locks the config
-   (`flock`, so two edits never cross), checks that it is still what step 1 copied (nobody else
-   has changed it meanwhile), writes the edit in as `rns` with the config's owner, group and
-   mode, and renames it over the config only if it is the one you reviewed. If anything fails
+3. Put it in place and restart. Anything but `y` changes nothing. `put` locks the config's
+   directory (`flock`, so two edits made with these steps never cross), checks that the config is
+   still what step 1 copied (nobody else has changed it meanwhile), writes the edit in as `rns`
+   with the config's owner, group, mode and SELinux label, renames it over the config only if it
+   is the one you reviewed, and notes what it put in place (`$W/put.sha256`). If anything fails
    before the restart, the config and `rnsd` are as they were; if `rnsd` does not come back
    after it, the edit is in place: put the old config back as below. The clients drop for a few
    seconds at the restart and come back by themselves.
 
    ```sh
    # put FILE SHA OLD: FILE (root's, SHA-256 SHA) in place of the config, written by rns, whole
-   # or not at all, if the config's SHA-256 is still OLD; under a lock on the config.
+   # or not at all, if the config's SHA-256 is still OLD; under a lock on its directory, which
+   # is never replaced.
    put() {
      sudo cat "$1" | sudo -u rns sh -c '
-       exec 9< "$1" && flock 9 || exit 1
+       exec 9< "${1%/*}" && flock 9 || exit 1
        if [ "$(sha256sum < "$1" | cut -d" " -f1)" != "$3" ]; then
          echo "the config has changed since it was copied: nothing put in place"; exit 1; fi
        if [ "$(ls -ld -- "$1" | cut -c11)" = "+" ]; then
@@ -375,11 +379,13 @@ said yes.
        if cat > "$t" && [ "$(sha256sum < "$t" | cut -d" " -f1)" = "$2" ] &&
           cp --attributes-only --preserve=mode,ownership -- "$1" "$t" &&
           [ "$(stat -c "%u %g %a" -- "$t")" = "$(stat -c "%u %g %a" -- "$1")" ] &&
+          [ "$(ls -dZ -- "$t" | cut -d" " -f1)" = "$(ls -dZ -- "$1" | cut -d" " -f1)" ] &&
           mv -f "$t" "$1"; then exit 0; fi
        rm -f "$t"; echo "not put in place: the config is as it was"; exit 1' sh "$C" "$2" "$3"
    }
    read -r -p "Put $W/config.new in place and restart rnsd? [y/N] " a && [ "$a" = y ] &&
      put "$W/config.new" "$H" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)" &&
+     { echo "$H" | sudo tee "$W/put.sha256" > /dev/null; } &&
      sudo systemctl restart rnsd &&
      systemctl is-active rnsd &&
      sudo -u rns /var/lib/rns/venv/bin/rnstatus
@@ -390,25 +396,26 @@ If step 1 stops at the link check, the config, or a directory on its path, is a 
 file it points to where that is kept, the way it is kept, not through the link.
 
 `put` refuses, and says so, when the config is no longer what step 1 copied (start again from
-step 1), and when the new file would not get the config's owner, group and mode, or the config
-has an ACL (`ls -l` shows `+` after the mode): someone has given other accounts access to it,
-which a new file would not carry over. Then change the config where it is instead, as its owner
+step 1), and when the new file would not get the config's owner, group, mode or SELinux label
+(`ls -Z`; `?` on a hub without SELinux), or the config has an ACL (`ls -l` shows `+` after the
+mode): someone has given other accounts access to it, which a new file would not carry over. Then change the config where it is instead, as its owner
 (`sudo -u rns nano "$C"`), and restart.
 
 If `rnsd` does not come back up after step 3, the log file says why (a misspelt option, a port in
-use). Put the copy from before the edit back the same way (with `put` defined as in step 3: the
-config must still be your edit):
+use). Put the copy from before the edit back the same way (with `put` defined as in step 3). The
+config must still be what step 3 put in place (`put.sha256`, kept even if `config.new` has been
+edited since):
 
 ```sh
-put "$W/config" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)"   "$(sudo sha256sum "$W/config.new" | cut -d' ' -f1)" &&
+put "$W/config" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)" "$(sudo cat "$W/put.sha256")" &&
   sudo systemctl restart rnsd &&
   sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
 
 `$W` is the directory step 1 printed; in a new shell, set `C` as in step 1 and `W` to it again.
 Each edit has a directory of its own, named after the time it was made (`sudo ls
-/var/backups/rnsd`: `edit.2026-11-08-201500.k3Xq9a`), with the config as it was (`config`) and
-as edited (`config.new`).
+/var/backups/rnsd`: `edit.2026-11-08-201500.k3Xq9a`), with the config as it was (`config`), as
+edited (`config.new`) and, once step 3 has put it in place, its SHA-256 (`put.sha256`).
 
 ### From `TCPServerInterface` to `BackboneInterface`
 
@@ -421,12 +428,15 @@ the listener is now a `BackboneInterface`: a change made on the hub would be und
 tool's next run.
 
 Otherwise follow the three steps of "Changing the config" above, with this in place of step 2:
-the `sed` makes the change on the copy, then `H` and the `diff` as there:
+the `sed` makes the change on the copy, then `H` and the `diff` as there, and a count of the
+changed lines:
 
 ```sh
-sudo sed -i '/^[[:space:]]*\[\[Crew Radio hub\]\]/,/^[[:space:]]*\[\[/{s/type = TCPServerInterface/type = BackboneInterface/; s/listen_ip = /listen_on = /; s/listen_port = /port = /}' "$W/config.new"
+sudo sed -i '/^[[:space:]]*\[\[Crew Radio hub\]\]/,/^[[:space:]]*\[\[/{s/^\([[:space:]]*\)type[[:space:]]*=[[:space:]]*TCPServerInterface[[:space:]]*$/\1type = BackboneInterface/; s/^\([[:space:]]*\)listen_ip[[:space:]]*=[[:space:]]*/\1listen_on = /; s/^\([[:space:]]*\)listen_port[[:space:]]*=[[:space:]]*/\1port = /}' "$W/config.new"
 H=$(sudo sha256sum "$W/config.new" | cut -d' ' -f1)
 sudo diff "$W/config" "$W/config.new"
+[ "$(sudo diff "$W/config" "$W/config.new" | grep -c '^>')" = 3 ] &&
+  echo "three lines changed" || echo "not three lines: do not go on to step 3"
 ```
 
 The `sed` changes only the block that starts at `[[Crew Radio hub]]` and ends at the next `[[`
@@ -435,7 +445,9 @@ the name section 4 gives the hub's listener. If yours is named otherwise, put it
 command, or make the three changes in that block by hand with `sudo nano "$W/config.new"` (`type`,
 `listen_ip` to `listen_on`, `listen_port` to `port`); other interfaces (a `TCPClientInterface` out
 to another hub, a UDP interface, the boat's `127.0.0.1` listener from section 6) keep theirs. The
-`diff` should show those three lines and nothing else.
+`diff` should show those three lines and nothing else, with or without spaces around `=` in
+the original; if it does not say "three lines changed" (a line it did not recognise, such as one
+with a comment after the type), make the rest of the change by hand and look again.
 
 After step 3, `rnstatus` should list `BackboneInterface[Crew Radio hub/0.0.0.0:4242]` and, within
 a few seconds, the same `Clients` count as before. To go back, put the copy from before the edit
