@@ -64,6 +64,21 @@ class ForwardingTest {
         }
     }
 
+    /**
+     * A local talker's own frame (hops == ttl) heard over Reticulum before its local copy goes on as
+     * the local copy would have: from the forwarder, for a talker not on Reticulum itself, to the
+     * links whose far end is not local. Otherwise the local copy, a duplicate by then, would never
+     * reach the links ashore.
+     */
+    @Test
+    fun aLocalTalkersOwnReticulumCopyThatComesFirstGoesAshore() {
+        fun r(forwarder: Boolean, up: Boolean) = Forwarding.route(Origin.RETICULUM, talker, me, forwarder, up, localDirect = true)
+        assertEquals(Route(lan = true, mesh = true, reticulum = true), r(forwarder = true, up = false))
+        assertFalse("the talker sends its own voice there", r(forwarder = true, up = true).reticulum)
+        assertFalse("not the forwarder", r(forwarder = false, up = false).reticulum)
+        assertFalse("never our own frame", Forwarding.route(Origin.RETICULUM, me, me, true, false, localDirect = true).reticulum)
+    }
+
     /** A frame heard over Reticulum (or our own) goes to Bluetooth and Aware from every node, forwarder or not. */
     @Test
     fun reticulumToBluetoothAndAwareFromEveryoneAsBefore() {

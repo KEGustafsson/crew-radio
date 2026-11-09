@@ -53,14 +53,17 @@ function elect(candidates) {
 /**
  * Where an audio frame goes (D1-D4). `origin` is "own" (our voice), "local" (first heard on a
  * local transport) or "rns" (first heard over Reticulum); `forwarder` whether we are the boat's
- * forwarder; `senderRnsUp` whether the talker's last local hello said RNS_UP. Returns
- * {local, rns}: whether it goes to the local transports and to Reticulum (each Reticulum link
- * then subject to linkTakes()).
+ * forwarder; `senderRnsUp` whether the talker's last local hello said RNS_UP. `localDirect`: an
+ * "rns" frame that came straight from a local talker (hops == ttl). Such a talker sends its voice
+ * over Reticulum until it knows our link is local; when that copy comes first it goes on as the
+ * local copy would have, or the local copy, a duplicate by then, never reaches the links ashore.
+ * Returns {local, rns}: whether it goes to the local transports and to Reticulum (each Reticulum
+ * link then subject to linkTakes()).
  */
-function route({ origin, forwarder, senderRnsUp }) {
+function route({ origin, forwarder, senderRnsUp, localDirect = false }) {
   if (origin === "own") return { local: true, rns: true };
   if (origin === "local") return { local: false, rns: !!forwarder && !senderRnsUp };
-  if (origin === "rns") return { local: !!forwarder, rns: false };
+  if (origin === "rns") return { local: !!forwarder, rns: !!forwarder && !!localDirect && !senderRnsUp };
   return { local: false, rns: false };
 }
 

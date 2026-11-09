@@ -82,6 +82,10 @@ test("forwarding rules D1-D4: where an audio frame goes", () => {
   // D3: heard over Reticulum: to the local transports only from the forwarder. D4: never back into Reticulum.
   assert.deepEqual(F.route({ origin: "rns", forwarder: true, senderRnsUp: false }), { local: true, rns: false });
   assert.deepEqual(F.route({ origin: "rns", forwarder: false, senderRnsUp: true }), { local: false, rns: false });
+  // ... except a local talker's own copy (hops == ttl) that came first: it goes on as its local copy would have.
+  assert.deepEqual(F.route({ origin: "rns", forwarder: true, senderRnsUp: false, localDirect: true }), { local: true, rns: true });
+  assert.deepEqual(F.route({ origin: "rns", forwarder: true, senderRnsUp: true, localDirect: true }), { local: true, rns: false });
+  assert.deepEqual(F.route({ origin: "rns", forwarder: false, senderRnsUp: false, localDirect: true }), { local: false, rns: false });
   assert.deepEqual(F.route({ origin: "elsewhere" }), { local: false, rns: false });
 });
 

@@ -223,7 +223,10 @@ the wire changed but three spare bits of the hello's transports byte.
   forwarder and only when its talker is not on Reticulum itself; a frame heard over Reticulum goes
   onto the WLAN only from the forwarder, and to Bluetooth and Aware from whoever heard it, as
   before (a peer reached only that way would otherwise miss a frame whose WLAN copy reached its
-  relay after the Reticulum one); Reticulum to Reticulum never. Relays between
+  relay after the Reticulum one); Reticulum to Reticulum never, except a local talker's own
+  frame (`hops == ttl`) that came over Reticulum before its local copy: such a talker sends there
+  until it knows the forwarder's link is local, and the forwarder sends that copy on as the local
+  one would have gone (which is then the duplicate), or the crew ashore would miss it. Relays between
   the local transports, and hellos everywhere, are as before. Views of the forwarder can disagree
   for a moment: that makes a duplicate, which the seen-cache drops, never a gap. A link learns its
   far end's sender id from the first authentic packet the far end sent itself (`hops == ttl`)

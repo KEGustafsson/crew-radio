@@ -17,7 +17,10 @@ package fi.crewradio
  *     Bluetooth and Wi-Fi Aware get it from whoever heard it, as before: a peer reached only that
  *     way would otherwise miss a frame whose WLAN copy reached its relay after the Reticulum one,
  *     a duplicate by then.
- *  4. Reticulum to Reticulum: never (Reticulum carries it to every node itself).
+ *  4. Reticulum to Reticulum: never (Reticulum carries it to every node itself), except a local
+ *     talker's own frame (hops == ttl) that came over Reticulum before its local copy: such a
+ *     talker sends there until it knows our link is local, and that copy goes on as rule 2 says
+ *     the local copy would have (which is then the duplicate).
  *
  * Relays between local transports are unchanged (the hop budget still applies, [Ingress.relayTtl]),
  * and a change of forwarder needs nothing flushed: the rules apply to the next frame. Views of the
@@ -37,12 +40,15 @@ object Forwarding {
     /**
      * The route for an audio frame from [sender] (we are [me]) heard first from [origin]; [forwarder]
      * is whether we are the boat's forwarder, [senderRnsUp] whether the sender's last local hello
-     * had [Hello.RNS_UP] (false when it has none).
+     * had [Hello.RNS_UP] (false when it has none). [localDirect]: a [Origin.RETICULUM] frame that
+     * came straight from a local sender (hops == ttl). Such a talker sends its voice over Reticulum
+     * until it knows our link is local; when that copy comes first it goes on as the local copy
+     * would have, or the local copy, a duplicate by then, never reaches the links ashore.
      */
-    fun route(origin: Origin, sender: Int, me: Int, forwarder: Boolean, senderRnsUp: Boolean): Route = when (origin) {
+    fun route(origin: Origin, sender: Int, me: Int, forwarder: Boolean, senderRnsUp: Boolean, localDirect: Boolean = false): Route = when (origin) {
         Origin.OWN -> Route(lan = true, mesh = true, reticulum = true)
         Origin.LOCAL -> Route(lan = true, mesh = true, reticulum = forwarder && sender != me && !senderRnsUp)
-        Origin.RETICULUM -> Route(lan = forwarder, mesh = true, reticulum = false)
+        Origin.RETICULUM -> Route(lan = forwarder, mesh = true, reticulum = forwarder && localDirect && sender != me && !senderRnsUp)
     }
 
     /**

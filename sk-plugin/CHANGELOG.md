@@ -23,7 +23,10 @@ are unchanged, and older clients keep working beside these (they only save nothi
   to the lowest senderId compared unsigned. Only the forwarder carries audio between the LAN and
   Reticulum, a talker that is on Reticulum itself is never repeated there, and audio goes to no
   Reticulum link whose far end is on the boat's LAN or is the talker (each link learns its far
-  end's senderId from the first packet that came straight from it). Hellos are relayed as
+  end's senderId from the first packet that came straight from it). A local talker's own frame
+  that comes over Reticulum before its LAN copy (it sends there until it knows the forwarder's
+  link is local) goes on to the hub as the LAN copy would have, which is then the duplicate; a
+  relay sends a frame to the LAN and to Reticulum when both are due. Hellos are relayed as
   before. `GET /status` shows `reticulum.forwarder`, `reticulum.boat` and each link's `farEnd`.
 
 ### Changed

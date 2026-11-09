@@ -314,28 +314,38 @@ has only what systemd saw. Times in both are the server's, usually UTC.
 
 If a configuration tool manages the config (NixOS, Ansible, a dotfiles manager or the like),
 change it in the tool's source and apply it the tool's way instead: a change made here would be
-overwritten on the tool's next run. Otherwise keep a copy first, edit, restart, and check that the
-interface came back (if the config is a symbolic link, `ls -l /var/lib/rns/.reticulum/config`
-shows `->`: copy and edit the file it points to):
+overwritten on the tool's next run. Restart `rnsd` if the tool does not (`sudo systemctl restart
+rnsd`: the daemon reads its config only when it starts, so until then it keeps the old listener),
+and check the listener with `rnstatus`.
+
+Otherwise keep a copy first, edit, restart, and check that the interface came back. The commands
+below work on the file itself: when the config is a symbolic link (`ls -l
+/var/lib/rns/.reticulum/config` shows `->`), `readlink -f` gives the file it points to, and the
+copy and the edit go to that file. The copy has the time in its name as well as the date and a
+name of its own (`.bak-`), so it can never be the file being edited, even when that file is
+itself named after today; and the edit starts only if the copy was made:
 
 ```sh
-C=/var/lib/rns/.reticulum/config
-sudo cp -p $C $C.$(date +%F)
-sudo nano $C
+F=$(sudo readlink -f /var/lib/rns/.reticulum/config)   # the file itself, through any link
+B=$F.bak-$(date +%F-%H%M%S)
+if sudo test -e "$B"; then echo "$B exists already: stopping"; else
+  sudo cp -p "$F" "$B" && sudo nano "$F"
+fi
 sudo systemctl restart rnsd
 systemctl is-active rnsd
 sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
 
+If the copy failed, the edit did not start: nothing changed, and the restart only restarted it.
 If it does not come back up, the log file says why (a misspelt option, a port in use); put the
-copy back and restart. The copy is named after the day it was made (`config.2026-11-08`, say);
-`ls -l $C.*` lists them, and the one to restore is the newest, from before this edit. Put its
-name in the command yourself, for example:
+copy back and restart. `ls -l "$F".bak-*` lists the copies, and the one to restore is the newest,
+from before this edit. Put its name in the command yourself, for example:
 
 ```sh
-ls -l $C.*
-sudo cp -p $C.2026-11-08 $C     # the date of your copy, as ls shows it
+ls -l "$F".bak-*
+sudo cp -p "$F".bak-2026-11-08-201500 "$F"     # the name of your copy, as ls shows it
 sudo systemctl restart rnsd
+sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
 
 ### From `TCPServerInterface` to `BackboneInterface`
@@ -346,8 +356,10 @@ A hub set up before 2026-11-08 has a `TCPServerInterface` listener. On Linux, ch
 Do not run the commands below if the config is a symbolic link (`ls -l
 /var/lib/rns/.reticulum/config` shows `->`), whoever keeps it: `sed -i` would replace the link
 with a regular file of its own. Back up the file the link points to and make the three changes
-there. If a configuration tool manages the config (NixOS, Ansible, a dotfiles manager or the
-like), as a link or as a regular file it writes, do not run them either: the tool would put the
+there (`readlink -f` names it; "Changing the config" above has the commands), then restart `rnsd`
+and check with `rnstatus` that the listener is now a `BackboneInterface`. If a configuration
+tool manages the config (NixOS, Ansible, a dotfiles manager or the like), as a link or as a
+regular file it writes, do not run them either: the tool would put the
 old listener back on its next run. Make the same three changes in the tool's source instead,
 apply it the tool's way (for example `sudo nixos-rebuild switch`, or a playbook run), restart
 `rnsd` if the tool does not, and check with `rnstatus` that the listener is now a

@@ -603,6 +603,37 @@ test("RNS_UP needs a confirmed link off the boat: one whose only link is to a cr
 });
 
 // RNS_UP needs relaying on: a node that does not bridge is never the forwarder.
+// A LAN talker not on Reticulum itself sends its voice there until it knows our link is local; when
+// that copy beats its LAN copy, the forwarder sends it ashore, or the LAN copy (a duplicate by then)
+// never would.
+test("forwarder: a local talker's own Reticulum copy that comes first still goes ashore", () => {
+  const lan = new EventEmitter();
+  lan.sent = [];
+  lan.send = (buf) => { lan.sent.push(Buffer.from(buf)); return true; };
+  const rns = recordingRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 4, heartbeatMs: 100000 });
+  n.senderId = 1000;
+  n.start();
+  let seq = 0;
+  const at = () => Math.floor(Date.now() / 1000);
+  const fromLan = (buf) => lan.emit("packet", buf, { address: "10.0.0.9" });
+  fromLan(packet({ senderId: 20, seq: seq++, time: at(), payload: P.encodeHello({ name: "n20", transports: P.Transports.LAN | P.Transports.RETICULUM, ttl: 4 }) }));
+  assert.equal(n.isForwarder(), true);
+  const frame = packet({ senderId: 20, seq: seq++, codec: P.Codec.OPUS, time: at(), payload: Buffer.alloc(60, 1) });
+  const rnsBefore = rns.sent.length;
+  const lanBefore = lan.sent.length;
+  rns.emit("packet", frame, { key: "link-20" });
+  assert.equal(rns.sent.length, rnsBefore + 1, "ashore, as its LAN copy would have gone");
+  assert.equal(rns.sent.at(-1).opts.skip(20), true, "not back to the talker");
+  assert.equal(lan.sent.length, lanBefore + 1);
+  fromLan(frame);
+  assert.equal(rns.sent.length, rnsBefore + 1, "the LAN copy is the duplicate");
+  // A bridge's copy (ttl spent) is not the talker's own: Reticulum to Reticulum stays closed for it.
+  rns.emit("packet", packet({ senderId: 20, seq: seq++, codec: P.Codec.OPUS, time: at(), ttl: 3, hops: 4, payload: Buffer.alloc(60, 1) }), { key: "link-x" });
+  assert.equal(rns.sent.length, rnsBefore + 1);
+  n.stop();
+});
+
 test("with relaying off the hello never says RNS_UP: a node that does not bridge is never elected the forwarder", () => {
   const lan = new EventEmitter();
   const sent = [];

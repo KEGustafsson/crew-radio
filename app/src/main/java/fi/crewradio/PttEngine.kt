@@ -1056,11 +1056,14 @@ class PttEngine(
                 if (isLocal(from)) Forwarding.Origin.LOCAL else Forwarding.Origin.RETICULUM,
                 h.senderId, senderId,
                 forwarder = localPeers.isForwarder(senderId, ownFlags(), now),
-                senderRnsUp = localPeers.rnsUp(h.senderId, now)
+                senderRnsUp = localPeers.rnsUp(h.senderId, now),
+                localDirect = h.hops == h.ttl && localPeers.isLocal(h.senderId, now)
             )
             for (t in transports) {
                 val sent = when {
-                    t is ReticulumTransport -> route.reticulum && t !== from && t.sendAudio(p, isLocalSender)
+                    // From Reticulum only a local talker's own copy goes back in (Forwarding.route),
+                    // and never on a link to a local sender: the talker's included.
+                    t is ReticulumTransport -> route.reticulum && t.sendAudio(p, isLocalSender)
                     !(if (t is LanTransport) route.lan else route.mesh) -> false
                     t === from -> t.relayWithin && t.send(p, except = link)
                     else -> t.send(p)

@@ -428,7 +428,7 @@ class ChannelNode extends EventEmitter {
    * LAN to Reticulum. Audio by the forwarder rules (lib/forwarding.js route): only while we are the
    * boat's forwarder, from the LAN only for a talker not on Reticulum itself, and to no link whose
    * far end is local or is the talker. Nothing is relayed within Reticulum, where every node has a
-   * link to every other.
+   * link to every other, except a local talker's own copy that beat its LAN copy here.
    */
   relayOn(buf, h, via) {
     if (!this.rns || !this.relay) return;
@@ -437,12 +437,20 @@ class ChannelNode extends EventEmitter {
     const hello = h.codec === P.Codec.HELLO;
     const to = hello
       ? { local: !!via, rns: !via }
-      : F.route({ origin: via ? "rns" : "local", forwarder: this.isForwarder(), senderRnsUp: this.local.rnsUp(h.senderId) });
+      : F.route({
+        origin: via ? "rns" : "local",
+        forwarder: this.isForwarder(),
+        senderRnsUp: this.local.rnsUp(h.senderId),
+        localDirect: !!via && h.hops === h.ttl && this.local.isLocal(h.senderId),
+      });
     if (!to.local && !to.rns) { this.stats.held++; return; }   // another node carries it, or its talker does
     const copy = Buffer.from(buf);
     copy[4] = ttl;
-    const sent = to.local ? this.link.send(copy, this.unicastTargets()) : hello ? this.rns.send(copy) : this.rns.send(copy, null, this.rnsAudio(h.senderId));
-    if (sent !== false) this.stats.relayed++;           // a Reticulum with no confirmed link took nothing
+    let sent = false;
+    if (to.local && this.link.send(copy, this.unicastTargets()) !== false) sent = true;
+    // A Reticulum with no confirmed link takes nothing (false).
+    if (to.rns && (hello ? this.rns.send(copy) : this.rns.send(copy, null, this.rnsAudio(h.senderId))) !== false) sent = true;
+    if (sent) this.stats.relayed++;
   }
 
   /** Counts a stale packet and reports the count at most once per 30 s. */
