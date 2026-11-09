@@ -328,7 +328,9 @@ renamed over the config only then: the config is the old file or the new one, ne
 either, and a hard link to the old file keeps the old contents. The check catches a copy that
 went wrong; it is no guard against `rns` itself, which can change its config at any time anyway.
 Nor is the lock a guard against an edit made some other way (`nano` on the config itself, a
-script): while you change the config with these steps, nobody else changes it. `rnsd` keeps
+script), or against a second edit that comes after yours is in but before you have checked
+it: from step 1 until `rnstatus` shows the hub running on your edit (or the old config is back),
+nobody else changes the config. `rnsd` keeps
 running throughout, and is restarted, once, only after you have seen the change and
 said yes.
 
@@ -359,7 +361,8 @@ said yes.
    directory (`flock`, so two edits made with these steps never cross), checks that the config is
    still what step 1 copied (nobody else has changed it meanwhile), writes the edit in as `rns`
    with the config's owner, group, mode and SELinux label, renames it over the config only if it
-   is the one you reviewed, and notes what it put in place (`$W/put.sha256`). If anything fails
+   is the one you reviewed. What it is about to put in place is noted first (`$W/put.sha256`,
+   for the way back). If anything fails
    before the restart, the config and `rnsd` are as they were; if `rnsd` does not come back
    after it, the edit is in place: put the old config back as below. The clients drop for a few
    seconds at the restart and come back by themselves.
@@ -384,8 +387,8 @@ said yes.
        rm -f "$t"; echo "not put in place: the config is as it was"; exit 1' sh "$C" "$2" "$3"
    }
    read -r -p "Put $W/config.new in place and restart rnsd? [y/N] " a && [ "$a" = y ] &&
-     put "$W/config.new" "$H" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)" &&
      { echo "$H" | sudo tee "$W/put.sha256" > /dev/null; } &&
+     put "$W/config.new" "$H" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)" &&
      sudo systemctl restart rnsd &&
      systemctl is-active rnsd &&
      sudo -u rns /var/lib/rns/venv/bin/rnstatus
@@ -398,13 +401,22 @@ file it points to where that is kept, the way it is kept, not through the link.
 `put` refuses, and says so, when the config is no longer what step 1 copied (start again from
 step 1), and when the new file would not get the config's owner, group, mode or SELinux label
 (`ls -Z`; `?` on a hub without SELinux), or the config has an ACL (`ls -l` shows `+` after the
-mode): someone has given other accounts access to it, which a new file would not carry over. Then change the config where it is instead, as its owner
-(`sudo -u rns nano "$C"`), and restart.
+mode): someone has given other accounts access to it, which a new file would not carry over.
+Then change the config where it is instead, as its owner (`sudo -u rns nano "$C"`), restart
+and check it as in step 3. To go back from such an edit, write the copy from step 1 into the
+config, again where it is (its access stays as it was), and restart:
+
+```sh
+sudo cat "$W/config" | sudo -u rns sh -c 'cat > "$1"' sh "$C" &&
+  sudo systemctl restart rnsd &&
+  sudo -u rns /var/lib/rns/venv/bin/rnstatus
+```
 
 If `rnsd` does not come back up after step 3, the log file says why (a misspelt option, a port in
 use). Put the copy from before the edit back the same way (with `put` defined as in step 3). The
 config must still be what step 3 put in place (`put.sha256`, kept even if `config.new` has been
-edited since):
+edited since; if step 3 stopped before the rename, the config is the old one and `put` says it
+has changed, which is right: there is nothing to put back):
 
 ```sh
 put "$W/config" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)" "$(sudo cat "$W/put.sha256")" &&
@@ -415,7 +427,7 @@ put "$W/config" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)" "$(sudo cat "$W/
 `$W` is the directory step 1 printed; in a new shell, set `C` as in step 1 and `W` to it again.
 Each edit has a directory of its own, named after the time it was made (`sudo ls
 /var/backups/rnsd`: `edit.2026-11-08-201500.k3Xq9a`), with the config as it was (`config`), as
-edited (`config.new`) and, once step 3 has put it in place, its SHA-256 (`put.sha256`).
+edited (`config.new`) and, once you have said yes in step 3, its SHA-256 (`put.sha256`).
 
 ### From `TCPServerInterface` to `BackboneInterface`
 
@@ -447,7 +459,9 @@ command, or make the three changes in that block by hand with `sudo nano "$W/con
 to another hub, a UDP interface, the boat's `127.0.0.1` listener from section 6) keep theirs. The
 `diff` should show those three lines and nothing else, with or without spaces around `=` in
 the original; if it does not say "three lines changed" (a line it did not recognise, such as one
-with a comment after the type), make the rest of the change by hand and look again.
+with a comment after the type), make the rest of the change by hand (`sudo nano
+"$W/config.new"`), then run the `H=` line, the `diff` and the count again: step 3 puts in place
+only the file `H` was taken from.
 
 After step 3, `rnstatus` should list `BackboneInterface[Crew Radio hub/0.0.0.0:4242]` and, within
 a few seconds, the same `Clients` count as before. To go back, put the copy from before the edit
