@@ -84,7 +84,11 @@ function clampByte(n) {
 const HELLO_VERSION = 2;
 const HELLO_HEAD = 6;
 const HELLO_MAX_NAME = 32;
-const Transports = Object.freeze({ LAN: 1, BT: 2, AWARE: 4, RETICULUM: 8 });
+// The transports byte: the links a node has (LAN, BT, AWARE, RETICULUM), then three bits for
+// choosing a boat's forwarder (lib/forwarding.js): RNS_UP while its Reticulum socket is up,
+// FWD_PREFER / FWD_AVOID how keen it is to be the forwarder. 0x80 is reserved. A decoder keeps
+// the byte as it came: bits it does not know are carried, never a reason to drop the hello.
+const Transports = Object.freeze({ LAN: 1, BT: 2, AWARE: 4, RETICULUM: 8, RNS_UP: 0x10, FWD_PREFER: 0x20, FWD_AVOID: 0x40 });
 
 /**
  * Encodes a hello; the name is cut to 32 UTF-8 bytes on a character boundary, as the app does.

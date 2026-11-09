@@ -534,14 +534,22 @@ class MainActivity : AppCompatActivity() {
         }
         // Off channel the disc is inert (startTalking has no transports to send to), so the hint
         // says why rather than HOLD, which would be a lie, and what to do about it.
-        val small = if (e?.isConnected == true) hint else R.string.ptt_off_channel_hint
+        // A key held down that the busy channel refused (or that yielded to another talker) is
+        // silent: BUSY, and who has the channel, until it keys anyway or is released.
+        val busyWith = if (!live) e?.busyWith else null
+        val bigText = if (busyWith != null) getString(R.string.ptt_busy) else getString(big)
+        val smallText = when {
+            e?.isConnected != true -> getString(R.string.ptt_off_channel_hint)
+            busyWith != null -> getString(R.string.status_channel_busy, busyWith).uppercase(Locale.getDefault())
+            else -> getString(hint)
+        }
         val hintColor = ContextCompat.getColor(this, if (live) R.color.error else R.color.primary_container)
         pttButton.text = SpannableStringBuilder()
-            .append(getString(big))
+            .append(bigText)
             .append("\n")
-            .append(getString(small), RelativeSizeSpan(0.3f), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            .append(smallText, RelativeSizeSpan(0.3f), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             .also { sb ->
-                val start = sb.length - getString(small).length
+                val start = sb.length - smallText.length
                 sb.setSpan(ForegroundColorSpan(hintColor), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
         pttButton.backgroundTintList = ColorStateList.valueOf(ContextCompat.getColor(this, if (live) R.color.on_air else R.color.primary))
@@ -551,7 +559,7 @@ class MainActivity : AppCompatActivity() {
         pttButton.alpha = if (e?.isConnected == true) 1f else 0.55f
         ViewCompat.replaceAccessibilityAction(
             pttButton, AccessibilityActionCompat.ACTION_CLICK,
-            getString(if (live) R.string.a11y_talk_stop else R.string.a11y_talk_start)
+            getString(if (live || busyWith != null) R.string.a11y_talk_stop else R.string.a11y_talk_start)
         ) { v, _ -> v.performClick() }
         // The disc is a polite live region (set in onCreate), so a changed state description is
         // spoken as it happens and is read again whenever the disc is focused. That replaces

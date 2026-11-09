@@ -10,8 +10,14 @@
  *
  * The link is anything with `send(buf)` and a 'packet' event (see lan.js). An optional second
  * transport, `rns` (lib/rns/transport.js), carries the channel over Reticulum; the node then
- * relays between the two the way a phone relays between its transports: a first, authentic copy
- * goes on to the other side with its ttl lowered (relayTtl), never back where it came from.
+ * relays between the two: a first, authentic copy goes on to the other side with its ttl lowered
+ * (relayTtl), never back where it came from. Hellos are relayed both ways as a phone relays them;
+ * audio by the boat's forwarder rules (lib/forwarding.js): only the elected forwarder bridges, a
+ * talker on Reticulum itself is never repeated there, and no Reticulum link whose far end hears
+ * the boat locally gets a copy.
+ *
+ * The node never talks over somebody: an announcement stops at the first frame of another talker
+ * (speak() then resolves {yielded: true}), and the caller says it again after a gap.
  * Events out:
  * 'roster' (when the rendered list changes), 'talking' (someone else started or stopped),
  * 'speaking' (our own announcement starts or ends), 'stale' (packets from a clock more than
@@ -23,13 +29,20 @@ const { EventEmitter } = require("node:events");
 const P = require("./packet");
 const { ReplayGuard } = require("./replay");
 const { WireLimiter } = require("./wirelimit");
+const { mono } = require("./clock");
+const F = require("./forwarding");
 
 const FRAME_BYTES = 640; // 16 kHz * 20 ms * 2 bytes
 const FRAME_MS = 20;
 const LEAD_MS = 100;       // how far ahead of real time frames may go out (the phones buffer up to 200 ms)
 const MAX_NODES = 64;      // far more than a crew; a ceiling, not a target (the app's MAX_NODES)
 const TALK_HOLD_MS = 400;  // how long after the last frame a node still shows as talking (the app's TALK_HOLD_MS)
+const BUSY_MS = 400;       // another talker's accepted frame within this long: the channel is busy (the burst gap)
 const STALE_REPORT_MS = 30_000;
+// "Never heard": a last-heard time no clock reading can be, so a clock that starts at 0 (a test's, or
+// any) cannot make a member never heard look just heard. Never leaves the node: the roster and the
+// status page carry booleans and ages, not these times.
+const NEVER = -Infinity;
 
 class ChannelNode extends EventEmitter {
   /**
@@ -42,9 +55,11 @@ class ChannelNode extends EventEmitter {
    * @param {number} [opts.silenceMs=4000]  a node silent this long is dropped from the roster
    * @param {number} [opts.talkingMs=400]   audio within this long ago means "talking"
    * @param {ReplayGuard} [opts.guard]      the replay state; pass one guard across link reopens
-   * @param {object} [opts.rns]              a second transport (send(buf, except), ready, 'packet')
-   * @param {boolean} [opts.relay=true]      forward between the link and `rns`
-   * @param {() => number} [opts.now]       milliseconds; also the clock the packets' `time` is checked against
+   * @param {object} [opts.rns]              a second transport (send(buf, except, {voice, skip}), learnFarEnd(via, id), ready, 'packet')
+   * @param {boolean} [opts.relay=true]      forward between the link and `rns`; off, the hello never says RNS_UP, so we are never the forwarder
+   * @param {() => number} [opts.now]       wall clock, milliseconds: the packets' `time` is stamped and checked with it
+   * @param {() => number} [opts.clock]     monotonic milliseconds for every elapsed time (silence, busy, roster, pacing,
+   *                                        local peers); lib/clock.js's mono() by default, the test's `now` when only that is given
    */
   constructor(opts) {
     super();
@@ -60,8 +75,11 @@ class ChannelNode extends EventEmitter {
     this.leadMs = Number.isFinite(opts.leadMs) && opts.leadMs >= 0 ? opts.leadMs : LEAD_MS;   // how far ahead of real time frames go out
     this.repeatMs = opts.repeatMs ?? 0;         // > 0: send every audio packet a second time this much later (heals a lost copy)
     this.now = opts.now ?? Date.now;
+    // Elapsed times run on a monotonic clock: a server clock stepped back by GPS or NTP must not keep a
+    // quiet channel busy, a talker talking or a node on the roster. Only packet timestamps are wall time.
+    this.clock = opts.clock ?? (opts.now ? opts.now : mono);
     this.guard = opts.guard ?? new ReplayGuard();
-    this.limiter = opts.limiter ?? new WireLimiter({ now: () => this.now() });
+    this.limiter = opts.limiter ?? new WireLimiter({ now: () => this.clock() });
     this.senderId = randomSenderId();
     this.audioSeq = 0;
     this.helloSeq = 0;
@@ -70,8 +88,11 @@ class ChannelNode extends EventEmitter {
     this.speaking = null; // {cancel, done} of the announcement going out right now
     this.chain = Promise.resolve(); // announcements go out one after another, in call order
     this.lastRosterKey = "";
-    this.stats = { rx: 0, rejected: 0, stale: 0, late: 0, tx: 0, relayed: 0 };
-    this.staleReportedAt = 0;
+    this.local = new F.LocalPeers({ now: () => this.clock() });   // senders heard on the LAN unrelayed: the boat
+    this.heardAt = NEVER;  // the last accepted audio frame from anybody else, and whose
+    this.heardFrom = 0;
+    this.stats = { rx: 0, rejected: 0, stale: 0, late: 0, tx: 0, relayed: 0, held: 0, yielded: 0 };
+    this.staleReportedAt = -Infinity;
     this.staleSinceReport = 0;
     this.onPacket = (buf, rinfo) => this.receive(buf, rinfo);
     this.onRnsPacket = (buf, via) => this.receive(buf, null, via);
@@ -97,10 +118,9 @@ class ChannelNode extends EventEmitter {
 
   /** Hello out, stale nodes swept, roster republished if it changed. */
   tick() {
-    // The LAN only while there is one: the node that keeps the channel while it is down says Reticulum alone.
-    const transports = (this.link.offline ? 0 : P.Transports.LAN) | (this.rns?.ready ? P.Transports.RETICULUM : 0);
-    this.broadcast(P.Codec.HELLO, P.encodeHello({ name: this.name, transports, ttl: this.ttl, versionCode: 0 }));
-    const now = this.now();
+    this.broadcast(P.Codec.HELLO, P.encodeHello({ name: this.name, transports: this.transports(), ttl: this.ttl, versionCode: 0 }));
+    this.local.sweep();
+    const now = this.clock();
     let changed = false;
     for (const [id, n] of this.nodes) {
       if (now - n.lastSeen > this.silenceMs) {
@@ -111,9 +131,48 @@ class ChannelNode extends EventEmitter {
     this.publishRoster(changed);
   }
 
+  /**
+   * Our hello's transports byte. The LAN only while there is one: the node that keeps the channel
+   * while it is down says Reticulum alone. RETICULUM while the socket to the transport node is up;
+   * RNS_UP only while it is up and at least one link that has proved the key goes off the boat
+   * (its far end is not a local sender; one not known yet counts as off the boat). A socket alone
+   * delivers nothing, and a link to a crewmate on the same boat is one our voice never takes
+   * (split horizon): a boat that took us for its bridge, or for a talker that reaches the shore
+   * itself, would then be heard by nobody ashore. Nor with relaying off: a node that does not bridge
+   * must not be elected the boat's forwarder and then forward nothing.
+   * FWD_PREFER always: a server on the boat's wire is the forwarder the boat wants.
+   */
+  transports() {
+    const up = !!this.rns?.ready;
+    return (this.link.offline ? 0 : P.Transports.LAN)
+      | (up ? P.Transports.RETICULUM : 0)
+      | (up && this.bridges() && (this.rns.remoteLinkCount?.((id) => this.local.isLocal(id)) ?? 0) > 0 ? P.Transports.RNS_UP : 0)
+      | P.Transports.FWD_PREFER;
+  }
+
+  /**
+   * True when this node bridges the LAN and Reticulum at all, the app's Forwarding.bridges: relaying
+   * on, a hop limit that lets a packet go one hop further (relayTtl gives 0 below 2), and the LAN up.
+   * A node that bridges nothing must not claim RNS_UP, or it could be elected the boat's forwarder.
+   */
+  bridges() {
+    return this.relay && this.ttl >= 2 && !this.link.offline;
+  }
+
+  /** True while we are the boat's forwarder, as we see it (lib/forwarding.js): never without RNS_UP (a confirmed link off the boat). */
+  isForwarder() {
+    if (!this.rns?.ready) return false;
+    return this.local.forwarder({ senderId: this.senderId, transports: this.transports() }) === this.senderId;
+  }
+
+  /** True while another talker is heard: an accepted audio frame from somebody else within BUSY_MS. */
+  get busy() {
+    return this.heardAt !== NEVER && this.clock() - this.heardAt < BUSY_MS;
+  }
+
   /** The roster as the phones would list it. */
   roster() {
-    const now = this.now();
+    const now = this.clock();
     return [...this.nodes.entries()]
       .map(([id, n]) => ({
         id,
@@ -121,7 +180,7 @@ class ChannelNode extends EventEmitter {
         transports: n.transports,
         hops: n.hops,
         versionCode: n.versionCode,
-        talking: now - n.lastAudio < this.talkingMs,
+        talking: n.lastAudio !== NEVER && now - n.lastAudio < this.talkingMs,
         ageMs: now - n.lastSeen,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -129,21 +188,25 @@ class ChannelNode extends EventEmitter {
 
   /** True while any other node is sending audio. */
   get someoneTalking() {
-    const now = this.now();
-    for (const n of this.nodes.values()) if (now - n.lastAudio < this.talkingMs) return true;
+    const now = this.clock();
+    for (const n of this.nodes.values()) if (n.lastAudio !== NEVER && now - n.lastAudio < this.talkingMs) return true;
     return false;
   }
 
-  /** Resolves when nobody has talked for `gapMs`, or after `maxWaitMs` regardless. */
-  waitForSilence(gapMs = 300, maxWaitMs = 3000) {
-    const deadline = this.now() + maxWaitMs;
+  /**
+   * Resolves true when nobody has talked for `gapMs`; false at `maxWaitMs` with the channel still
+   * busy, or as soon as `stop()` says so (an urgent announcement cutting in, the node replaced).
+   */
+  waitForSilence(gapMs = BUSY_MS, maxWaitMs = 3000, stop = () => false) {
+    const deadline = this.clock() + maxWaitMs;
     return new Promise((resolve) => {
+      // One look at the channel: resolved when quiet for gapMs, false at the deadline or on stop(), else again in 50 ms.
       const check = () => {
-        const now = this.now();
-        let last = 0;
+        const now = this.clock();
+        let last = this.heardAt;
         for (const n of this.nodes.values()) last = Math.max(last, n.lastAudio);
-        if (last === 0 || now - last >= gapMs) resolve(true);      // nobody has talked, or not lately
-        else if (now >= deadline) resolve(false);
+        if (last === NEVER || now - last >= gapMs) resolve(true);  // nobody has talked, or not lately
+        else if (now >= deadline || stop()) resolve(false);
         else setTimeout(check, 50);
       };
       check();
@@ -156,22 +219,32 @@ class ChannelNode extends EventEmitter {
    * order (a promise chain, so two waiters can never both start). cancel() stops the current one;
    * `cancelled`, checked before the first frame and before each one after, is the caller's own
    * flag: a cancel() between this call and the first frame finds nothing speaking yet.
+   *
+   * It never keys over a talker: when another talker is heard (busy) before a frame, the frames
+   * stop there and it resolves {yielded: true, by: senderId}; else {yielded: false}. Saying it
+   * again after a gap is the caller's choice (index.js does, once). With `opts.override` (an
+   * urgent announcement) it keys whatever it hears, to the last frame.
    */
-  speak(pcmBytes, cancelled = () => false) {
-    const turn = this.chain.then(() => this.sendFrames(pcmBytes, cancelled));
+  speak(pcmBytes, cancelled = () => false, opts = {}) {
+    const turn = this.chain.then(() => this.sendFrames(pcmBytes, cancelled, opts));
     this.chain = turn.catch(() => {});
     return turn;
   }
 
-  async sendFrames(pcmBytes, isCancelled = () => false) {
-    if (isCancelled()) return;
+  /**
+   * The frames of one announcement, paced LEAD_MS ahead of real time; stops at a cancel, or (not
+   * for an override) at another talker's first frame, and says which in the result.
+   */
+  async sendFrames(pcmBytes, isCancelled = () => false, { override = false } = {}) {
+    const result = { yielded: false, by: 0 };
+    if (isCancelled()) return result;
     const frames = [];
     for (let off = 0; off < pcmBytes.length; off += FRAME_BYTES) {
       const f = Buffer.alloc(FRAME_BYTES); // the last frame is padded with silence
       pcmBytes.copy(f, 0, off, Math.min(off + FRAME_BYTES, pcmBytes.length));
       frames.push(f);
     }
-    if (frames.length === 0) return;
+    if (frames.length === 0) return result;
     let cancelled = false;
     let resolveDone;
     const done = new Promise((r) => (resolveDone = r));
@@ -183,8 +256,16 @@ class ChannelNode extends EventEmitter {
       // arrives late makes the phones' mixer run dry and conceal, which sounds like warble;
       // early frames only sit in their jitter queue. The schedule is drift-corrected, so the
       // cushion never shrinks over a long announcement.
-      const t0 = this.now();
+      const t0 = this.clock();
       for (let i = 0; i < frames.length && !cancelled && !isCancelled(); i++) {
+        // Somebody keyed: they have the channel (the plugin yields, the app's floor rule 4), unless
+        // this is an override (an urgent announcement), which nobody stops.
+        if (this.busy && !override) {
+          result.yielded = true;
+          result.by = this.heardFrom;
+          this.stats.yielded++;
+          break;
+        }
         const packet = this.broadcast(P.Codec.PCM, frames[i]);
         if (this.repeatMs > 0) {
           // The same packet again a little later: a copy lost on the air is replaced before its
@@ -196,7 +277,7 @@ class ChannelNode extends EventEmitter {
         // on a tick), so yield before any blocking wait or the whole announcement goes out in one burst.
         await nextTurn();
         const due = t0 + (i + 1) * FRAME_MS - this.leadMs;
-        const wait = due - this.now();
+        const wait = due - this.clock();
         if (wait > 0) await sleep(wait);
       }
     } finally {
@@ -204,6 +285,7 @@ class ChannelNode extends EventEmitter {
       this.emit("speaking", false);
       resolveDone();
     }
+    return result;
   }
 
   cancel() {
@@ -217,8 +299,16 @@ class ChannelNode extends EventEmitter {
     const packet = Buffer.concat([header, this.crypto.seal(P.aadOf(header), payload)]);
     this.stats.tx++;
     this.link.send(packet, this.unicastTargets());
-    this.rns?.send(packet);
+    // Our hellos to every link (each far end learns who we are from them); our voice to every
+    // link but those whose far end hears the boat on the LAN (D1, split horizon).
+    if (codec === P.Codec.HELLO) this.rns?.send(packet);
+    else this.rns?.send(packet, null, this.rnsAudio(this.senderId));
     return packet;
+  }
+
+  /** The options of an audio frame from `sender` to Reticulum: voice (dropped when late), and the split horizon. */
+  rnsAudio(sender) {
+    return { voice: true, skip: (farEnd) => !F.linkTakes(farEnd, sender, (id) => this.local.isLocal(id)) };
   }
 
   /** The addresses the known nodes were last heard from, for unicast copies (see lan.js). */
@@ -244,6 +334,10 @@ class ChannelNode extends EventEmitter {
     }
   }
 
+  /**
+   * The receive path proper (receive() catches what it throws): parse, budgets, AEAD, clock, the
+   * replay guard, what an unrelayed packet tells about where its sender is, then relay and roster.
+   */
   receiveOrThrow(buf, rinfo, via = null) {
     const h = P.parseHeader(buf);
     if (!h) { this.stats.rejected++; return; }
@@ -257,21 +351,37 @@ class ChannelNode extends EventEmitter {
     // touch the stale counter.
     const plain = this.crypto.open(P.aadOf(buf), buf.subarray(P.HEADER));
     if (!plain) { this.stats.rejected++; this.limiter.allowJunk(); return; }
-    const now = this.now();
-    if (!P.isFresh(h.time, Math.floor(now / 1000))) { this.stale(now); return; }
-    const verdict = this.guard.admit(h.senderId, h.seq, h.codec === P.Codec.HELLO ? "hello" : "audio");
+    if (!P.isFresh(h.time, Math.floor(this.now() / 1000))) { this.stale(this.clock()); return; }
+    const now = this.clock();
+    const kind = h.codec === P.Codec.HELLO ? "hello" : "audio";
+    // The sender is charged inside admit, after the AEAD and after the duplicate look, so only
+    // authenticated first copies cost a sender anything: the two WLAN copies of every frame
+    // would otherwise spend a talker's budget in seconds, which is what the app measured in the
+    // field. A copy over budget is not remembered either, as in the app.
+    const verdict = this.guard.admit(h.senderId, h.seq, kind, this.rns && this.relay ? P.relayTtl(h, this.ttl) : 0,
+      () => this.limiter.allowSender(h.senderId));
+    // Over the sender's budget: dropped before it can tell anything either, so a burst of a
+    // node's packets cannot make it local (and elect it the forwarder) through the copies it
+    // was refused.
+    if (verdict === "rejected") { this.stats.rejected++; return; }
+    // Who is where, from any authentic copy that came straight from its sender (hops == ttl), the
+    // duplicates included: a phone's hello reaches us by the LAN and by Reticulum, and whichever
+    // copy came first, the LAN one still says the phone is on the boat. Not from a replay of an
+    // old one ("late").
+    if (verdict !== "late" && h.hops === h.ttl) this.learn(h, plain, via);
     if (verdict === "seen") return;                  // the broadcast twin, or a relay echo
+    // Heard already, but this copy goes further than the one forwarded (that one came with its
+    // ttl spent): forward it, as the app does, and nothing more - it was played the first time,
+    // and charging it would spend the sender's budget on copies.
+    if (verdict === "relay") { this.relayOn(buf, h, via); return; }
     if (verdict === "late") { this.stats.late++; return; }
-    // Charged after the AEAD and after the duplicate look, so only authenticated first copies
-    // cost a sender anything: the two WLAN copies of every frame would otherwise spend a
-    // talker's budget in seconds, which is what the app measured in the field.
-    if (!this.limiter.allowSender(h.senderId)) { this.stats.rejected++; return; }
+    if (h.codec !== P.Codec.HELLO) { this.heardAt = now; this.heardFrom = h.senderId; }   // another talker: the channel is busy
     this.relayOn(buf, h, via);
     let n = this.nodes.get(h.senderId);
     const fresh = !n;
     if (fresh) {
       if (this.nodes.size >= MAX_NODES) return;
-      n = { name: null, transports: 0, hops: 0, versionCode: 0, lastSeen: now, lastAudio: 0, address: null };
+      n = { name: null, transports: 0, hops: 0, versionCode: 0, lastSeen: now, lastAudio: NEVER, address: null };
       this.nodes.set(h.senderId, n);
     }
     this.stats.rx++;
@@ -297,7 +407,7 @@ class ChannelNode extends EventEmitter {
         }
       }
     } else {
-      const was = now - n.lastAudio < this.talkingMs;
+      const was = n.lastAudio !== NEVER && now - n.lastAudio < this.talkingMs;
       n.lastAudio = now;
       if (!was) {
         this.emit("talking", true, h.senderId);
@@ -309,18 +419,48 @@ class ChannelNode extends EventEmitter {
   }
 
   /**
-   * Forwards a first, authentic copy to the other transport: from Reticulum to the LAN (with the
-   * unicast copies), from the LAN to Reticulum, with the ttl the app's rule gives it. Nothing is
-   * relayed within Reticulum, where every node has a link to every other.
+   * What an unrelayed authentic packet tells: on a Reticulum link, who is at its far end (the
+   * first such packet on the link says it, once); on the LAN, a hello makes its sender local.
+   */
+  learn(h, plain, via) {
+    if (via) {
+      this.rns?.learnFarEnd?.(via, h.senderId);
+      return;
+    }
+    if (h.codec !== P.Codec.HELLO) return;
+    const hello = P.decodeHello(plain);
+    if (hello) this.local.heard(h.senderId, hello.transports);
+  }
+
+  /**
+   * Forwards a first, authentic copy to the other transport, with the ttl the app's rule gives it.
+   * Hellos as a phone relays them: from Reticulum to the LAN (with the unicast copies), from the
+   * LAN to Reticulum. Audio by the forwarder rules (lib/forwarding.js route): only while we are the
+   * boat's forwarder, from the LAN only for a talker not on Reticulum itself, and to no link whose
+   * far end is local or is the talker. Nothing is relayed within Reticulum, where every node has a
+   * link to every other, except a local talker's own copy that beat its LAN copy here.
    */
   relayOn(buf, h, via) {
     if (!this.rns || !this.relay) return;
     const ttl = P.relayTtl(h, this.ttl);
     if (ttl === 0) return;
+    const hello = h.codec === P.Codec.HELLO;
+    const to = hello
+      ? { local: !!via, rns: !via }
+      : F.route({
+        origin: via ? "rns" : "local",
+        forwarder: this.isForwarder(),
+        senderRnsUp: this.local.rnsUp(h.senderId),
+        localDirect: !!via && h.hops === h.ttl && this.local.isLocal(h.senderId),
+      });
+    if (!to.local && !to.rns) { this.stats.held++; return; }   // another node carries it, or its talker does
     const copy = Buffer.from(buf);
     copy[4] = ttl;
-    const sent = via ? this.link.send(copy, this.unicastTargets()) : this.rns.send(copy);
-    if (sent !== false) this.stats.relayed++;           // a Reticulum with no confirmed link took nothing
+    let sent = false;
+    if (to.local && this.link.send(copy, this.unicastTargets()) !== false) sent = true;
+    // A Reticulum with no confirmed link takes nothing (false).
+    if (to.rns && (hello ? this.rns.send(copy) : this.rns.send(copy, null, this.rnsAudio(h.senderId))) !== false) sent = true;
+    if (sent) this.stats.relayed++;
   }
 
   /** Counts a stale packet and reports the count at most once per 30 s. */
@@ -355,4 +495,4 @@ function randomSenderId() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nextTurn = () => new Promise((r) => setImmediate(r));
 
-module.exports = { ChannelNode, FRAME_BYTES, FRAME_MS, LEAD_MS, MAX_NODES, TALK_HOLD_MS, STALE_REPORT_MS };
+module.exports = { ChannelNode, FRAME_BYTES, FRAME_MS, LEAD_MS, MAX_NODES, TALK_HOLD_MS, BUSY_MS, STALE_REPORT_MS };

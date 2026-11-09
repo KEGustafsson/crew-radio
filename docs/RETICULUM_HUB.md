@@ -85,12 +85,37 @@ sudo -u rns nano /var/lib/rns/.reticulum/config
 
 [interfaces]
   [[Crew Radio hub]]
-    type = TCPServerInterface
+    type = BackboneInterface
     enabled = yes
-    listen_ip = 0.0.0.0
-    listen_port = 4242
+    listen_on = 0.0.0.0
+    port = 4242
 ```
 
+- **`BackboneInterface`, not `TCPServerInterface`**, for the listener. It is the same TCP and
+  the same framing on the same port, so the phones and the plugin connect to it unchanged; the
+  difference is what the hub does when one client stops reading (a phone whose mobile data
+  stalled, a boat on a congested uplink). A `TCPServerInterface` client writes with a blocking
+  `socket.sendall` from the one thread that forwards every packet through the hub
+  (`Transport.inbound`, the inbound queue), so a single client that has stopped reading holds up
+  forwarding for everybody: the crew's voice stops for all of them, and their links time out.
+  A `BackboneInterface` keeps a send buffer per client, drops only that client's frames while it
+  is stalled, and closes it after about 12 s without progress (`DP_EC_DEAD_TIME`); everybody
+  else carries on. On a `TCPServerInterface` hub this was one of the reasons every client
+  dropped off when two crew members talked at once (2026-11-08). Read from rnsd 1.6.0's
+  source, and running on a Crew Radio hub (rnsd 1.5.4) since 2026-11-08, where the clients
+  reconnected to it unchanged within seconds of the switch; the per-client buffer and its drop
+  rule came with `rns` 1.5.1, so any version this guide installs has them. To move an existing
+  hub over, see section 9.
+- **Linux only.** `BackboneInterface` uses Linux's `epoll`, and `rnsd` refuses to start it on
+  anything else. On another system keep a `TCPServerInterface`, which takes the same clients:
+
+  ```text
+    [[Crew Radio hub]]
+      type = TCPServerInterface
+      enabled = yes
+      listen_ip = 0.0.0.0
+      listen_port = 4242
+  ```
 - **No network name or passphrase** on this interface (`network_name`, `passphrase`). Those are
   Reticulum's interface access codes, and Crew Radio does not support them. The channel key is
   what keeps strangers out of the channel.
@@ -103,8 +128,8 @@ sudo -u rns nano /var/lib/rns/.reticulum/config
       type = AutoInterface
       enabled = yes
   ```
-- `listen_ip = 0.0.0.0` listens on every IPv4 address. The manual covers IPv6 (`prefer_ipv6`)
-  and binding to one interface (`device = eth0`).
+- `listen_on = 0.0.0.0` listens on every IPv4 address (`listen_ip` on a `TCPServerInterface`).
+  The manual covers IPv6 (`prefer_ipv6`) and binding to one interface (`device = eth0`).
 
 ### Open the port
 
@@ -174,7 +199,8 @@ To see the hub at work:
 sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
 
-It lists the `TCPServerInterface[Crew Radio hub/0.0.0.0:4242]` with its `Clients` count, and near
+It lists the hub's interface (`BackboneInterface[Crew Radio hub/…]`, or
+`TCPServerInterface[Crew Radio hub/0.0.0.0:4242]`) with its clients, and near
 the end says `Transport Instance <…> running` (followed by the uptime). If it says nothing about a
 transport instance, `enable_transport` is not on.
 
@@ -188,7 +214,8 @@ transport instance, `enable_transport` is not on.
   lists that node with **Reticulum** among its links.
 - **The boat.** In the signalk-crewradio plugin's settings, under **Reticulum**, tick **Enabled**
   and set **Transport node host** to the hub (`hub.example.org`) and **Transport node port** to
-  4242. The plugin dials out over whatever internet
+  4242: the port of the hub's listener, a `BackboneInterface` or a `TCPServerInterface`, which the
+  plugin connects to the same way. The plugin dials out over whatever internet
   the boat has, and relays between Reticulum and the boat's WLAN, so the phones aboard need
   nothing new.
 - **Several crews** can share one hub. Each channel key makes its own Reticulum destination, and
@@ -256,3 +283,199 @@ hub → phone ashore, which was checked end to end with two `rnsd` 1.5.4 instanc
   that usually means the boat only.
 - Keep the machine patched (`sudo apt install unattended-upgrades` on Debian, Ubuntu and
   Raspberry Pi OS), and update `rns` now and then (section 3).
+
+## 9. Commands
+
+Everything here runs on the hub, as a user with `sudo`. The paths are this guide's: the service
+`rnsd`, the user `rns`, its home `/var/lib/rns`.
+
+| To | Run |
+|---|---|
+| See whether it runs | `systemctl status rnsd` (or just `systemctl is-active rnsd`) |
+| See the hub at work | `sudo -u rns /var/lib/rns/venv/bin/rnstatus` |
+| Start it | `sudo systemctl start rnsd` |
+| Stop it (every client drops until it starts again) | `sudo systemctl stop rnsd` |
+| Restart it, e.g. after a config change (the clients reconnect within seconds) | `sudo systemctl restart rnsd` |
+| Start it at every boot | `sudo systemctl enable rnsd` (`enable --now` also starts it now) |
+| No longer start it at boot | `sudo systemctl disable rnsd` (`disable --now` also stops it now) |
+| Whether it starts at boot | `systemctl is-enabled rnsd` |
+| Follow its log | `sudo tail -f /var/lib/rns/.reticulum/logfile` |
+| The service's own messages (start, stop, crashes) | `sudo journalctl -u rnsd -e` |
+| Its version | `sudo -u rns /var/lib/rns/venv/bin/rnsd --version` |
+| The newest version available | `sudo -u rns /var/lib/rns/venv/bin/pip index versions rns` |
+| Update it | `sudo -u rns /var/lib/rns/venv/bin/pip install --upgrade rns`, then restart |
+| Go back to a version | `sudo -u rns /var/lib/rns/venv/bin/pip install rns==1.5.4`, then restart |
+| After editing `rnsd.service` | `sudo systemctl daemon-reload`, then restart |
+
+The log file is the daemon's own (`--service` sends it there, not to the journal); the journal
+has only what systemd saw. Times in both are the server's, usually UTC.
+
+### Changing the config
+
+If a configuration tool manages the config (NixOS, Ansible, a dotfiles manager or the like),
+change it in the tool's source and apply it the tool's way instead: a change made here would be
+overwritten on the tool's next run. Restart `rnsd` if the tool does not (`sudo systemctl restart
+rnsd`: the daemon reads its config only when it starts, so until then it keeps the old listener),
+and check the listener with `rnstatus`.
+
+Otherwise change it in three steps. The config and its directory belong to the `rns` account, so
+whatever runs as `rns` could swap either for a link, or hard-link the file elsewhere, while root
+works there. So root never writes there: the copies are made and edited in a directory of their
+own for each edit, which only root can enter, and the edited config is put in place by `rns`
+itself (`sudo -u rns`), which can do no more harm through a link than `rns` already could. It is
+written to a new file next to the config, checked against what you reviewed (its SHA-256), and
+renamed over the config only then: the config is the old file or the new one, never half of
+either, and a hard link to the old file keeps the old contents. The check catches a copy that
+went wrong; it is no guard against `rns` itself, which can change its config at any time anyway.
+Nor is the lock a guard against an edit made some other way (`nano` on the config itself, a
+script), or against a second edit that comes after yours is in but before you have checked
+it: from step 1 until `rnstatus` shows the hub running on your edit (or the old config is back),
+nobody else changes the config. `rnsd` keeps
+running throughout, and is restarted, once, only after you have seen the change and
+said yes.
+
+1. Copy it. Note the directory it prints: the steps below use it.
+
+   ```sh
+   C=/var/lib/rns/.reticulum/config
+   sudo install -d -m 700 -o root -g root /var/backups/rnsd &&
+     [ "$(sudo stat -c '%U %a' /var/backups/rnsd)" = "root 700" ] &&
+     ! sudo test -L "$C" && [ "$(sudo realpath "$C")" = "$C" ] &&
+     W=$(sudo mktemp -d "/var/backups/rnsd/edit.$(date +%F-%H%M%S).XXXXXX") &&
+     sudo sh -c 'sudo -u rns cat -- "$1" > "$2/config"' sh "$C" "$W" &&
+     sudo cp "$W/config" "$W/config.new" &&
+     echo "this edit: $W" || echo "stopped: nothing copied"
+   ```
+
+2. Edit the copy and look at what changed; `H` records exactly what you looked at. Nothing has
+   been restarted: if the difference is not what you meant, edit again (and look again), or stop
+   here and the hub runs on as it was.
+
+   ```sh
+   sudo nano "$W/config.new"
+   H=$(sudo sha256sum "$W/config.new" | cut -d' ' -f1)
+   sudo diff "$W/config" "$W/config.new"
+   ```
+
+3. Put it in place and restart. Anything but `y` changes nothing. `put` locks the config's
+   directory (`flock`, so two edits made with these steps never cross), checks that the config is
+   still what step 1 copied (nobody else has changed it meanwhile), writes the edit in as `rns`
+   with the config's owner, group, mode and SELinux label, renames it over the config only if it
+   is the one you reviewed. What it is about to put in place is noted first (`$W/put.sha256`,
+   for the way back). If anything fails
+   before the restart, the config and `rnsd` are as they were; if `rnsd` does not come back
+   after it, the edit is in place: put the old config back as below. The clients drop for a few
+   seconds at the restart and come back by themselves.
+
+   ```sh
+   # put FILE SHA OLD: FILE (root's, SHA-256 SHA) in place of the config, written by rns, whole
+   # or not at all, if the config's SHA-256 is still OLD; under a lock on its directory, which
+   # is never replaced.
+   put() {
+     sudo cat "$1" | sudo -u rns sh -c '
+       exec 9< "${1%/*}" && flock 9 || exit 1
+       if [ "$(sha256sum < "$1" | cut -d" " -f1)" != "$3" ]; then
+         echo "the config has changed since it was copied: nothing put in place"; exit 1; fi
+       if [ "$(ls -ld -- "$1" | cut -c11)" = "+" ]; then
+         echo "the config has an ACL: nothing put in place"; exit 1; fi
+       t=$(mktemp "$1.XXXXXX") || exit 1
+       if cat > "$t" && [ "$(sha256sum < "$t" | cut -d" " -f1)" = "$2" ] &&
+          cp --attributes-only --preserve=mode,ownership -- "$1" "$t" &&
+          [ "$(stat -c "%u %g %a" -- "$t")" = "$(stat -c "%u %g %a" -- "$1")" ] &&
+          [ "$(ls -dZ -- "$t" | cut -d" " -f1)" = "$(ls -dZ -- "$1" | cut -d" " -f1)" ] &&
+          mv -f "$t" "$1"; then exit 0; fi
+       rm -f "$t"; echo "not put in place: the config is as it was"; exit 1' sh "$C" "$2" "$3"
+   }
+   read -r -p "Put $W/config.new in place and restart rnsd? [y/N] " a && [ "$a" = y ] &&
+     { echo "$H" | sudo tee "$W/put.sha256" > /dev/null; } &&
+     put "$W/config.new" "$H" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)" &&
+     sudo systemctl restart rnsd &&
+     systemctl is-active rnsd &&
+     sudo -u rns /var/lib/rns/venv/bin/rnstatus
+   ```
+
+If step 1 stops at the link check, the config, or a directory on its path, is a symbolic link
+(`ls -l` shows `->`). Someone put it there, a configuration tool (above) or a person: change the
+file it points to where that is kept, the way it is kept, not through the link.
+
+`put` refuses, and says so, when the config is no longer what step 1 copied (start again from
+step 1), and when the new file would not get the config's owner, group, mode or SELinux label
+(`ls -Z`; `?` on a hub without SELinux), or the config has an ACL (`ls -l` shows `+` after the
+mode): someone has given other accounts access to it, which a new file would not carry over.
+Then change the config where it is instead, as its owner (`sudo -u rns nano "$C"`), restart
+and check it as in step 3. To go back from such an edit, write the copy from step 1 into the
+config, again where it is (its access stays as it was), and restart:
+
+```sh
+sudo cat "$W/config" | sudo -u rns sh -c 'cat > "$1"' sh "$C" &&
+  sudo systemctl restart rnsd &&
+  sudo -u rns /var/lib/rns/venv/bin/rnstatus
+```
+
+If `rnsd` does not come back up after step 3, the log file says why (a misspelt option, a port in
+use). Put the copy from before the edit back the same way (with `put` defined as in step 3). The
+config must still be what step 3 put in place (`put.sha256`, kept even if `config.new` has been
+edited since; if step 3 stopped before the rename, the config is the old one and `put` says it
+has changed, which is right: there is nothing to put back):
+
+```sh
+put "$W/config" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)" "$(sudo cat "$W/put.sha256")" &&
+  sudo systemctl restart rnsd &&
+  sudo -u rns /var/lib/rns/venv/bin/rnstatus
+```
+
+`$W` is the directory step 1 printed; in a new shell, set `C` as in step 1 and `W` to it again.
+Each edit has a directory of its own, named after the time it was made (`sudo ls
+/var/backups/rnsd`: `edit.2026-11-08-201500.k3Xq9a`), with the config as it was (`config`), as
+edited (`config.new`) and, once you have said yes in step 3, its SHA-256 (`put.sha256`).
+
+### From `TCPServerInterface` to `BackboneInterface`
+
+A hub set up before 2026-11-08 has a `TCPServerInterface` listener. On Linux, change it (section
+4 says why); the clients need nothing. The option names change with the type. If a configuration
+tool manages the config (NixOS, Ansible, a dotfiles manager or the like), make the three changes
+below in the tool's source instead, apply it the tool's way (for example `sudo nixos-rebuild
+switch`, or a playbook run), restart `rnsd` if the tool does not, and check with `rnstatus` that
+the listener is now a `BackboneInterface`: a change made on the hub would be undone on the
+tool's next run.
+
+Otherwise follow the three steps of "Changing the config" above, with this in place of step 2:
+the `sed` makes the change on the copy, then `H` and the `diff` as there, and a count of the
+changed lines:
+
+```sh
+sudo sed -i '/^[[:space:]]*\[\[Crew Radio hub\]\]/,/^[[:space:]]*\[\[/{s/^\([[:space:]]*\)type[[:space:]]*=[[:space:]]*TCPServerInterface[[:space:]]*$/\1type = BackboneInterface/; s/^\([[:space:]]*\)listen_ip[[:space:]]*=[[:space:]]*/\1listen_on = /; s/^\([[:space:]]*\)listen_port[[:space:]]*=[[:space:]]*/\1port = /}' "$W/config.new"
+H=$(sudo sha256sum "$W/config.new" | cut -d' ' -f1)
+sudo diff "$W/config" "$W/config.new"
+[ "$(sudo diff "$W/config" "$W/config.new" | grep -c '^>')" = 3 ] &&
+  echo "three lines changed" || echo "not three lines: do not go on to step 3"
+```
+
+The `sed` changes only the block that starts at `[[Crew Radio hub]]` and ends at the next `[[`
+(indented with spaces or tabs):
+the name section 4 gives the hub's listener. If yours is named otherwise, put its name in the
+command, or make the three changes in that block by hand with `sudo nano "$W/config.new"` (`type`,
+`listen_ip` to `listen_on`, `listen_port` to `port`); other interfaces (a `TCPClientInterface` out
+to another hub, a UDP interface, the boat's `127.0.0.1` listener from section 6) keep theirs. The
+`diff` should show those three lines and nothing else, with or without spaces around `=` in
+the original; if it does not say "three lines changed" (a line it did not recognise, such as one
+with a comment after the type), make the rest of the change by hand (`sudo nano
+"$W/config.new"`), then run the `H=` line, the `diff` and the count again: step 3 puts in place
+only the file `H` was taken from.
+
+After step 3, `rnstatus` should list `BackboneInterface[Crew Radio hub/0.0.0.0:4242]` and, within
+a few seconds, the same `Clients` count as before. To go back, put the copy from before the edit
+back, as above.
+
+### Removing it
+
+```sh
+sudo systemctl disable --now rnsd
+sudo rm /etc/systemd/system/rnsd.service
+sudo systemctl daemon-reload
+sudo userdel --remove rns    # deletes /var/lib/rns: the venv, the config, the identity
+```
+
+The hub's identity (`/var/lib/rns/.reticulum/storage`) goes with the last line. The crew does
+not need it: a new hub at the same address works at once, since Crew Radio dials the address and
+finds its peers by their own announces.

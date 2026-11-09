@@ -109,6 +109,26 @@ class HelloTest {
     }
 
     @Test
+    fun theForwarderBitsRoundTripAndAnOldHelloStillDecodes() {
+        assertEquals(0x10, Hello.RNS_UP)
+        assertEquals(0x20, Hello.FWD_PREFER)
+        assertEquals(0x40, Hello.FWD_AVOID)
+        val all = Hello.LAN or Hello.RETICULUM or Hello.RNS_UP or Hello.FWD_PREFER or Hello.FWD_AVOID
+        assertEquals(all, roundTrip(Hello("plugin", all, 4)).transports)
+        val old = byteArrayOf(2, (Hello.LAN or Hello.RETICULUM).toByte(), 4, 0, 1, 1, 'x'.code.toByte())
+        val h = Hello.decode(old, 0, old.size)!!
+        assertEquals("bits clear: on Reticulum, not known to be up", Hello.LAN or Hello.RETICULUM, h.transports)
+        assertEquals(0, h.transports and Hello.RNS_UP)
+    }
+
+    @Test
+    fun unknownTransportBitsAreCarriedNotRefused() {
+        val bytes = byteArrayOf(2, 0xFF.toByte(), 4, 0, 0, 0)       // 0x80 is reserved; a decoder ignores it
+        assertEquals(0xFF, Hello.decode(bytes, 0, bytes.size)!!.transports)
+        assertEquals("LAN+BT+Aware+Reticulum", Hello.describe(0xFF))
+    }
+
+    @Test
     fun describesTransportFlags() {
         assertEquals("", Hello.describe(0))
         assertEquals("LAN+BT+Aware", Hello.describe(Hello.LAN or Hello.BT or Hello.AWARE))

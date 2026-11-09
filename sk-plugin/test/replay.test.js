@@ -46,3 +46,55 @@ test("the seen-caches are bounded and the marks keep the last 256 senders", () =
   assert.equal(HELLO_CAPACITY, 2048);
   assert.equal(SENDERS, 256);
 });
+
+// The app's Ingress.RelayOnly: the ttl is outside the AAD, so a copy with it lowered can come
+// first; a later copy that goes further is forwarded too, each one only if it beats the last.
+test("a copy that would be forwarded further than the first is 'relay', once per better ttl", () => {
+  const g = new ReplayGuard();
+  assert.equal(g.admit(1, 0, "audio", 0), "new", "first heard with its ttl spent");
+  assert.equal(g.admit(1, 0, "audio", 0), "seen");
+  assert.equal(g.admit(1, 0, "audio", 2), "relay", "the sender's own copy, ttl to spare");
+  assert.equal(g.admit(1, 0, "audio", 2), "seen", "its broadcast twin");
+  assert.equal(g.admit(1, 0, "audio", 1), "seen", "a worse copy after it");
+  assert.equal(g.admit(1, 0, "audio", 2), "seen", "which did not lower the ttl kept");
+  assert.equal(g.admit(1, 0, "audio", 3), "relay", "a better one still");
+  assert.equal(g.admit(1, 0, "hello", 0), "new", "hellos keep their own");
+  assert.equal(g.admit(1, 0, "audio"), "seen", "no ttl given: never relay");
+});
+
+// The app's Ingress asks the sender's budget between the look and the write: a packet over it
+// leaves nothing behind, so a later copy is judged afresh (and charged), never relayed free.
+test("a packet the sender's budget refuses is 'rejected' and not remembered", () => {
+  const g = new ReplayGuard();
+  let asked = 0;
+  const no = () => { asked++; return false; };
+  const yes = () => { asked++; return true; };
+  assert.equal(g.admit(1, 0, "audio", 0, no), "rejected");
+  assert.equal(g.admit(1, 0, "audio", 2, yes), "new", "the later copy is judged afresh, not relayed");
+  assert.equal(g.admit(1, 0, "audio", 3, no), "relay", "a copy of an admitted packet is not charged");
+  assert.equal(asked, 2);
+  assert.equal(g.admit(1, 0, "hello", 0, no), "rejected");
+  assert.equal(g.admit(1, 0, "hello", 0, yes), "new", "a refused hello does not block the next copy's roster update");
+});
+
+// CodeRabbit on #69: with the mark table full, a refused newcomer must not evict another
+// sender's mark, or that sender's old numbers (out of the cache by then) would pass again.
+test("a refused packet from a new sender leaves the mark table as it was", () => {
+  const g = new ReplayGuard({ audioCapacity: 2, senders: 2 });
+  g.admit(1, 5, "audio"); g.admit(2, 5, "audio");
+  g.admit(1, 6, "audio"); g.admit(2, 6, "audio");          // 1:5 and 2:5 out of the cache
+  assert.equal(g.admit(3, 0, "audio", 0, () => false), "rejected");
+  assert.equal(g.admit(1, 5, "audio"), "late", "sender 1's mark is still there");
+  assert.equal(g.admit(2, 5, "audio"), "late", "and sender 2's");
+});
+
+// CodeRabbit on #69: late packets are free and anyone can replay them, so they must not keep
+// their sender's mark fresh; the mark a newcomer evicts is the one least recently admitted.
+test("late packets do not keep their sender's mark ahead of another sender's", () => {
+  const g = new ReplayGuard({ audioCapacity: 2, senders: 2 });
+  g.admit(1, 5, "audio"); g.admit(2, 5, "audio");
+  g.admit(2, 6, "audio"); g.admit(2, 7, "audio");          // 1:5 and 2:5 out of the cache
+  for (let i = 0; i < 3; i++) assert.equal(g.admit(1, 4, "audio"), "late");
+  assert.equal(g.admit(3, 0, "audio"), "new");             // room made by the least recently admitted: 1
+  assert.equal(g.admit(2, 5, "audio"), "late", "sender 2's mark is still there");
+});

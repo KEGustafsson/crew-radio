@@ -424,7 +424,7 @@ class PttService : Service() {
         }
         headsetButtons = headset
         // A Bluetooth headset's button comes through Telecom as one press, no release: a plain toggle.
-        engine.onTalkKey = { if (headsetButtons) synchronized(hardwareLock) { setMic(!engine.isTalking) } }
+        engine.onTalkKey = { if (headsetButtons) synchronized(hardwareLock) { setMic(!engine.isKeyed) } }
         if (volume) {
             session.setPlaybackToRemote(object : VolumeProvider(VOLUME_CONTROL_RELATIVE, 100, 50) {
                 override fun onAdjustVolume(direction: Int) {
@@ -463,15 +463,16 @@ class PttService : Service() {
         synchronized(hardwareLock) {
             if (now - headsetDownMs < BOUNCE_MS) return
             headsetDownMs = now
-            headsetKeyed = !engine.isTalking
+            headsetKeyed = !engine.isKeyed
             setMic(headsetKeyed)
         }
     }
 
+    /** Headset or media button released: after a hold of at least [HOLD_MS] on a key this press keyed, the mic is un-keyed (push-to-talk); a short click leaves it keyed (a toggle). */
     private fun headsetRelease() {
         val now = SystemClock.elapsedRealtime()
         synchronized(hardwareLock) {
-            if (headsetKeyed && engine.isTalking && now - headsetDownMs >= HOLD_MS) setMic(false)
+            if (headsetKeyed && engine.isKeyed && now - headsetDownMs >= HOLD_MS) setMic(false)
             headsetKeyed = false
         }
     }
@@ -487,16 +488,20 @@ class PttService : Service() {
             val quiet = now - lastVolumeEventMs >= PRESS_GAP_MS
             lastVolumeEventMs = now
             if (!quiet) return
-            setMic(!engine.isTalking)
+            setMic(!engine.isKeyed)
         }
     }
 
-    /** Keys or un-keys the mic from a hardware key: a buzz on the phone, a cue in the ear, a status line. */
+    /**
+     * Keys or un-keys the mic from a hardware key: a buzz on the phone, a cue in the ear, a status
+     * line. A key the busy channel refused is down but silent ([PttEngine.isKeyed]): the engine has
+     * played the busy cue and said who has the channel, and the next press releases it.
+     */
     private fun setMic(on: Boolean) {
-        if (on == engine.isTalking) return
+        if (on == engine.isKeyed) return
         if (on) engine.startTalking() else engine.stopTalking()
         val now = engine.isTalking
-        if (on && !now) return                            // mic failed to start: the engine has reported why
+        if (on && !now) return                            // refused, or the mic failed to start: the engine has reported why
         buzz(if (now) longArrayOf(0, 40) else longArrayOf(0, 30, 80, 30))
         if (cueTones) engine.cue(if (now) Tones.micOn() else Tones.micOff())
         onStatus(getString(if (now) R.string.status_mic_on else R.string.status_mic_off))   // also refreshes the disc on screen

@@ -96,10 +96,22 @@ test("a decoded name is sanitised: controls and format characters dropped, white
   assert.equal(tricky.name, "eve x");
 });
 
+// Names cut to 32 bytes on a code point boundary, as the app's Hello.
 test("a name is never cut inside a surrogate pair: no U+FFFD where an emoji did not fit", () => {
   const emoji = "\u{1F600}";                     // four UTF-8 bytes, two UTF-16 units
   const h = P.encodeHello({ name: "a".repeat(29) + emoji, transports: 1, ttl: 1 });
   assert.equal(h.length, 6 + 29, "the emoji is left out whole, as the app's Hello does");
   assert.equal(P.decodeHello(h).name, "a".repeat(29));
   assert.equal(P.decodeHello(P.encodeHello({ name: "a".repeat(28) + emoji, transports: 1, ttl: 1 })).name, "a".repeat(28) + emoji, "and kept when it fits");
+});
+
+// The hello's new transports bits beside an old hello and unknown bits.
+test("hello: the forwarder bits round-trip, an old hello with them clear still decodes, and unknown bits are kept, not refused", () => {
+  assert.deepEqual([P.Transports.RNS_UP, P.Transports.FWD_PREFER, P.Transports.FWD_AVOID], [0x10, 0x20, 0x40]);
+  for (const transports of [P.Transports.LAN | P.Transports.RETICULUM | P.Transports.RNS_UP | P.Transports.FWD_PREFER, P.Transports.BT | P.Transports.FWD_AVOID]) {
+    assert.equal(P.decodeHello(P.encodeHello({ name: "x", transports, ttl: 4 })).transports, transports);
+  }
+  const old = P.decodeHello(Buffer.from([2, P.Transports.LAN | P.Transports.RETICULUM, 4, 0, 134, 1, 0x78]));
+  assert.deepEqual(old, { name: "x", transports: 9, ttl: 4, versionCode: 134 }, "a hello from before the bits");
+  assert.equal(P.decodeHello(Buffer.from([2, 0xff, 4, 0, 0, 1, 0x78])).transports, 0xff, "0x80 (reserved) too");
 });

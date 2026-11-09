@@ -42,6 +42,8 @@
     <!-- The disc's hint line while off the channel, where it does nothing at all. -->
     <string name="ptt_off_channel_hint">JOIN THE CHANNEL FIRST</string>
     <string name="ptt_on_air">ON AIR</string>
+    <!-- The disc while a talk key is held but silent: somebody else has the channel (the hint says who, status_channel_busy). -->
+    <string name="ptt_busy">BUSY</string>
     <string name="ptt_on_air_hint">RELEASE TO LISTEN</string>
     <string name="ptt_on_air_latched_hint">TAP OR KEY TO STOP</string>
     <string name="ptt_on_air_touch_hint">DOUBLE TAP TO STOP</string>
@@ -107,6 +109,10 @@
     <string name="status_vox_at_ear">Voice keys the mic at the ear</string>
     <string name="status_vox">Voice keys the mic</string>
     <string name="status_vox_timed_out">Voice key timed out</string>
+    <!-- The talk key did not key, or this phone stopped talking: somebody else has the channel. %1$s is their name, or their id in hex. -->
+    <string name="status_channel_busy">Channel busy: %1$s</string>
+    <!-- A talk key held through the busy signal keyed anyway. -->
+    <string name="status_channel_override">Override: talking over the channel</string>
     <!-- %1$s is a short reason from the mic (status_mic_failed, status_mic_read_failed). -->
     <string name="status_vox_stopped">Voice keying stopped: %1$s</string>
     <string name="status_mic_error">Mic error: %1$s</string>
@@ -252,6 +258,8 @@
     <string name="status_rns_cant_connect">Reticulum: can\'t reach %1$s (%2$s), retry in %3$ds</string>
     <string name="status_rns_lost">Reticulum: %1$s lost (%2$s), retry in %3$ds</string>
     <string name="status_rns_closed">connection closed</string>
+    <!-- The reason in status_rns_lost: the hub accepted none of what was waiting for %1$d seconds. -->
+    <string name="status_rns_no_progress">nothing sent for %1$ds</string>
     <string name="status_rns_no_network">no network</string>
     <string name="status_rns_stopped">Reticulum stopped: %1$s</string>
     <plurals name="status_rns_links">

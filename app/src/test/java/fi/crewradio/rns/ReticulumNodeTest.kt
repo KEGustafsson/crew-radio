@@ -5,6 +5,7 @@ import fi.crewradio.Packet
 import fi.crewradio.TestKeys
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -17,9 +18,17 @@ class ReticulumNodeTest {
     private val crewKey by lazy { TestKeys.crypto.reticulumConfirmKey }
     private val strangerKey = ByteArray(32) { 9 }
 
-    private fun node(tag: String = "a2ddc18dee75e2bd", confirmKey: ByteArray = crewKey): ReticulumNode {
+    /** A node on the fake medium; its writes are queued for [settle], and its batches recorded in [batches] when given. */
+    private fun node(
+        tag: String = "a2ddc18dee75e2bd",
+        confirmKey: ByteArray = crewKey,
+        batches: MutableList<Pair<Int, Boolean>>? = null
+    ): ReticulumNode {
         lateinit var n: ReticulumNode
-        n = ReticulumNode(tag, confirmKey, write = { raw -> queue.addLast(n to raw) }, clock = { now })
+        n = ReticulumNode(
+            tag, confirmKey, write = { raw -> queue.addLast(n to raw) }, clock = { now },
+            writeBatch = { packets, voice -> batches?.add(packets.size to voice); for (raw in packets) queue.addLast(n to raw) }
+        )
         nodes.add(n)
         inbox[n] = ArrayList()
         return n
@@ -466,6 +475,68 @@ class ReticulumNodeTest {
         a.connected(); b.connected(); queue.clear()                // the announces of reconnecting, lost
         now += 1000; a.tick(); settle()
         assertEquals("redialled without waiting for b's next announce", 1, a.linkCount)
+    }
+
+    /** A link keeps the first far end learned; audio skips links to local far ends but not unknown ones, and each send is one batch. */
+    @Test
+    fun aLinkLearnsItsFarEndAndSplitHorizonLeavesItOutOfAudioSentAsOneBatch() {
+        val batches = ArrayList<Pair<Int, Boolean>>()
+        val a = node(batches = batches)
+        val b = node()
+        val c = node()
+        for (n in nodes) n.connected()
+        settle()
+        now += 100; for (n in nodes) n.tick(); settle()
+        assertEquals("a is linked to both", 2, a.linkCount)
+        val toB = a.entries().single { e -> b.entries().any { it.key == e.key } }
+        val toC = a.entries().single { e -> c.entries().any { it.key == e.key } }
+        a.learnFarEnd(toB, 0x0B)
+        a.learnFarEnd(toB, 0x0C)                                    // the first unrelayed sender decides
+        assertEquals(0x0B, toB.farEnd)
+        assertNull("not known yet", toC.farEnd)
+        batches.clear(); inbox[b]!!.clear(); inbox[c]!!.clear()
+
+        val opus = sealed(Packet.Codec.OPUS, ByteArray(60) { 1 }, 2)
+        assertTrue(a.send(opus, null) { it == 0x0B })               // b's far end is local: split horizon
+        settle()
+        assertEquals(0, inbox[b]!!.size)
+        assertEquals("a link whose far end is not known gets it", 1, inbox[c]!!.size)
+        assertEquals("one batch, voice", listOf(1 to true), batches)
+
+        a.learnFarEnd(toC, 0x0C)
+        assertFalse("every link's far end local: nowhere to go", a.send(opus, null) { true })
+
+        batches.clear()
+        assertTrue(a.send(sealed(Packet.Codec.HELLO, Hello("A", 8, 4, 1).encode(), 3), null))
+        assertEquals("a hello to both links in one batch, never dropped by age", listOf(2 to false), batches)
+        val pcm = sealed(Packet.Codec.PCM, ByteArray(640) { 2 }, 4)
+        batches.clear()
+        assertTrue(a.send(pcm, null))
+        assertEquals("a PCM frame is two parts on each link, all in one batch", listOf(4 to true), batches)
+    }
+
+    @Test
+    fun onlyALinkOffTheBoatCountsForRnsUp() {
+        val (a, b) = linked()
+        val e = a.entries().single()
+        assertTrue("a far end not known yet counts as remote", a.hasRemoteLink { true })
+        a.learnFarEnd(e, 0x0B)
+        assertTrue("its far end is not local", a.hasRemoteLink { it == 0x0C })
+        assertFalse("its only link goes to a crewmate aboard: nobody ashore hears it", a.hasRemoteLink { it == 0x0B })
+        a.disconnected()
+        assertFalse("no connection, no link", a.hasRemoteLink { false })
+        assertEquals(1, b.linkCount)
+    }
+
+    @Test
+    fun aFarEndIsLearnedOnlyForALinkTheNodeHolds() {
+        val (a, b) = linked()
+        val e = a.entries().single()
+        a.learnFarEnd(b.entries().single(), 5)                      // another node's entry: ignored
+        a.learnFarEnd("not a link", 5)
+        assertNull(e.farEnd)
+        a.learnFarEnd(e, 6)
+        assertEquals(6, e.farEnd)
     }
 
     private fun compare(x: ByteArray, y: ByteArray): Int {

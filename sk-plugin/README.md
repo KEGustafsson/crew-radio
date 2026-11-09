@@ -103,12 +103,12 @@ The same works as a PUT to `vessels.self.communication.crewradio.say` with a str
 | Voice | slt | slt (female), kal16, rms, awb (male). |
 | Speaking rate | 1 | 0.7 slow to 1.3 fast. |
 | Chime | on | Two notes before an announcement, three quick ones before an urgent one. |
-| Wait for a gap in talk | 2000 ms | An announcement waits this long at most before cutting in. |
+| Wait for a gap in talk | 2000 ms | A normal announcement never talks over the crew. It waits this long at most for a gap in talk (400 ms of nobody talking), and stops if someone keys while it is said; either way it is said again, whole, at the next gap (waited for up to a minute), once, and after that dropped with a line in the debug log. An urgent announcement is the crew's override: it waits this long at most, then is said over whoever is talking, to the end. |
 | Multicast group, UDP port | 239.255.42.1, 47474 | Must match the phones' WLAN settings. |
 | Network interface | auto | The server's interface on the boat network, wired (eth0) or WLAN (wlan0). auto: wlan first, then eth/en, then anything with an IPv4 address, container/bridge/VPN interfaces last; looked at again every 5 s. |
 | Hop budget | 4 | How far phones may relay the server's packets. |
 | Reticulum: enabled | off | Join the channel through a Reticulum transport node as well, and relay between it and the LAN. |
-| Reticulum: transport node host, port | 127.0.0.1, 4242 | The TCP server interface of an rnsd with `enable_transport = Yes`: the boat's own, or a hub ashore. |
+| Reticulum: transport node host, port | 127.0.0.1, 4242 | The TCP listener of an rnsd with `enable_transport = Yes`, a `BackboneInterface` (recommended on Linux) or a `TCPServerInterface`, either the same to the plugin: the boat's own, or a hub ashore. |
 | Reticulum: answer the crew's questions | off | A phone ashore can use the app's Ask boat data over its Reticulum link: the plugin reads the answer from this server and says a Whole crew answer. Anyone holding the channel key can then read the vessel's data this way. |
 | Announce from state | alarm | alert, warn, alarm or emergency. |
 | Say the state and the path first | on | "Alarm, navigation position: no contact with sensor for 70 seconds" rather than the message alone, so the crew hears where it comes from. |
@@ -120,8 +120,9 @@ The same works as a PUT to `vessels.self.communication.crewradio.say` with a str
 ## Notes
 
 - **Half duplex.** A phone in half-duplex mode mutes playback while its own mic is keyed, so a
-  crew member who is talking misses the announcement. The plugin waits for a gap first; a
-  future app change will let urgent announcements through regardless.
+  crew member who is talking misses the announcement. So the plugin never talks over anyone: it
+  waits for a gap first, stops the moment somebody keys, and says the announcement again at the
+  next gap (once). An urgent one waits like the rest.
 - **Every phone gets its own copy.** Besides multicast and broadcast, each frame is sent unicast
   to every phone the plugin has heard from directly. Access points send multicast at their lowest
   rate without acknowledgement, and phones lose a few percent of it even in the same cabin, which
@@ -141,8 +142,9 @@ The plugin can carry the channel over [Reticulum](https://reticulum.network/) as
 the protocol is implemented here from the published manual (`lib/rns/`, Node's own crypto, no
 dependency), not taken from the reference implementation, and checked against it (rnsd 1.5.4).
 
-- **What it needs.** A Reticulum transport node the server can reach over TCP, with a
-  `TCPServerInterface` and `enable_transport = Yes`: usually a hub ashore that the server dials
+- **What it needs.** A Reticulum transport node the server can reach over TCP, with a TCP
+  listener (`BackboneInterface` on Linux, which a client that stops reading cannot stall for the
+  others, else `TCPServerInterface`) and `enable_transport = Yes`: usually a hub ashore that the server dials
   out to directly (Transport node host set to the hub), or the boat's own `rnsd` connected on to
   one over TCP. Interface access codes (a network name or passphrase on the interface) are not
   supported. [RETICULUM_HUB.md](https://github.com/KEGustafsson/crew-radio/blob/main/docs/RETICULUM_HUB.md)
@@ -170,14 +172,37 @@ dependency), not taken from the reference implementation, and checked against it
   transport node for 12 s, or, with no link at all, an announce the node should have passed on
   that does not come back within 12 s (it sends every one it passes on back to the sender). That
   second rule applies only once the connection has echoed an announce, so a node that never
-  echoes cannot cause a reconnect loop.
+  echoes cannot cause a reconnect loop. Third: bytes that have waited 10 s with the socket
+  taking none of them.
+- **A slow uplink.** The plugin keeps one write in the socket at a time, of 16 KiB at most, and
+  queues the rest; all of a frame's packets, one per link, go in one write. Voice that has waited
+  200 ms when its turn comes is dropped (late voice is no use, and writing it would make the next
+  frame later still); hellos and link control always go, ahead of everything else waiting, so no
+  backlog keeps a link from its keep-alives or the far end from our hellos. Answers to the crew's questions may
+  hold 64 KiB of the queue at most: one that does not fit is refused whole, and the phone's repeat
+  of the question is answered once there is room. A backlog is never a reason to reconnect: that
+  turned one busy moment into every link of the node being rebuilt. `reticulum.detail` counts the
+  frames dropped (`stats.voiceDropped`), the answers refused (`stats.answersRefused`) and shows
+  what waits.
 - **Diagnostics.** `GET /plugins/signalk-crewradio/status` carries `reticulum.detail`: the peers
   heard (hops, how long ago, who dials, taken over, linked), the links, the announce budget,
   echoes and announces ignored as older. With the plugin's debug log on, every peer heard, dial,
   link up or down and reconnect is a line there.
-- **Relaying.** A first, authentic copy heard on the LAN goes on to Reticulum and the other way,
-  ttl lowered by one, as a phone relays between its transports. A phone ashore shows on the
-  roster with the Reticulum flag.
+- **Relaying: one bridge per boat.** Every phone with the WLAN and Reticulum on is a bridge too,
+  and with all of them forwarding, one talker put about ten copies of each frame through the hub.
+  So the nodes on a boat elect one forwarder from their hellos, without any message of their own:
+  among the nodes heard on the LAN directly (not relayed) in the last 15 s that are on the hub
+  right now with at least one link that has proved the key going off the boat (not to a crewmate
+  on the same LAN), the one that prefers to forward wins (the plugin always does, being on the boat's
+  wire), else the lowest id. Only the forwarder carries LAN voice to Reticulum, and Reticulum
+  voice to the LAN; a talker that is on the hub itself is never repeated, since it sends its own
+  voice there; and no Reticulum link gets a frame whose far end hears the boat on the LAN anyway
+  (each link learns who is at its far end from the first packet that came straight from it).
+  Hellos are still relayed both ways, ttl lowered by one, as a phone relays between its
+  transports. Phones on an older build forward as before; their extra copies are dropped as
+  duplicates. `GET /status` says whether the plugin is the forwarder (`reticulum.forwarder`) and
+  which nodes it counts as on the boat (`reticulum.boat`). A phone ashore shows on the roster
+  with the Reticulum flag.
 - **When the LAN is down.** The channel keeps going on Reticulum alone (the status says "LAN
   down", and the hello no longer claims the LAN). An announcement made then waits for the LAN for
   10 s first, since the boat's own phones are its first audience and a Wi‑Fi reconnect is over in

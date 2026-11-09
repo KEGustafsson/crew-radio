@@ -7,10 +7,15 @@
  * hellos number themselves independently):
  *
  *  - a seen-cache of (sender, seq): the second WLAN copy of every packet (multicast and
- *    broadcast) and relay echoes are "seen" and dropped;
+ *    broadcast) and relay echoes are "seen" and dropped. The cache keeps the ttl each packet
+ *    was forwarded with, and a later copy that would be forwarded further is "relay": relayed,
+ *    not played or counted again (the app's Ingress.RelayOnly). The ttl is the one header byte
+ *    a relay rewrites, outside the AAD, so a copy with a lowered ttl that arrives first - a
+ *    bridge's copy with its hops spent, or a replay - must not silence the far side;
  *  - a wrap-aware high-water mark: a sequence number at or below the last one admitted is
  *    "late" and dropped, so a recorded packet cannot come back once the sender moved on, and
- *    a node's address can only be learnt from a packet that advances its sequence.
+ *    a node's address can only be learnt from a packet that advances its sequence. Only such a
+ *    packet keeps its sender's mark in the table, never a late one.
  *
  * The caches are sized for the 60 s replay window (a talker sends 50 frames a second, a node
  * one hello) and the marks are kept for the last 256 senders, for the guard's whole life: the
@@ -25,7 +30,7 @@ const SENDERS = 256;
 class ReplayGuard {
   /** @param {{audioCapacity?: number, helloCapacity?: number, senders?: number}} [opts] */
   constructor(opts = {}) {
-    this.audio = new Map();                       // "sender:seq" -> true, insertion ordered
+    this.audio = new Map();                       // "sender:seq" -> the ttl it was forwarded with, insertion ordered
     this.hello = new Map();
     this.audioCapacity = opts.audioCapacity ?? AUDIO_CAPACITY;
     this.helloCapacity = opts.helloCapacity ?? HELLO_CAPACITY;
@@ -34,29 +39,51 @@ class ReplayGuard {
   }
 
   /**
-   * Admits `seq` of `kind` ("audio" or "hello") from `senderId`: "new" when it advances the
-   * sender's sequence (and is now remembered), "seen" for a copy of a packet already admitted,
-   * "late" for a number the sender has moved past.
+   * Admits `seq` of `kind` ("audio" or "hello") from `senderId`, a copy to be forwarded with
+   * `relayTtl` (0: not forwarded): "new" when it advances the sender's sequence (and is now
+   * remembered), "seen" for a copy of a packet already admitted, "relay" for such a copy that
+   * would be forwarded further than any before it (forward it, nothing more), "late" for a
+   * number the sender has moved past. Each "relay" must beat the last, and packet.relayTtl
+   * caps the ttl at the sender's signed budget and at our own hop limit, so a packet is
+   * forwarded at most that limit of extra times. `allow`, when given, is the sender's budget,
+   * asked only for a new packet, between the look and the write, as in the app's Ingress: a
+   * packet it refuses is "rejected" and leaves nothing behind (neither the cache nor the
+   * mark), so a later copy is judged afresh rather than relayed uncharged.
    */
-  admit(senderId, seq, kind) {
+  admit(senderId, seq, kind, relayTtl = 0, allow = null) {
     const cache = kind === "hello" ? this.hello : this.audio;
     const capacity = kind === "hello" ? this.helloCapacity : this.audioCapacity;
     const key = `${senderId}:${seq}`;
-    if (cache.has(key)) return "seen";
+    const forwarded = cache.get(key);
+    if (forwarded !== undefined) {
+      if (relayTtl <= forwarded) return "seen";
+      cache.set(key, relayTtl);
+      return "relay";
+    }
     let m = this.marks.get(senderId);
-    if (m) {
-      this.marks.delete(senderId);                // most recently used last
-    } else {
+    const prev = m ? m[kind] : null;
+    // Signed 32-bit distance: wraps with the counter. A late number leaves the mark where it is in
+    // the table: it is no sign of life (anyone can replay a recorded packet) and is never charged,
+    // so it must not keep its sender's mark ahead of a quiet sender's when a newcomer needs room.
+    if (prev !== null && ((seq - prev) | 0) <= 0) return "late";
+    // Asked before the mark table changes: a refused packet from a new sender must not make room
+    // for itself by evicting another sender's mark, which would reopen that sender's old numbers.
+    if (allow && !allow()) return "rejected";
+    if (!m) {
       m = { audio: null, hello: null };
       if (this.marks.size >= this.senders) this.marks.delete(this.marks.keys().next().value);
     }
-    this.marks.set(senderId, m);
-    const prev = m[kind];
-    if (prev !== null && ((seq - prev) | 0) <= 0) return "late";   // signed 32-bit distance: wraps with the counter
+    this.touch(senderId, m);
     m[kind] = seq | 0;
-    cache.set(key, true);
+    cache.set(key, relayTtl);
     if (cache.size > capacity) cache.delete(cache.keys().next().value);
     return "new";
+  }
+
+  /** Makes `senderId`'s mark the most recently used (last in the map's order). */
+  touch(senderId, m) {
+    this.marks.delete(senderId);
+    this.marks.set(senderId, m);
   }
 }
 

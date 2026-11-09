@@ -40,6 +40,18 @@ class Hello(val name: String, val transports: Int, val ttl: Int, val versionCode
         const val RETICULUM = 8
 
         /**
+         * Connected to the Reticulum hub right now (the socket is up), cleared the moment it is not.
+         * With the two below, the spare bits that pick a boat's forwarder ([LocalPeers]); a phone
+         * sets neither forwarder preference. Bit 0x80 stays reserved. [decode] passes every bit
+         * through unchecked, so a bit this build does not know is carried, never refused.
+         */
+        const val RNS_UP = 0x10
+        /** Prefers to be the boat's forwarder to Reticulum (the Signal K plugin: always on, wired). */
+        const val FWD_PREFER = 0x20
+        /** The forwarder only if nobody else can be (an ESP32 gauge: little RAM). */
+        const val FWD_AVOID = 0x40
+
+        /**
          * Parses [length] bytes at [offset]; null for anything off the wire contract — an unknown
          * version, a name over [MAX_NAME_BYTES], trailing bytes, or invalid UTF-8. These packets come
          * from whoever is on the same network, so nothing about them is taken on trust; the name

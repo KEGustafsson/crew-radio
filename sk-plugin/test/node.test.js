@@ -4,7 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
-const { ChannelNode, FRAME_BYTES, LEAD_MS, MAX_NODES, TALK_HOLD_MS, STALE_REPORT_MS } = require("../lib/node");
+const { ChannelNode, FRAME_BYTES, LEAD_MS, MAX_NODES, TALK_HOLD_MS, BUSY_MS, STALE_REPORT_MS } = require("../lib/node");
 const { ChannelCrypto } = require("../lib/crypto");
 const { ReplayGuard } = require("../lib/replay");
 const P = require("../lib/packet");
@@ -305,11 +305,15 @@ test("the caller's cancel flag stops an announcement even before its first frame
 function fakeRns(ready = true) {
   const r = new EventEmitter();
   r.ready = ready;
+  r.linkCount = ready ? 1 : 0;
+  r.farEnds = [];                      // the far ends of the links, when known; the rest count as remote
+  r.remoteLinkCount = (isLocal) => r.linkCount - r.farEnds.filter((id) => isLocal(id)).length;
   r.sent = [];
   r.send = (buf, except) => { r.sent.push({ buf: Buffer.from(buf), except }); return true; };
   return r;
 }
 
+// The node's relay between the LAN and Reticulum, with the hello's bits and the ttl rule.
 test("with Reticulum: our packets go both ways, the hello says so, and the node relays between the LAN and Reticulum", async () => {
   const lan = new EventEmitter();
   lan.sent = [];
@@ -320,7 +324,12 @@ test("with Reticulum: our packets go both ways, the hello says so, and the node 
   assert.equal(lan.sent.length, 1);
   assert.equal(rns.sent.length, 1, "the hello goes over Reticulum too");
   const hello = P.decodeHello(crypto.open(P.aadOf(rns.sent[0].buf), rns.sent[0].buf.subarray(P.HEADER)));
-  assert.equal(hello.transports, P.Transports.LAN | P.Transports.RETICULUM);
+  assert.equal(hello.transports, P.Transports.LAN | P.Transports.RETICULUM | P.Transports.RNS_UP | P.Transports.FWD_PREFER);
+  // RNS_UP is the socket up AND a link that proved the key: a socket alone carries nobody's voice.
+  rns.linkCount = 0;
+  assert.equal(n.transports(), P.Transports.LAN | P.Transports.RETICULUM | P.Transports.FWD_PREFER);
+  assert.equal(n.isForwarder(), false, "no confirmed link: no forwarder");
+  rns.linkCount = 1;
 
   // From the LAN to Reticulum, ttl lowered by one; the first copy only.
   const fromLan = packet({ senderId: 11, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60, 3) });
@@ -361,6 +370,7 @@ test("with Reticulum: our packets go both ways, the hello says so, and the node 
   assert.equal(rns.listenerCount("packet"), 0);
 });
 
+// Reticulum down: no RETICULUM or RNS_UP in the hello; with relaying off nothing is bridged.
 test("with Reticulum down the hello does not claim it, and relaying can be turned off", () => {
   const lan = new EventEmitter();
   lan.sent = [];
@@ -369,7 +379,7 @@ test("with Reticulum down the hello does not claim it, and relaying can be turne
   const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, relay: false, heartbeatMs: 100000 });
   n.start();
   const hello = P.decodeHello(crypto.open(P.aadOf(lan.sent[0]), lan.sent[0].subarray(P.HEADER)));
-  assert.equal(hello.transports, P.Transports.LAN);
+  assert.equal(hello.transports, P.Transports.LAN | P.Transports.FWD_PREFER, "neither RETICULUM nor RNS_UP while its socket is down");
   lan.emit("packet", packet({ senderId: 21, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60) }), { address: "10.0.0.8" });
   assert.equal(rns.sent.length, 1, "only our own hello");
   n.stop();
@@ -382,4 +392,354 @@ test("relayTtl follows the app: capped at the signed budget, and never past our 
   assert.equal(P.relayTtl({ ttl: 2, hops: 4 }, 4), 1, "two relays passed, a third is still within 4 hops");
   assert.equal(P.relayTtl({ ttl: 2, hops: 4 }, 3), 0, "but not within 3");
   assert.equal(P.relayTtl({ ttl: 4, hops: 4 }, 1), 0);
+});
+
+/** A fake Reticulum transport that keeps the options of each send and the far ends it was told. */
+function recordingRns() {
+  const r = fakeRns();
+  r.send = (buf, except, opts) => { r.sent.push({ buf: Buffer.from(buf), except, opts }); return true; };
+  r.learnt = [];
+  r.learnFarEnd = (via, id) => r.learnt.push([via.key, id]);
+  return r;
+}
+
+// The forwarder rules end to end in the node: election, D1-D4, split horizon, far ends learnt, expiry.
+test("forwarder rules: one bridge per boat, never a talker that is on Reticulum itself, no copy to a link that hears the boat", () => {
+  let clock = Date.now();
+  const now = () => clock;
+  const at = () => Math.floor(clock / 1000);
+  const lan = new EventEmitter();
+  lan.sent = [];
+  lan.send = (buf) => { lan.sent.push(Buffer.from(buf)); return true; };
+  const rns = recordingRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 4, heartbeatMs: 100000, now });
+  n.senderId = 1000;
+  n.start();
+  assert.equal(rns.sent[0].opts, undefined, "our hello goes to every link");
+  let seq = 0;
+  const hello = (senderId, transports, hdr = {}) => packet({ senderId, seq: seq++, time: at(), payload: P.encodeHello({ name: `n${senderId}`, transports, ttl: 4 }), ...hdr });
+  const audio = (senderId, hdr = {}) => packet({ senderId, seq: seq++, codec: P.Codec.OPUS, time: at(), payload: Buffer.alloc(60, 1), ...hdr });
+  const UP = P.Transports.LAN | P.Transports.RETICULUM | P.Transports.RNS_UP;
+  const fromLan = (buf) => lan.emit("packet", buf, { address: "10.0.0.9" });
+  const via = { key: "link-30" };
+
+  // A phone on the boat with Reticulum up, no preference: we (FWD_PREFER) stay the forwarder.
+  fromLan(hello(10, UP));
+  assert.equal(n.isForwarder(), true);
+  // D2: a LAN talker with no Reticulum of its own goes to Reticulum, as voice, split horizon applied.
+  const before = rns.sent.length;
+  fromLan(audio(20));
+  assert.equal(rns.sent.length, before + 1);
+  const { opts } = rns.sent.at(-1);
+  assert.equal(opts.voice, true);
+  assert.equal(opts.skip(10), true, "the boat's own phone hears it on the LAN");
+  assert.equal(opts.skip(20), true, "nor back to the talker");
+  assert.equal(opts.skip(30), false, "a phone ashore gets it");
+  // ... but a talker that is on Reticulum itself sends its own voice there: nobody repeats it.
+  fromLan(audio(10));
+  assert.equal(rns.sent.length, before + 1);
+  assert.equal(n.stats.held, 1);
+  // D3: from Reticulum to the LAN while we are the forwarder; the far end is learnt from it (hops == ttl).
+  const lanBefore = lan.sent.length;
+  rns.emit("packet", audio(30), via);
+  assert.equal(lan.sent.length, lanBefore + 1);
+  assert.deepEqual(rns.learnt, [["link-30", 30]]);
+  rns.emit("packet", audio(31, { ttl: 3, hops: 4 }), { key: "link-x" });   // relayed by its far end: says nothing about it
+  assert.deepEqual(rns.learnt, [["link-30", 30]]);
+  // D1: our own voice goes to every link but those whose far end is local.
+  n.broadcast(P.Codec.PCM, Buffer.alloc(FRAME_BYTES));
+  assert.equal(rns.sent.at(-1).opts.voice, true);
+  assert.equal(rns.sent.at(-1).opts.skip(10), true);
+  assert.equal(rns.sent.at(-1).opts.skip(30), false);
+
+  // Another node on the boat prefers to forward too and has the lower id: it bridges, we do not.
+  fromLan(hello(5, UP | P.Transports.FWD_PREFER));
+  assert.equal(n.isForwarder(), false);
+  const sentBefore = rns.sent.length;
+  const lanBefore2 = lan.sent.length;
+  fromLan(audio(20));
+  rns.emit("packet", audio(30), via);
+  assert.equal(rns.sent.length, sentBefore, "not to Reticulum");
+  assert.equal(lan.sent.length, lanBefore2, "nor to the LAN");
+  // Hellos keep the old rules: relayed both ways whoever is the forwarder.
+  fromLan(hello(21, P.Transports.LAN));
+  assert.equal(rns.sent.length, sentBefore + 1);
+  rns.emit("packet", hello(30, P.Transports.RETICULUM | P.Transports.RNS_UP), via);
+  assert.equal(lan.sent.length, lanBefore2 + 1);
+  // A relayed hello (hops != ttl) does not make its sender local: a node two hops away is no candidate.
+  fromLan(hello(2, UP | P.Transports.FWD_PREFER, { ttl: 3, hops: 4 }));
+  assert.equal(n.local.isLocal(2), false);
+  assert.equal(n.local.forwarder({ senderId: n.senderId, transports: n.transports() }), 5);
+  // A duplicate still counts as a local hello: whichever copy came first, the LAN one says where it is.
+  const twice = hello(40, P.Transports.LAN);
+  rns.emit("packet", twice, via);
+  assert.equal(n.local.isLocal(40), false);
+  fromLan(twice);
+  assert.equal(n.local.isLocal(40), true);
+
+  // LOCAL_MS later, with no hello from them since, the other forwarder and the phones are gone: we bridge again.
+  clock += 15_001;
+  assert.equal(n.isForwarder(), true);
+  const lanBefore3 = lan.sent.length;
+  rns.emit("packet", audio(30), via);
+  assert.equal(lan.sent.length, lanBefore3 + 1);
+  n.tick();
+  assert.equal(n.local.peers.size, 0, "swept");
+  // Reticulum down: no forwarder at all, nothing bridged.
+  rns.ready = false;
+  assert.equal(n.isForwarder(), false);
+  n.stop();
+});
+
+// speak() yields at another talker's first frame and not before a gap.
+test("an announcement never talks over the crew: it stops at another talker's first frame and says who", async () => {
+  const link = new EventEmitter();
+  const sent = [];
+  link.send = (buf) => { sent.push(Buffer.from(buf)); return true; };
+  const node = new ChannelNode({ name: "Sirius", crypto, link, heartbeatMs: 100000 });
+  node.start();
+  const pcm = () => sent.filter((b) => P.parseHeader(b).codec === P.Codec.PCM).length;
+  const speaking = node.speak(Buffer.alloc(FRAME_BYTES * 50));
+  await until(() => pcm() >= 3);
+  link.emit("packet", packet({ senderId: 77, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60) }), { address: "10.0.0.5" });
+  assert.equal(node.busy, true);
+  const r = await speaking;
+  assert.deepEqual(r, { yielded: true, by: 77 });
+  assert.ok(pcm() < 10, `stopped at once (${pcm()} frames)`);
+  assert.equal(node.stats.yielded, 1);
+  // Keyed while the channel is still busy: not one frame.
+  const n0 = pcm();
+  assert.equal((await node.speak(Buffer.alloc(FRAME_BYTES * 5))).yielded, true);
+  assert.equal(pcm(), n0);
+  // After BUSY_MS of silence it goes out whole.
+  assert.equal(await node.waitForSilence(BUSY_MS, 2000), true);
+  assert.equal(node.busy, false);
+  assert.deepEqual(await node.speak(Buffer.alloc(FRAME_BYTES * 5)), { yielded: false, by: 0 });
+  assert.equal(pcm(), n0 + 5);
+  // A wait can be given up from outside (an urgent announcement, the node replaced).
+  link.emit("packet", packet({ senderId: 77, seq: 2, codec: P.Codec.OPUS, payload: Buffer.alloc(60) }), { address: "10.0.0.5" });
+  assert.equal(await node.waitForSilence(BUSY_MS, 5000, () => true), false);
+  node.stop();
+});
+
+// Elapsed times on the monotonic clock, packet stamps on the wall clock.
+test("silence and busy run on the monotonic clock: a wall clock stepped back keeps no quiet channel busy", async () => {
+  let wall = Date.now();
+  let mono = 50_000;
+  const link = new EventEmitter();
+  link.send = () => true;
+  const node = new ChannelNode({ name: "Sirius", crypto, link, heartbeatMs: 100000, now: () => wall, clock: () => mono });
+  node.start();
+  link.emit("packet", packet({ senderId: 77, seq: 1, codec: P.Codec.OPUS, time: Math.floor(wall / 1000), payload: Buffer.alloc(60) }), { address: "10.0.0.5" });
+  assert.equal(node.busy, true);
+  assert.equal(node.roster()[0].talking, true);
+  wall -= 3_600_000;                                   // GPS or NTP steps the server's clock an hour back
+  mono += BUSY_MS;
+  assert.equal(node.busy, false, "quiet after BUSY_MS, whatever the wall clock did");
+  assert.equal(node.roster()[0].talking, false);
+  assert.equal(await node.waitForSilence(BUSY_MS, 1000), true);
+  // The packets' own stamps are still wall time: our hello carries the stepped clock.
+  const sent = [];
+  link.send = (buf) => { sent.push(buf); return true; };
+  node.tick();
+  assert.equal(P.parseHeader(sent[0]).time, Math.floor(wall / 1000));
+  node.stop();
+});
+
+// The never-heard sentinel: a clock starting at 0 marks nobody as talking or busy.
+test("never heard is not heard at time 0: a clock that starts at 0 makes nobody talking, busy or just heard", async () => {
+  let t = 0;
+  const link = new EventEmitter();
+  link.send = () => true;
+  const node = new ChannelNode({ name: "Sirius", crypto, link, heartbeatMs: 100000, now: () => Date.now(), clock: () => t });
+  const talking = [];
+  node.on("talking", (on, id) => talking.push([on, id]));
+  node.start();
+  // A hello and no audio, at 0: on the roster, not talking, the channel quiet.
+  link.emit("packet", packet({ senderId: 41, seq: 1 }), { address: "10.0.0.4" });
+  assert.equal(node.roster()[0].talking, false);
+  assert.equal(node.someoneTalking, false);
+  assert.equal(node.busy, false);
+  assert.equal(await node.waitForSilence(BUSY_MS, 0), true);
+  // Its first frame, still before 400 ms: talking starts, and says so.
+  t = 100;
+  link.emit("packet", packet({ senderId: 41, seq: 2, codec: P.Codec.OPUS, payload: Buffer.alloc(60) }), { address: "10.0.0.4" });
+  assert.deepEqual(talking, [[true, 41]], "a first frame inside the first 400 ms is a new talker");
+  assert.equal(node.busy, true);
+  t = 100 + BUSY_MS;
+  assert.equal(node.busy, false);
+  // Audio heard at time 0 itself is heard.
+  let t2 = 0;
+  const other = new ChannelNode({ name: "Vega", crypto, link: Object.assign(new EventEmitter(), { send: () => true }), heartbeatMs: 100000, now: () => Date.now(), clock: () => t2 });
+  other.start();
+  other.link.emit("packet", packet({ senderId: 42, seq: 1, codec: P.Codec.OPUS, payload: Buffer.alloc(60) }), { address: "10.0.0.5" });
+  assert.equal(other.busy, true, "a frame at 0 is a frame");
+  assert.equal(other.roster()[0].talking, true);
+  assert.equal(await other.waitForSilence(BUSY_MS, 0), false);
+  t2 = BUSY_MS;
+  assert.equal(other.busy, false);
+  node.stop();
+  other.stop();
+});
+
+// RNS_UP needs a confirmed link whose far end is off the boat.
+test("RNS_UP needs a confirmed link off the boat: one whose only link is to a crewmate on the same LAN does not claim it", () => {
+  const lan = new EventEmitter();
+  lan.send = () => true;
+  const rns = fakeRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, heartbeatMs: 100000 });
+  n.start();
+  assert.ok(n.transports() & P.Transports.RNS_UP, "one link, far end not known yet: off the boat");
+  rns.farEnds = [10];                                                          // its far end is the phone 10 ...
+  assert.ok(n.transports() & P.Transports.RNS_UP, "... which is not local yet");
+  lan.emit("packet", packet({ senderId: 10, seq: 1 }), { address: "10.0.0.10" });   // ... and now is
+  assert.equal(n.transports() & P.Transports.RNS_UP, 0, "its only link goes to the boat itself");
+  assert.equal(n.transports() & P.Transports.RETICULUM, P.Transports.RETICULUM, "still connected");
+  assert.equal(n.isForwarder(), false);
+  rns.linkCount = 2;                                                           // a phone ashore links in
+  assert.ok(n.transports() & P.Transports.RNS_UP);
+  assert.equal(n.isForwarder(), true);
+  n.stop();
+});
+
+// RNS_UP needs relaying on: a node that does not bridge is never the forwarder.
+// A LAN talker not on Reticulum itself sends its voice there until it knows our link is local; when
+// that copy beats its LAN copy, the forwarder sends it ashore, or the LAN copy (a duplicate by then)
+// never would.
+test("forwarder: a local talker's own Reticulum copy that comes first still goes ashore", () => {
+  const lan = new EventEmitter();
+  lan.sent = [];
+  lan.send = (buf) => { lan.sent.push(Buffer.from(buf)); return true; };
+  const rns = recordingRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 4, heartbeatMs: 100000 });
+  n.senderId = 1000;
+  n.start();
+  let seq = 0;
+  const at = () => Math.floor(Date.now() / 1000);
+  const fromLan = (buf) => lan.emit("packet", buf, { address: "10.0.0.9" });
+  fromLan(packet({ senderId: 20, seq: seq++, time: at(), payload: P.encodeHello({ name: "n20", transports: P.Transports.LAN | P.Transports.RETICULUM, ttl: 4 }) }));
+  assert.equal(n.isForwarder(), true);
+  const frame = packet({ senderId: 20, seq: seq++, codec: P.Codec.OPUS, time: at(), payload: Buffer.alloc(60, 1) });
+  const rnsBefore = rns.sent.length;
+  const lanBefore = lan.sent.length;
+  rns.emit("packet", frame, { key: "link-20" });
+  assert.equal(rns.sent.length, rnsBefore + 1, "ashore, as its LAN copy would have gone");
+  assert.equal(rns.sent.at(-1).opts.skip(20), true, "not back to the talker");
+  assert.equal(lan.sent.length, lanBefore + 1);
+  fromLan(frame);
+  assert.equal(rns.sent.length, rnsBefore + 1, "the LAN copy is the duplicate");
+  // A bridge's copy (ttl spent) is not the talker's own: Reticulum to Reticulum stays closed for it.
+  rns.emit("packet", packet({ senderId: 20, seq: seq++, codec: P.Codec.OPUS, time: at(), ttl: 3, hops: 4, payload: Buffer.alloc(60, 1) }), { key: "link-x" });
+  assert.equal(rns.sent.length, rnsBefore + 1);
+  n.stop();
+});
+
+test("with relaying off the hello never says RNS_UP: a node that does not bridge is never elected the forwarder", () => {
+  const lan = new EventEmitter();
+  const sent = [];
+  lan.send = (buf) => { sent.push(Buffer.from(buf)); return true; };
+  const rns = fakeRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, relay: false, heartbeatMs: 100000 });
+  n.start();
+  const hello = P.decodeHello(crypto.open(P.aadOf(sent[0]), sent[0].subarray(P.HEADER)));
+  assert.equal(hello.transports, P.Transports.LAN | P.Transports.RETICULUM | P.Transports.FWD_PREFER, "connected and linked, but not bridging");
+  assert.equal(n.isForwarder(), false);
+  n.relay = true;
+  assert.ok(n.transports() & P.Transports.RNS_UP);
+  assert.equal(n.isForwarder(), true);
+  n.stop();
+});
+
+// RNS_UP needs something to bridge: a hop limit above 1 and the LAN up.
+test("a hop limit of 1 or the LAN down leaves nothing to bridge: no RNS_UP, as the app's Forwarding.bridges", () => {
+  const lan = new EventEmitter();
+  lan.send = () => true;
+  const rns = fakeRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 1, heartbeatMs: 100000 });
+  n.start();
+  assert.equal(n.transports() & P.Transports.RNS_UP, 0, "ttl 1: relayTtl gives 0, nothing goes one hop further");
+  n.ttl = 2;
+  assert.ok(n.transports() & P.Transports.RNS_UP);
+  lan.offline = true;                                                          // the LAN gone: Reticulum alone
+  assert.equal(n.transports() & P.Transports.RNS_UP, 0, "no LAN to bridge to");
+  assert.equal(n.transports() & P.Transports.RETICULUM, P.Transports.RETICULUM, "still on Reticulum");
+  n.stop();
+});
+
+// CodeRabbit on #69: a copy that comes with its ttl spent (a bridge's, or one with the byte
+// lowered) and arrives first must not keep the full copy behind it from the boat's LAN.
+test("forwarder: a frame first heard with its ttl spent still reaches the LAN by its later full copy", () => {
+  const lan = new EventEmitter();
+  lan.sent = [];
+  lan.send = (buf) => { lan.sent.push(Buffer.from(buf)); return true; };
+  const rns = recordingRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 4, heartbeatMs: 100000 });
+  n.senderId = 1000;
+  n.start();
+  assert.equal(n.isForwarder(), true);
+  const at = Math.floor(Date.now() / 1000);
+  const full = packet({ senderId: 30, seq: 0, codec: P.Codec.OPUS, time: at, ttl: 2, hops: 2, payload: Buffer.alloc(60, 1) });
+  const spent = Buffer.from(full);
+  spent[4] = 1;                                   // the relay-rewritten ttl byte: nothing left to forward
+  const lanBefore = lan.sent.length;
+  const rx = n.stats.rx;
+  rns.emit("packet", spent, { key: "link-a" });
+  assert.equal(lan.sent.length, lanBefore, "ttl spent: not forwarded");
+  assert.equal(n.stats.rx, rx + 1, "but heard");
+  rns.emit("packet", full, { key: "link-b" });
+  assert.equal(lan.sent.length, lanBefore + 1, "the full copy goes on to the LAN");
+  assert.equal(lan.sent.at(-1)[4], 1, "with its ttl less one");
+  assert.equal(n.stats.rx, rx + 1, "and is not heard twice");
+  rns.emit("packet", full, { key: "link-c" });
+  assert.equal(lan.sent.length, lanBefore + 1, "a third copy is only a duplicate");
+  n.stop();
+});
+
+// CodeRabbit on #69: a copy over the sender's budget must leave nothing behind, or a later copy
+// with hops to spare would be relayed uncharged and never heard.
+test("a copy over the sender's budget is not remembered: a later copy is charged and heard", () => {
+  const lan = new EventEmitter();
+  lan.sent = [];
+  lan.send = (buf) => { lan.sent.push(Buffer.from(buf)); return true; };
+  const rns = recordingRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 4, heartbeatMs: 100000 });
+  n.senderId = 1000;
+  n.start();
+  const at = Math.floor(Date.now() / 1000);
+  const full = packet({ senderId: 31, seq: 0, codec: P.Codec.OPUS, time: at, ttl: 2, hops: 2, payload: Buffer.alloc(60, 1) });
+  const spent = Buffer.from(full);
+  spent[4] = 1;
+  const allow = n.limiter.allowSender.bind(n.limiter);
+  let open = false;
+  n.limiter.allowSender = (id) => open && allow(id);
+  const rx = n.stats.rx;
+  const rejected = n.stats.rejected;
+  const lanBefore = lan.sent.length;
+  rns.emit("packet", spent, { key: "link-a" });
+  assert.equal(n.stats.rejected, rejected + 1, "over budget");
+  open = true;
+  rns.emit("packet", full, { key: "link-b" });
+  assert.equal(n.stats.rx, rx + 1, "the later copy is heard, charged as a first copy");
+  assert.equal(lan.sent.length, lanBefore + 1, "and forwarded");
+  n.stop();
+});
+
+// CodeRabbit on #69: a hello refused by the sender's budget tells nothing, so it cannot make its
+// sender local, nor elect it the forwarder.
+test("a hello over the sender's budget does not make its sender local or the forwarder", () => {
+  const lan = new EventEmitter();
+  lan.send = () => true;
+  const rns = recordingRns();
+  const n = new ChannelNode({ name: "Boat", crypto, link: lan, rns, ttl: 4, heartbeatMs: 100000 });
+  n.senderId = 1000;
+  n.start();
+  assert.equal(n.isForwarder(), true);
+  const allow = n.limiter.allowSender.bind(n.limiter);
+  n.limiter.allowSender = (id) => id !== 5 && allow(id);
+  const at = Math.floor(Date.now() / 1000);
+  const bridge = P.Transports.LAN | P.Transports.RETICULUM | P.Transports.RNS_UP | P.Transports.FWD_PREFER;
+  lan.emit("packet", packet({ senderId: 5, seq: 0, time: at, payload: P.encodeHello({ name: "n5", transports: bridge, ttl: 4 }) }), { address: "10.0.0.5" });
+  assert.equal(n.local.isLocal(5), false, "refused: not local");
+  assert.equal(n.isForwarder(), true, "and not elected over us");
+  n.stop();
 });

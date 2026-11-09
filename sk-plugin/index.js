@@ -27,7 +27,7 @@ const path = require("node:path");
 const { ChannelCrypto } = require("./lib/crypto");
 const { Transports, sanitiseName, REPLAY_WINDOW_S } = require("./lib/packet");
 const { LanLink } = require("./lib/lan");
-const { ChannelNode } = require("./lib/node");
+const { ChannelNode, BUSY_MS } = require("./lib/node");
 const { ReticulumTransport } = require("./lib/rns/transport");
 const { ReplayGuard } = require("./lib/replay");
 const { SourceLimiter } = require("./lib/ratelimit");
@@ -54,6 +54,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
   const Tts = deps.Tts ?? FliteTts;
   const Rns = deps.Reticulum ?? ReticulumTransport;
   const lanGraceMs = deps.lanGraceMs ?? LAN_GRACE_MS;
+  const retryWaitMs = deps.retryWaitMs ?? RETRY_WAIT_MS;
   const plugin = {
     id: "signalk-crewradio",
     name: "Crew Radio",
@@ -84,6 +85,11 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
   let linkInfo = null;                             // {iface, address, broadcast} while the link is up
   let startedAt = 0;
 
+  /**
+   * Starts the plugin with the server's settings: validates them, makes the speech engine and the
+   * announcement queue, opens the three doors to say(), starts the notification bridge, and, once
+   * the channel key is derived, Reticulum (when enabled) and the LAN link with its channel node.
+   */
   plugin.start = function (options) {
     running = true;
     const gen = ++generation;
@@ -102,7 +108,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       return;
     }
     queue = new AnnouncementQueue({
-      play: (pcm, cancelled) => playOnChannel(pcm, cancelled),
+      play: (pcm, cancelled, priority) => playOnChannel(pcm, cancelled, priority),
       onCancel: () => node?.cancel(),
       log: (m) => app.debug(m),
     });
@@ -365,34 +371,67 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
   /** How long an announcement waits for the network link to come back before it is dropped. */
   const LINK_WAIT_MS = 60_000;
 
-  async function playOnChannel(pcm, cancelled) {
+  /**
+   * Plays one announcement from the queue on the channel: waits for the link (and the LAN's grace
+   * with Reticulum on), then for a gap in talk, and keys; a normal one gives way to a talker once
+   * and is dropped the second time, an urgent one keys over the crew after its wait.
+   */
+  async function playOnChannel(pcm, cancelled, priority = "normal") {
     // The link reconnects on its own (1 s doubling to 15 s); an announcement made while it is
     // down waits for it at the head of the queue instead of being thrown away. With Reticulum on,
     // the node that keeps the channel while the LAN is down reaches only the crew ashore, so the
     // boat's own phones - the announcement's first audience - would miss it: it waits for the LAN
     // for lanGraceMs first (an interface change or a Wi-Fi reconnect is over in a second or two),
     // and goes out on Reticulum alone only after that, and only to confirmed links.
-    const t0 = Date.now();
+    // Every wait here, and the node's silence and busy tests, run on the monotonic clock: a server
+    // clock stepped back must not hold an announcement or keep a quiet channel busy.
+    const t0 = performance.now();
     const onLan = () => node && node.link !== OFFLINE;
-    const ashoreOnly = () => node && node.link === OFFLINE && rns?.linkCount > 0 && Date.now() - t0 >= lanGraceMs;
+    // With the LAN down: Reticulum alone may carry it once a link is confirmed and the LAN's grace is over.
+    const ashoreOnly = () => node && node.link === OFFLINE && rns?.linkCount > 0 && performance.now() - t0 >= lanGraceMs;
+    //
+    // The plugin never talks over the crew (the channel's floor rule for announcements): it starts
+    // only after a gap of BUSY_MS, and the moment another talker is heard it stops. Then it waits
+    // for the next gap and says the announcement again, whole, once; stopped again (or no gap at
+    // all), it is dropped with a log line. The first wait for a gap is the setting's, the second
+    // up to RETRY_WAIT_MS (a minute).
+    //
+    // An urgent announcement is the crew's override (the floor rule's hold through the busy cue):
+    // it waits for a gap only the setting's time, then keys anyway, and is never stopped by a
+    // talker. An emergency must get through a crew that keeps talking.
+    const urgent = priority === "urgent";
+    let yielded = 0;
+    // Gives way to a talker: the first time logged and retried after the next gap, the second time dropped (thrown).
+    const giveWay = (why) => {
+      if (++yielded > 1) throw new Error(`dropped: ${why} again`);
+      app.debug(`announcement: ${why}; said again once the channel is quiet`);
+    };
     for (;;) {
       while (!onLan() && !ashoreOnly()) {
         if (!running || cancelled()) return;
-        if (Date.now() - t0 > LINK_WAIT_MS) throw new Error("not on the channel (network link down)");
+        if (performance.now() - t0 > LINK_WAIT_MS) throw new Error("not on the channel (network link down)");
         await new Promise((r) => setTimeout(r, 100));
       }
       // The node is held here: the link may drop (and the node with it) during the wait for a
       // gap in talk, and the announcement then goes back to waiting for the link.
       const n = node;
-      if (cfg.waitForSilenceMs > 0) await n.waitForSilence(300, cfg.waitForSilenceMs);
+      const quiet = await n.waitForSilence(BUSY_MS, yielded === 0 ? cfg.waitForSilenceMs : retryWaitMs, () => !running || cancelled() || node !== n);
       if (!running || cancelled()) return;
       if (node !== n) continue;
-      await n.speak(pcm, cancelled);   // the queue's own flag: an urgent one may cut in before the first frame
+      if (!quiet && urgent) app.debug(`urgent announcement: over ${talkerName(n, n.heardFrom)}, who is talking`);
+      if (!quiet && !urgent) { giveWay(`the channel is busy (${talkerName(n, n.heardFrom)} talking)`); continue; }
+      const r = await n.speak(pcm, cancelled, { override: urgent });   // the queue's own flag: an urgent one may cut in before the first frame
       // Cut short because the LAN came back: the boat heard none of it, so it goes again, whole,
       // on the LAN node (which carries it to Reticulum as well).
       if (n.link === OFFLINE && node !== n && running && !cancelled()) continue;
+      if (r?.yielded && running && !cancelled()) { giveWay(`stopped for ${talkerName(n, r.by)}`); continue; }
       return;
     }
+  }
+
+  /** A talker as the log names it: its roster name, else its id. */
+  function talkerName(n, id) {
+    return n.nodes.get(id)?.name ?? `#${(id >>> 0).toString(16)}`;
   }
 
   /** The plugin's state for the web page: link, roster, queue, voice, counters, limits. */
@@ -407,6 +446,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       link: linkInfo ? { iface: linkInfo.iface, address: linkInfo.address } : null,
       reticulum: rns ? {
         host: cfg.reticulum.host, port: cfg.reticulum.port, connected: rns.ready, links: rns.linkCount, status: rnsStatus,
+        forwarder: !!node?.isForwarder(), boat: node ? node.local.list().map((p) => ({ id: (p.senderId >>> 0).toString(16), transports: p.transports })) : [],
         answerQuestions: cfg.reticulum.answerQuestions, questions: answers ? { ...answers.stats } : null,
         detail: rns.diagnostics(),
       } : null,
@@ -415,7 +455,7 @@ module.exports = function crewRadioPlugin(app, deps = {}) {
       speaking: !!node?.speaking,
       queued: (queue?.size ?? 0) + (queue?.current && !node?.speaking ? 1 : 0),
       roster: roster.map((n) => ({ name: n.name, transports: describeTransports(n.transports), hops: n.hops, versionCode: n.versionCode, talking: n.talking, ageMs: n.ageMs })),
-      stats: { ...(node?.stats ?? { rx: 0, tx: 0, rejected: 0, stale: 0, late: 0, relayed: 0 }), synthesized: tts?.stats?.synthesized ?? 0, cached: tts?.stats?.cached ?? 0 },
+      stats: { ...(node?.stats ?? { rx: 0, tx: 0, rejected: 0, stale: 0, late: 0, relayed: 0, held: 0, yielded: 0 }), synthesized: tts?.stats?.synthesized ?? 0, cached: tts?.stats?.cached ?? 0 },
       limits: { maxText: MAX_TEXT, perMinute: RATE_PER_MINUTE, queue: queue?.max ?? null, urgent: queue?.maxUrgent ?? null },
       uptimeSec: running ? Math.round((Date.now() - startedAt) / 1000) : 0,
     };
@@ -466,6 +506,8 @@ const OFFLINE = Object.freeze({ offline: true, send: () => false, on() {}, off()
 
 /** How long an announcement made while the LAN is down waits for it before going out on Reticulum alone. */
 const LAN_GRACE_MS = 10_000;
+/** How long an announcement that gave way to a talker waits for the next gap in talk before it is dropped. */
+const RETRY_WAIT_MS = 60_000;
 
 /**
  * The settings with defaults, validated: a value out of range falls back to the default and is
@@ -628,7 +670,7 @@ function schema(app) {
       voice: { type: "string", title: "Voice", enum: VOICES, default: "slt", description: "Flite voices, English: slt (female), kal16, rms and awb (male)." },
       rate: { type: "number", title: "Speaking rate", default: 1, minimum: 0.7, maximum: 1.3, description: "1 is the voice's own pace; 0.8 slower for a noisy deck." },
       chime: { type: "boolean", title: "Chime before each announcement", default: true, description: "Two notes; three quick ones before an urgent announcement." },
-      waitForSilenceMs: { type: "integer", title: "Wait for a gap in talk (ms)", default: 2000, minimum: 0, maximum: 30000, description: "An announcement waits this long at most for the crew to stop talking before it cuts in." },
+      waitForSilenceMs: { type: "integer", title: "Wait for a gap in talk (ms)", default: 2000, minimum: 0, maximum: 30000, description: "A normal announcement never talks over the crew: it waits this long at most for a gap in talk, and stops if someone keys while it is said. Either way it is said again, whole, at the next gap (waiting up to a minute for it), once; then it is dropped. An urgent one waits this long at most, then is said over whoever is talking, to the end." },
       group: { type: "string", title: "Multicast group", default: "239.255.42.1", description: "Must match the phones' WLAN setting (Settings › WLAN group and port)." },
       port: { type: "integer", title: "UDP port", default: 47474, minimum: 1024, maximum: 65535 },
       iface: { type: "string", title: "Network interface", default: "auto", description: "The server's interface on the boat network: wired LAN (eth0) or WLAN (wlan0), as long as it is the same network the phones' WLAN is on. auto: a wlan interface, else eth/en, else the first with an IPv4 address (container, bridge and VPN interfaces last); looked at again every 5 s." },
@@ -636,10 +678,10 @@ function schema(app) {
       reticulum: {
         type: "object",
         title: "Reticulum",
-        description: "The channel over Reticulum as well: a phone ashore with the RETICULUM tile on and the same transport node (or one on the same Reticulum network) is on the crew channel, with this server relaying between it and the boat's LAN. Needs a Reticulum transport node with a TCP server interface and enable_transport = Yes: a hub ashore, or the boat's own rnsd connected on to one (docs/RETICULUM_HUB.md in the repository). Interface access codes are not supported.",
+        description: "The channel over Reticulum as well: a phone ashore with the RETICULUM tile on and the same transport node (or one on the same Reticulum network) is on the crew channel, with this server relaying between it and the boat's LAN. Needs a Reticulum transport node with a TCP listener (a BackboneInterface, recommended on Linux, or a TCPServerInterface) and enable_transport = Yes: a hub ashore, or the boat's own rnsd connected on to one (docs/RETICULUM_HUB.md in the repository). Interface access codes are not supported.",
         properties: {
           enabled: { type: "boolean", title: "Enabled", default: false },
-          host: { type: "string", title: "Transport node host", default: "127.0.0.1", description: "The rnsd TCPServerInterface to connect to: the hub's name or address, or 127.0.0.1 for one on this server. host:port is accepted too." },
+          host: { type: "string", title: "Transport node host", default: "127.0.0.1", description: "The rnsd TCP listener to connect to (a BackboneInterface or a TCPServerInterface: the plugin connects to either the same way): the hub's name or address, or 127.0.0.1 for one on this server. host:port is accepted too." },
           port: { type: "integer", title: "Transport node port", default: 4242, minimum: 1, maximum: 65535 },
           answerQuestions: { type: "boolean", title: "Answer the crew's questions", default: false, description: "A phone ashore on Reticulum can use Ask boat data: the plugin reads the answer from this server's data and says a Whole crew answer on the channel. Anyone holding the channel key can then read this vessel's data (position included) this way, whatever this server's own security says, so it is off until you turn it on." },
         },
