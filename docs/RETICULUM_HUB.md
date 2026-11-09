@@ -325,8 +325,10 @@ own for each edit, which only root can enter, and the edited config is put in pl
 itself (`sudo -u rns`), which can do no more harm through a link than `rns` already could. It is
 written to a new file next to the config, checked against what you reviewed (its SHA-256), and
 renamed over the config only then: the config is the old file or the new one, never half of
-either, and a hard link to the old file keeps the old contents. `rnsd` keeps running throughout,
-and is restarted, once, only after you have seen the change and said yes.
+either, and a hard link to the old file keeps the old contents. The check catches a copy that
+went wrong; it is no guard against `rns` itself, which can change its config at any time anyway.
+`rnsd` keeps running throughout, and is restarted, once, only after you have seen the change and
+said yes.
 
 1. Copy it. Note the directory it prints: the steps below use it.
 
@@ -351,24 +353,33 @@ and is restarted, once, only after you have seen the change and said yes.
    sudo diff "$W/config" "$W/config.new"
    ```
 
-3. Put it in place and restart. Anything but `y` changes nothing. The config must still be what
-   step 1 copied (`cmp`: nobody else has changed it meanwhile), and `put` writes the edit in as
-   `rns` and renames it over the config only if it is the one you reviewed; if anything fails,
-   the config and `rnsd` are as they were. The clients drop for a few seconds at the restart and
-   come back by themselves.
+3. Put it in place and restart. Anything but `y` changes nothing. `put` locks the config
+   (`flock`, so two edits never cross), checks that it is still what step 1 copied (nobody else
+   has changed it meanwhile), writes the edit in as `rns` with the config's owner, group and
+   mode, and renames it over the config only if it is the one you reviewed. If anything fails
+   before the restart, the config and `rnsd` are as they were; if `rnsd` does not come back
+   after it, the edit is in place: put the old config back as below. The clients drop for a few
+   seconds at the restart and come back by themselves.
 
    ```sh
-   # put FILE SHA256: FILE (root's) in place of the config, written by rns, whole or not at all.
+   # put FILE SHA OLD: FILE (root's, SHA-256 SHA) in place of the config, written by rns, whole
+   # or not at all, if the config's SHA-256 is still OLD; under a lock on the config.
    put() {
      sudo cat "$1" | sudo -u rns sh -c '
+       exec 9< "$1" && flock 9 || exit 1
+       if [ "$(sha256sum < "$1" | cut -d" " -f1)" != "$3" ]; then
+         echo "the config has changed since it was copied: nothing put in place"; exit 1; fi
+       if [ "$(ls -ld -- "$1" | cut -c11)" = "+" ]; then
+         echo "the config has an ACL: nothing put in place"; exit 1; fi
        t=$(mktemp "$1.XXXXXX") || exit 1
        if cat > "$t" && [ "$(sha256sum < "$t" | cut -d" " -f1)" = "$2" ] &&
-          chmod --reference="$1" "$t" && mv -f "$t" "$1"; then exit 0; fi
-       rm -f "$t"; echo "not put in place: the config is as it was"; exit 1' sh "$C" "$2"
+          cp --attributes-only --preserve=mode,ownership -- "$1" "$t" &&
+          [ "$(stat -c "%u %g %a" -- "$t")" = "$(stat -c "%u %g %a" -- "$1")" ] &&
+          mv -f "$t" "$1"; then exit 0; fi
+       rm -f "$t"; echo "not put in place: the config is as it was"; exit 1' sh "$C" "$2" "$3"
    }
    read -r -p "Put $W/config.new in place and restart rnsd? [y/N] " a && [ "$a" = y ] &&
-     sudo -u rns cat "$C" | sudo cmp -s - "$W/config" &&
-     put "$W/config.new" "$H" &&
+     put "$W/config.new" "$H" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)" &&
      sudo systemctl restart rnsd &&
      systemctl is-active rnsd &&
      sudo -u rns /var/lib/rns/venv/bin/rnstatus
@@ -378,11 +389,18 @@ If step 1 stops at the link check, the config, or a directory on its path, is a 
 (`ls -l` shows `->`). Someone put it there, a configuration tool (above) or a person: change the
 file it points to where that is kept, the way it is kept, not through the link.
 
+`put` refuses, and says so, when the config is no longer what step 1 copied (start again from
+step 1), and when the new file would not get the config's owner, group and mode, or the config
+has an ACL (`ls -l` shows `+` after the mode): someone has given other accounts access to it,
+which a new file would not carry over. Then change the config where it is instead, as its owner
+(`sudo -u rns nano "$C"`), and restart.
+
 If `rnsd` does not come back up after step 3, the log file says why (a misspelt option, a port in
-use). Put the copy from before the edit back the same way (with `put` defined as in step 3):
+use). Put the copy from before the edit back the same way (with `put` defined as in step 3: the
+config must still be your edit):
 
 ```sh
-put "$W/config" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)" &&
+put "$W/config" "$(sudo sha256sum "$W/config" | cut -d' ' -f1)"   "$(sudo sha256sum "$W/config.new" | cut -d' ' -f1)" &&
   sudo systemctl restart rnsd &&
   sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
@@ -406,12 +424,13 @@ Otherwise follow the three steps of "Changing the config" above, with this in pl
 the `sed` makes the change on the copy, then `H` and the `diff` as there:
 
 ```sh
-sudo sed -i '/^ *\[\[Crew Radio hub\]\]/,/^ *\[\[/{s/type = TCPServerInterface/type = BackboneInterface/; s/listen_ip = /listen_on = /; s/listen_port = /port = /}' "$W/config.new"
+sudo sed -i '/^[[:space:]]*\[\[Crew Radio hub\]\]/,/^[[:space:]]*\[\[/{s/type = TCPServerInterface/type = BackboneInterface/; s/listen_ip = /listen_on = /; s/listen_port = /port = /}' "$W/config.new"
 H=$(sudo sha256sum "$W/config.new" | cut -d' ' -f1)
 sudo diff "$W/config" "$W/config.new"
 ```
 
-The `sed` changes only the block that starts at `[[Crew Radio hub]]` and ends at the next `[[`:
+The `sed` changes only the block that starts at `[[Crew Radio hub]]` and ends at the next `[[`
+(indented with spaces or tabs):
 the name section 4 gives the hub's listener. If yours is named otherwise, put its name in the
 command, or make the three changes in that block by hand with `sudo nano "$W/config.new"` (`type`,
 `listen_ip` to `listen_on`, `listen_port` to `port`); other interfaces (a `TCPClientInterface` out
