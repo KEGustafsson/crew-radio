@@ -321,31 +321,39 @@ and check the listener with `rnstatus`.
 Otherwise keep a copy first, edit, restart, and check that the interface came back. The commands
 below work on the file itself: when the config is a symbolic link (`ls -l
 /var/lib/rns/.reticulum/config` shows `->`), `readlink -f` gives the file it points to, and the
-copy and the edit go to that file. The copy has the time in its name as well as the date and a
-name of its own (`.bak-`), so it can never be the file being edited, even when that file is
-itself named after today; and the edit starts only if the copy was made:
+edit goes to that file. The copies go to `/var/backups/rnsd`, a directory only root can enter, not
+next to the config, where the `rns` account (and so anything running as `rnsd`) could plant or
+swap files. `mktemp` makes each copy's file under a name nobody else has, so a copy never
+overwrites another, and `cp -P` copies a link as a link, never the file it points to: a config
+swapped for a link in the meantime cannot bring another file's contents into the copy.
+Each step runs only if the one before it worked: no edit without a copy, and no restart unless the
+copy and the edit both went through:
 
 ```sh
 F=$(sudo readlink -f /var/lib/rns/.reticulum/config)   # the file itself, through any link
-B=$F.bak-$(date +%F-%H%M%S)
-if sudo test -e "$B"; then echo "$B exists already: stopping"; else
-  sudo cp -p "$F" "$B" && sudo nano "$F"
-fi
-sudo systemctl restart rnsd
-systemctl is-active rnsd
-sudo -u rns /var/lib/rns/venv/bin/rnstatus
+sudo install -d -m 700 /var/backups/rnsd               # root's alone
+B=$(sudo mktemp "/var/backups/rnsd/config.$(date +%F-%H%M%S).XXXXXX") &&
+  sudo cp -pP "$F" "$B" &&
+  sudo nano "$F" &&
+  sudo systemctl restart rnsd &&
+  systemctl is-active rnsd &&
+  sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
 
-If the copy failed, the edit did not start: nothing changed, and the restart only restarted it.
-If it does not come back up, the log file says why (a misspelt option, a port in use); put the
-copy back and restart. `ls -l "$F".bak-*` lists the copies, and the one to restore is the newest,
-from before this edit. Put its name in the command yourself, for example:
+If a step fails, the ones after it do not run: a failed copy leaves the config as it was and
+`rnsd` running on it (remove the empty file `mktemp` made, `sudo rm "$B"`). If `rnsd` does not
+come back up after the edit, the log file says why (a misspelt option, a port in use); put the
+copy back and restart. `sudo ls -lt /var/backups/rnsd` lists the copies, newest first; the one to
+restore is the newest from before this edit (one that shows `->` is a link, not a config: do not
+restore it). Put its name in the command yourself; the copy replaces the config file
+(`--remove-destination`) instead of writing through whatever is at its path, for example:
 
 ```sh
-ls -l "$F".bak-*
-sudo cp -p "$F".bak-2026-11-08-201500 "$F"     # the name of your copy, as ls shows it
-sudo systemctl restart rnsd
-sudo -u rns /var/lib/rns/venv/bin/rnstatus
+F=$(sudo readlink -f /var/lib/rns/.reticulum/config)
+sudo ls -lt /var/backups/rnsd
+sudo cp -p --remove-destination /var/backups/rnsd/config.2026-11-08-201500.Ab12Cd "$F" &&
+  sudo systemctl restart rnsd &&
+  sudo -u rns /var/lib/rns/venv/bin/rnstatus   # the name of your copy, as ls shows it
 ```
 
 ### From `TCPServerInterface` to `BackboneInterface`
