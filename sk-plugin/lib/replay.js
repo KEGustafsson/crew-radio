@@ -14,7 +14,8 @@
  *    bridge's copy with its hops spent, or a replay - must not silence the far side;
  *  - a wrap-aware high-water mark: a sequence number at or below the last one admitted is
  *    "late" and dropped, so a recorded packet cannot come back once the sender moved on, and
- *    a node's address can only be learnt from a packet that advances its sequence.
+ *    a node's address can only be learnt from a packet that advances its sequence. Only such a
+ *    packet keeps its sender's mark in the table, never a late one.
  *
  * The caches are sized for the 60 s replay window (a talker sends 50 frames a second, a node
  * one hello) and the marks are kept for the last 256 senders, for the guard's whole life: the
@@ -61,10 +62,10 @@ class ReplayGuard {
     }
     let m = this.marks.get(senderId);
     const prev = m ? m[kind] : null;
-    if (prev !== null && ((seq - prev) | 0) <= 0) {   // signed 32-bit distance: wraps with the counter
-      this.touch(senderId, m);
-      return "late";
-    }
+    // Signed 32-bit distance: wraps with the counter. A late number leaves the mark where it is in
+    // the table: it is no sign of life (anyone can replay a recorded packet) and is never charged,
+    // so it must not keep its sender's mark ahead of a quiet sender's when a newcomer needs room.
+    if (prev !== null && ((seq - prev) | 0) <= 0) return "late";
     // Asked before the mark table changes: a refused packet from a new sender must not make room
     // for itself by evicting another sender's mark, which would reopen that sender's old numbers.
     if (allow && !allow()) return "rejected";

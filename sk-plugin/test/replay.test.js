@@ -87,3 +87,14 @@ test("a refused packet from a new sender leaves the mark table as it was", () =>
   assert.equal(g.admit(1, 5, "audio"), "late", "sender 1's mark is still there");
   assert.equal(g.admit(2, 5, "audio"), "late", "and sender 2's");
 });
+
+// CodeRabbit on #69: late packets are free and anyone can replay them, so they must not keep
+// their sender's mark fresh; the mark a newcomer evicts is the one least recently admitted.
+test("late packets do not keep their sender's mark ahead of another sender's", () => {
+  const g = new ReplayGuard({ audioCapacity: 2, senders: 2 });
+  g.admit(1, 5, "audio"); g.admit(2, 5, "audio");
+  g.admit(2, 6, "audio"); g.admit(2, 7, "audio");          // 1:5 and 2:5 out of the cache
+  for (let i = 0; i < 3; i++) assert.equal(g.admit(1, 4, "audio"), "late");
+  assert.equal(g.admit(3, 0, "audio"), "new");             // room made by the least recently admitted: 1
+  assert.equal(g.admit(2, 5, "audio"), "late", "sender 2's mark is still there");
+});
