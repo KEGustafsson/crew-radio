@@ -312,7 +312,11 @@ has only what systemd saw. Times in both are the server's, usually UTC.
 
 ### Changing the config
 
-Keep a copy first, edit, restart, and check that the interface came back:
+If a configuration tool manages the config (NixOS, Ansible, a dotfiles manager or the like),
+change it in the tool's source and apply it the tool's way instead: a change made here would be
+overwritten on the tool's next run. Otherwise keep a copy first, edit, restart, and check that the
+interface came back (if the config is a symbolic link, `ls -l $C` shows `->`: copy and edit the
+file it points to):
 
 ```sh
 C=/var/lib/rns/.reticulum/config
@@ -339,13 +343,15 @@ sudo systemctl restart rnsd
 A hub set up before 2026-11-08 has a `TCPServerInterface` listener. On Linux, change it (section
 4 says why); the clients need nothing. The option names change with the type.
 
-If a configuration tool manages the config (NixOS, Ansible, a dotfiles manager or the like), do
-not run the commands below, whether the config is a symbolic link (`ls -l
-/var/lib/rns/.reticulum/config` shows `->`; `sed -i` would replace the link with a regular file of
-its own) or a regular file the tool writes: the tool would put the old listener back on its next
-run. Make the same three changes in the tool's source instead, apply it the tool's way (for
-example `nixos-rebuild switch`, or a playbook run), restart `rnsd` if the tool does not, and
-check with `rnstatus` that the listener is now a `BackboneInterface`.
+Do not run the commands below if the config is a symbolic link (`ls -l
+/var/lib/rns/.reticulum/config` shows `->`), whoever keeps it: `sed -i` would replace the link
+with a regular file of its own. Back up the file the link points to and make the three changes
+there. If a configuration tool manages the config (NixOS, Ansible, a dotfiles manager or the
+like), as a link or as a regular file it writes, do not run them either: the tool would put the
+old listener back on its next run. Make the same three changes in the tool's source instead,
+apply it the tool's way (for example `sudo nixos-rebuild switch`, or a playbook run), restart
+`rnsd` if the tool does not, and check with `rnstatus` that the listener is now a
+`BackboneInterface`.
 
 ```sh
 C=/var/lib/rns/.reticulum/config
