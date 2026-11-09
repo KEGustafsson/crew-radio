@@ -3,7 +3,7 @@
 All notable changes to signalk-crewradio. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semver.
 
-## Unreleased
+## 0.4.0 - 2026-11-09
 
 Radio under load: two crew members talking at once dropped every client off Reticulum
 (2026-11-08). The same rules go into the app and the ESP32 gauges; the packet and hello formats
@@ -28,6 +28,18 @@ are unchanged, and older clients keep working beside these (they only save nothi
   link is local) goes on to the hub as the LAN copy would have, which is then the duplicate; a
   relay sends a frame to the LAN and to Reticulum when both are due. Hellos are relayed as
   before. `GET /status` shows `reticulum.forwarder`, `reticulum.boat` and each link's `farEnd`.
+
+### Security
+
+- A packet over its sender's budget leaves nothing behind, as in the app's `Ingress`: the budget
+  is asked inside the replay guard, between the look and the write. Before, the packet was cached
+  first, so a later copy with hops to spare was relayed uncharged and never heard. A refused
+  packet from a new sender no longer evicts another sender's sequence mark from a full table,
+  which reopened that sender's old numbers, and a burst of hellos over the budget can no longer
+  make their sender local and elect it the forwarder.
+- Only an admitted packet keeps its sender's sequence mark in the table. A late number costs
+  nothing and anyone can replay one, so replays could keep one sender's mark ahead of a quiet
+  sender's until a newcomer evicted the quiet one and its old numbers passed again.
 
 ### Changed
 
@@ -66,6 +78,9 @@ are unchanged, and older clients keep working beside these (they only save nothi
   transport's and plugin's tests cover relayed hellos ignored, a far end learnt once, the queue's
   age drop, no redial on a backlog, a redial on no progress, an announcement that yields, is said
   again, and is dropped the second time, and the new hello bits round-tripping beside an old hello.
+- `test/replay.test.js` and `test/node.test.js`: a packet over budget leaves no cache entry and no
+  mark, evicts no other sender's mark and makes nobody local; a spent copy over budget does not
+  stop a later full copy being heard and forwarded; a late packet does not refresh its mark.
 - `test/vector.json` has a relayed copy of its packet (the ttl rewritten to 2, hops still 4),
   checked here and by the app's `CrossLanguageVectorTest`: with ttl equal to hops, a parser that
   swapped the two bytes would have passed, and the copy opens as a relay forwards it.
