@@ -318,87 +318,101 @@ overwritten on the tool's next run. Restart `rnsd` if the tool does not (`sudo s
 rnsd`: the daemon reads its config only when it starts, so until then it keeps the old listener),
 and check the listener with `rnstatus`.
 
-Otherwise keep a copy first, edit, restart, and check that the interface came back. The commands
-below work on the file itself: when the config is a symbolic link (`ls -l
-/var/lib/rns/.reticulum/config` shows `->`), `readlink -f` gives the file it points to, and the
-edit goes to that file. The copies go to `/var/backups/rnsd`, a directory only root can enter, not
-next to the config, where the `rns` account (and so anything running as `rnsd`) could plant or
-swap files. `mktemp` makes each copy's file under a name nobody else has, so a copy never
-overwrites another, and `cp -P` copies a link as a link, never the file it points to: a config
-swapped for a link in the meantime cannot bring another file's contents into the copy.
-Each step runs only if the one before it worked: no edit without a copy, and no restart unless the
-copy and the edit both went through:
+Otherwise change it in three steps. The edit is made on a copy, in a directory only root can
+enter, while the hub keeps running; nothing is restarted until you have seen what changed and said
+yes; and the copy goes into place only while `rnsd` is stopped. The config's directory belongs to
+the `rns` account, so whatever runs as `rns` could swap the config, or a directory on its path,
+for a link while root works there. Once `rnsd` has stopped nothing runs as `rns` (`pgrep -u rns`
+says so), and the checks made then hold until the copy is in place: the path has no link anywhere
+on it (`realpath` gives it back unchanged), and the config is still what was copied (`cmp`).
+
+1. Copy it (the hub keeps running). Note the name it prints: the steps below use it.
+
+   ```sh
+   C=/var/lib/rns/.reticulum/config
+   D=/var/backups/rnsd
+   sudo install -d -m 700 -o root -g root "$D" &&
+     [ "$(sudo stat -c '%U %a' "$D")" = "root 700" ] &&
+     [ "$(sudo realpath "$C")" = "$C" ] && sudo test -f "$C" &&
+     B=$D/config.$(date +%F-%H%M%S) &&
+     sudo cp -p "$C" "$B" && sudo cp -p "$B" "$B.new" &&
+     echo "this edit: $B" || echo "stopped: nothing copied"
+   ```
+
+2. Edit the copy and look at what changed. Nothing has been restarted; if the difference is not
+   what you meant, edit again, or stop here and the hub runs on as it was.
+
+   ```sh
+   sudo nano "$B.new"
+   sudo diff "$B" "$B.new"
+   ```
+
+3. Put it in place and restart (the clients drop for a few seconds and come back by themselves).
+   Anything but `y` leaves the hub as it was; a failed check leaves the config as it was, and the
+   last lines start `rnsd` again either way. `cp` without `-p` writes into the config file,
+   which keeps its owner and mode.
+
+   ```sh
+   read -r -p "Put $B.new in place and restart rnsd? [y/N] " a && [ "$a" = y ] &&
+     sudo systemctl stop rnsd &&
+     ! pgrep -u rns > /dev/null &&
+     [ "$(sudo realpath "$C")" = "$C" ] && sudo test -f "$C" &&
+     sudo cmp -s "$C" "$B" &&
+     sudo cp "$B.new" "$C" && echo "in place"
+   sudo systemctl start rnsd
+   systemctl is-active rnsd
+   sudo -u rns /var/lib/rns/venv/bin/rnstatus
+   ```
+
+If step 1 stops at the `realpath` check, the config, or a directory on its path, is a symbolic
+link (`ls -l` shows `->`). Someone put it there, a configuration tool (above) or a person: change
+the file it points to where that is kept, the way it is kept, not through the link.
+
+If `rnsd` does not come back up after step 3, the log file says why (a misspelt option, a port in
+use). Put the copy from before the edit back, the same way as step 3:
 
 ```sh
-F=$(sudo readlink -f /var/lib/rns/.reticulum/config)   # the file itself, through any link
-sudo install -d -m 700 /var/backups/rnsd               # root's alone
-B=$(sudo mktemp "/var/backups/rnsd/config.$(date +%F-%H%M%S).XXXXXX") &&
-  sudo cp -pP "$F" "$B" &&
-  sudo nano "$F" &&
-  sudo systemctl restart rnsd &&
-  systemctl is-active rnsd &&
-  sudo -u rns /var/lib/rns/venv/bin/rnstatus
+sudo systemctl stop rnsd &&
+  ! pgrep -u rns > /dev/null &&
+  [ "$(sudo realpath "$C")" = "$C" ] && sudo test -f "$C" &&
+  sudo cp "$B" "$C" && echo "restored"
+sudo systemctl start rnsd
+sudo -u rns /var/lib/rns/venv/bin/rnstatus
 ```
 
-If a step fails, the ones after it do not run: a failed copy leaves the config as it was and
-`rnsd` running on it (remove the empty file `mktemp` made, `sudo rm "$B"`). If `rnsd` does not
-come back up after the edit, the log file says why (a misspelt option, a port in use); put the
-copy back and restart. `sudo ls -lt /var/backups/rnsd` lists the copies, newest first; the one to
-restore is the newest from before this edit (one that shows `->` is a link, not a config: do not
-restore it). Put its name in the command yourself; the copy replaces the config file
-(`--remove-destination`) instead of writing through whatever is at its path, for example:
-
-```sh
-F=$(sudo readlink -f /var/lib/rns/.reticulum/config)
-sudo ls -lt /var/backups/rnsd
-sudo cp -p --remove-destination /var/backups/rnsd/config.2026-11-08-201500.Ab12Cd "$F" &&
-  sudo systemctl restart rnsd &&
-  sudo -u rns /var/lib/rns/venv/bin/rnstatus   # the name of your copy, as ls shows it
-```
+`$B` is the name step 1 printed. In a new shell, set `C` as in step 1 and `B` to that name again:
+each copy is named after the time it was made, not the file's own time (`cp -p` keeps that), so
+`sudo ls /var/backups/rnsd` shows which copy belongs to which edit (`config.2026-11-08-201500`,
+its edit `config.2026-11-08-201500.new`).
 
 ### From `TCPServerInterface` to `BackboneInterface`
 
 A hub set up before 2026-11-08 has a `TCPServerInterface` listener. On Linux, change it (section
-4 says why); the clients need nothing. The option names change with the type.
+4 says why); the clients need nothing. The option names change with the type. If a configuration
+tool manages the config (NixOS, Ansible, a dotfiles manager or the like), make the three changes
+below in the tool's source instead, apply it the tool's way (for example `sudo nixos-rebuild
+switch`, or a playbook run), restart `rnsd` if the tool does not, and check with `rnstatus` that
+the listener is now a `BackboneInterface`: a change made on the hub would be undone on the
+tool's next run.
 
-Do not run the commands below if the config is a symbolic link (`ls -l
-/var/lib/rns/.reticulum/config` shows `->`), whoever keeps it: `sed -i` would replace the link
-with a regular file of its own. Back up the file the link points to and make the three changes
-there (`readlink -f` names it; "Changing the config" above has the commands), then restart `rnsd`
-and check with `rnstatus` that the listener is now a `BackboneInterface`. If a configuration
-tool manages the config (NixOS, Ansible, a dotfiles manager or the like), as a link or as a
-regular file it writes, do not run them either: the tool would put the
-old listener back on its next run. Make the same three changes in the tool's source instead,
-apply it the tool's way (for example `sudo nixos-rebuild switch`, or a playbook run), restart
-`rnsd` if the tool does not, and check with `rnstatus` that the listener is now a
-`BackboneInterface`.
+Otherwise follow the three steps of "Changing the config" above, with this `sed` on the copy in
+place of the `nano` of step 2 (still followed by the `diff`):
 
 ```sh
-C=/var/lib/rns/.reticulum/config
-# The first backup is the one to go back to: a second run must not overwrite it.
-if sudo test -e $C.tcpserver; then echo "$C.tcpserver exists already: stopping"; else
-  sudo cp -p $C $C.tcpserver &&
-  sudo sed -i '/^ *\[\[Crew Radio hub\]\]/,/^ *\[\[/{s/type = TCPServerInterface/type = BackboneInterface/; s/listen_ip = /listen_on = /; s/listen_port = /port = /}' $C &&
-  sudo sed -n '/\[interfaces\]/,$p' $C
-fi
+sudo sed -i '/^ *\[\[Crew Radio hub\]\]/,/^ *\[\[/{s/type = TCPServerInterface/type = BackboneInterface/; s/listen_ip = /listen_on = /; s/listen_port = /port = /}' "$B.new"
+sudo diff "$B" "$B.new"
 ```
 
 The `sed` changes only the block that starts at `[[Crew Radio hub]]` and ends at the next `[[`:
 the name section 4 gives the hub's listener. If yours is named otherwise, put its name in the
-command, or make the three changes in that block by hand (`type`, `listen_ip` to `listen_on`,
-`listen_port` to `port`); other interfaces (a `TCPClientInterface` out to another hub, a UDP
-interface, the boat's `127.0.0.1` listener from section 6) keep theirs. If the command stopped
-because `$C.tcpserver` exists, the migration has been run before: look at the config, and keep
-that file, which is the config as it was before the first run. Check the `sed -n` output, then:
+command, or make the three changes in that block by hand with `sudo nano "$B.new"` (`type`,
+`listen_ip` to `listen_on`, `listen_port` to `port`); other interfaces (a `TCPClientInterface` out
+to another hub, a UDP interface, the boat's `127.0.0.1` listener from section 6) keep theirs. The
+`diff` should show those three lines and nothing else.
 
-```sh
-sudo systemctl restart rnsd
-sudo -u rns /var/lib/rns/venv/bin/rnstatus
-```
-
-`rnstatus` should then list `BackboneInterface[Crew Radio hub/0.0.0.0:4242]` and, within a few
-seconds, the same `Clients` count as before. To go back: `sudo cp -p $C.tcpserver $C` and
-restart.
+After step 3, `rnstatus` should list `BackboneInterface[Crew Radio hub/0.0.0.0:4242]` and, within
+a few seconds, the same `Clients` count as before. To go back, put the copy from before the edit
+back, as above.
 
 ### Removing it
 
